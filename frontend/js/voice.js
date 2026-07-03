@@ -129,15 +129,15 @@ ttsVoiceSelect.addEventListener('change', () => {
 });
 
 // Text-to-Speech (TTS)
-window.activeAudioElement = null;
+const globalAudioElement = new Audio();
+window.activeAudioElement = globalAudioElement;
 
 window.stopAudioPlayback = function() {
     if ('speechSynthesis' in window) {
         speechSynthesis.cancel();
     }
-    if (window.activeAudioElement) {
-        try { window.activeAudioElement.pause(); } catch(e){}
-        window.activeAudioElement = null;
+    if (globalAudioElement) {
+        try { globalAudioElement.pause(); } catch(e){}
     }
 };
 
@@ -179,27 +179,21 @@ window.speakText = async function(text, onEnd) {
             if (res.ok) {
                 const blob = await res.blob();
                 const url = URL.createObjectURL(blob);
-                const audio = new Audio(url);
-                window.activeAudioElement = audio;
+                
+                globalAudioElement.src = url;
 
-                audio.onended = () => {
+                globalAudioElement.onended = () => {
                     URL.revokeObjectURL(url);
-                    if (window.activeAudioElement === audio) {
-                        window.activeAudioElement = null;
-                    }
                     if (onEnd) onEnd();
                 };
 
-                audio.onerror = (err) => {
+                globalAudioElement.onerror = (err) => {
                     console.warn("Neural TTS playback error, falling back:", err);
                     URL.revokeObjectURL(url);
-                    if (window.activeAudioElement === audio) {
-                        window.activeAudioElement = null;
-                    }
                     fallbackToWebSpeech(clean, onEnd);
                 };
 
-                await audio.play();
+                await globalAudioElement.play();
                 return;
             }
         }
@@ -252,16 +246,22 @@ if ('speechSynthesis' in window) {
     speechSynthesis.onvoiceschanged = () => populateVoices();
     populateVoices();
 
-    // iOS/iPadOS requires speechSynthesis.speak() to be triggered from a user gesture
-    // to "unlock" audio. Once unlocked with a silent utterance, subsequent programmatic
-    // calls (e.g. after SSE response) will work.
+    // iOS/iPadOS requires user gestures to "unlock" both SpeechSynthesis and HTML5 Audio
     let ttsUnlocked = false;
     function unlockTTS() {
         if (ttsUnlocked) return;
         ttsUnlocked = true;
+        
+        // Unlock SpeechSynthesis
         const silent = new SpeechSynthesisUtterance('');
         silent.volume = 0;
         speechSynthesis.speak(silent);
+
+        // Unlock HTML5 Audio by playing a brief silent WAV
+        globalAudioElement.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+        globalAudioElement.play().catch(e => {
+            console.warn("Failed to pre-unlock HTML5 Audio on user gesture:", e);
+        });
     }
     document.addEventListener('click', unlockTTS, { once: true });
     document.addEventListener('touchstart', unlockTTS, { once: true });
