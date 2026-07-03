@@ -71,8 +71,25 @@
     }
 
     // Initialize/Toggle YOLO Mode
+    const yoloFloatingBtn = document.getElementById('yolo-floating-btn');
+
     yoloBtn.addEventListener('click', () => {
         if (currentState === STATES.DISABLED) {
+            enterYoloMode();
+        }
+    });
+
+    if (yoloFloatingBtn) {
+        yoloFloatingBtn.addEventListener('click', () => {
+            if (currentState === STATES.DISABLED) {
+                enterYoloMode();
+            }
+        });
+    }
+
+    window.addEventListener('focus', () => {
+        // Automatically enter YOLO mode when tab gains focus
+        if (currentState === STATES.DISABLED && window.currentSessionId) {
             enterYoloMode();
         }
     });
@@ -174,6 +191,7 @@
             source.connect(analyser);
 
             yoloOverlay.classList.remove('hidden');
+            if (yoloFloatingBtn) yoloFloatingBtn.classList.add('hidden');
             updateState(STATES.IDLE);
             
             // Clear previous preview lines
@@ -198,6 +216,7 @@
     function exitYoloMode() {
         updateState(STATES.DISABLED);
         yoloOverlay.classList.add('hidden');
+        if (yoloFloatingBtn) yoloFloatingBtn.classList.remove('hidden');
 
         // Stop VAD loop
         if (vadInterval) clearInterval(vadInterval);

@@ -1743,3 +1743,43 @@ body {
         border: none;
     }
 }
+
+/* YOLO Floating Action Button */
+.yolo-floating-btn {
+    position: fixed;
+    bottom: 80px;
+    right: 24px;
+    padding: 14px 24px;
+    background: linear-gradient(135deg, #2563eb, #7c3aed);
+    color: white;
+    border: none;
+    border-radius: 50px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 10px 25px rgba(124, 58, 237, 0.4);
+    z-index: 800;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    animation: pulse-yolo 2s infinite;
+}
+
+.yolo-floating-btn:hover {
+    transform: scale(1.05) translateY(-2px);
+    box-shadow: 0 14px 30px rgba(124, 58, 237, 0.5);
+}
+
+.yolo-floating-btn.hidden {
+    display: none !important;
+}
+
+@keyframes pulse-yolo {
+    0%, 100% {
+        box-shadow: 0 10px 25px rgba(124, 58, 237, 0.4);
+    }
+    50% {
+        box-shadow: 0 10px 35px rgba(124, 58, 237, 0.7);
+    }
+}
