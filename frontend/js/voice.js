@@ -129,11 +129,20 @@ ttsVoiceSelect.addEventListener('change', () => {
 });
 
 // Text-to-Speech (TTS)
-window.speakText = function(text, onEnd) {
-    if (!('speechSynthesis' in window)) {
-        if (onEnd) onEnd();
-        return;
+window.activeAudioElement = null;
+
+window.stopAudioPlayback = function() {
+    if ('speechSynthesis' in window) {
+        speechSynthesis.cancel();
     }
+    if (window.activeAudioElement) {
+        try { window.activeAudioElement.pause(); } catch(e){}
+        window.activeAudioElement = null;
+    }
+};
+
+window.speakText = async function(text, onEnd) {
+    window.stopAudioPlayback();
 
     const clean = text
         .replace(/[\u{1F600}-\u{1F6FF}\u{1F900}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F000}-\u{1F02F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu, '')
@@ -154,9 +163,60 @@ window.speakText = function(text, onEnd) {
         return;
     }
 
-    speechSynthesis.cancel();
+    // Try OpenAI neural TTS via API
+    try {
+        const token = API.getToken();
+        if (token) {
+            const res = await fetch('/api/chat/tts', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ text: clean, voice: 'nova' })
+            });
 
-    // iOS workaround: after cancel(), synthesis can get stuck in a paused state
+            if (res.ok) {
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const audio = new Audio(url);
+                window.activeAudioElement = audio;
+
+                audio.onended = () => {
+                    URL.revokeObjectURL(url);
+                    if (window.activeAudioElement === audio) {
+                        window.activeAudioElement = null;
+                    }
+                    if (onEnd) onEnd();
+                };
+
+                audio.onerror = (err) => {
+                    console.warn("Neural TTS playback error, falling back:", err);
+                    URL.revokeObjectURL(url);
+                    if (window.activeAudioElement === audio) {
+                        window.activeAudioElement = null;
+                    }
+                    fallbackToWebSpeech(clean, onEnd);
+                };
+
+                await audio.play();
+                return;
+            }
+        }
+    } catch (err) {
+        console.warn("Neural TTS request failed, falling back:", err);
+    }
+
+    fallbackToWebSpeech(clean, onEnd);
+};
+
+function fallbackToWebSpeech(clean, onEnd) {
+    if (!('speechSynthesis' in window)) {
+        if (onEnd) onEnd();
+        return;
+    }
+
+    speechSynthesis.cancel();
     if (speechSynthesis.paused) speechSynthesis.resume();
 
     const utterance = new SpeechSynthesisUtterance(clean);
@@ -184,7 +244,7 @@ window.speakText = function(text, onEnd) {
     };
 
     speechSynthesis.speak(utterance);
-};
+}
 
 // Preload voices
 if ('speechSynthesis' in window) {

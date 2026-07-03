@@ -26,10 +26,12 @@ public class ChatController : ControllerBase
     private readonly AudioAnalysisService _audioAnalysis;
     private readonly ILogger<ChatController> _logger;
 
+    private readonly OpenAiTtsService _ttsService;
+
     public ChatController(AppDbContext db, UserManager<User> userManager,
         AnthropicService anthropic, GeminiService gemini, TutorService tutor,
         TutorTools tutorTools, TutorToolExecutor toolExecutor,
-        AudioAnalysisService audioAnalysis,
+        AudioAnalysisService audioAnalysis, OpenAiTtsService ttsService,
         ILogger<ChatController> logger)
     {
         _db = db;
@@ -40,6 +42,7 @@ public class ChatController : ControllerBase
         _tutorTools = tutorTools;
         _toolExecutor = toolExecutor;
         _audioAnalysis = audioAnalysis;
+        _ttsService = ttsService;
         _logger = logger;
     }
 
@@ -49,6 +52,26 @@ public class ChatController : ControllerBase
     private const string AudioPath = "/app/audio";
     private const long MaxAudioSize = 5 * 1024 * 1024; // 5MB
     private const long MaxImageSize = 10 * 1024 * 1024; // 10MB
+
+    public record TtsRequest(string Text, string? Voice = null);
+
+    [HttpPost("tts")]
+    public async Task<IActionResult> GenerateTts([FromBody] TtsRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Text)) return BadRequest();
+
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
+        var settings = await _db.UserSettings.FirstOrDefaultAsync(s => s.UserId == userId);
+        var openAiKey = settings?.OpenAiApiKey;
+
+        var audioBytes = await _ttsService.GenerateSpeechAsync(req.Text, req.Voice ?? "nova", openAiKey);
+        if (audioBytes == null)
+        {
+            return BadRequest(new { error = "Neural TTS generation failed" });
+        }
+
+        return File(audioBytes, "audio/mpeg", "speech.mp3");
+    }
 
     [HttpPost("sessions")]
     public async Task<IActionResult> CreateSession([FromBody] CreateSessionRequest req)

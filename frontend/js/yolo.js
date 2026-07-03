@@ -210,7 +210,9 @@
         }
 
         // Cancel TTS
-        speechSynthesis.cancel();
+        if (window.stopAudioPlayback) window.stopAudioPlayback(); else {
+            speechSynthesis.cancel();
+        }
         if (window.activeUtterances) window.activeUtterances.length = 0;
 
         // Release Screen Wake Lock
@@ -358,7 +360,9 @@
         console.log("YOLO: User interrupted the response.");
         
         // Cancel speech synthesis
-        speechSynthesis.cancel();
+        if (window.stopAudioPlayback) window.stopAudioPlayback(); else {
+            speechSynthesis.cancel();
+        }
         if (window.activeUtterances) window.activeUtterances.length = 0;
 
         // Abort fetch stream
