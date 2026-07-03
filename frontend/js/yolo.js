@@ -190,11 +190,9 @@
         }
     }
 
-    async function enterYoloMode() {
-        if (isInitializing || currentState !== STATES.DISABLED) return;
-        isInitializing = true;
+    async function acquireMicrophone() {
+        if (micStream) return true;
         try {
-            // Setup Web Audio API and media recording
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
                     echoCancellation: true,
@@ -202,27 +200,58 @@
                     autoGainControl: true
                 }
             });
-
             micStream = stream;
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            
+
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioContext.state === 'suspended') {
+                await audioContext.resume();
+            }
+
             const source = audioContext.createMediaStreamSource(stream);
-            analyser = audioContext.createAnalyser();
-            analyser.fftSize = 512;
+            if (analyser) {
+                try { analyser.disconnect(); } catch(e){}
+            } else {
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 512;
+            }
             source.connect(analyser);
+            return true;
+        } catch (err) {
+            console.error('Failed to acquire microphone:', err);
+            return false;
+        }
+    }
+
+    function releaseMicrophone() {
+        if (micStream) {
+            micStream.getTracks().forEach(track => track.stop());
+            micStream = null;
+        }
+    }
+
+    async function enterYoloMode() {
+        if (isInitializing || currentState !== STATES.DISABLED) return;
+        isInitializing = true;
+        try {
+            const ok = await acquireMicrophone();
+            if (!ok) {
+                alert('Помилка: не вдалося отримати доступ до мікрофона.');
+                isInitializing = false;
+                return;
+            }
 
             yoloOverlay.classList.remove('hidden');
             if (yoloFloatingBtn) yoloFloatingBtn.classList.add('hidden');
             updateState(STATES.IDLE);
             
-            // Clear previous preview lines
             yoloTextPreview.innerHTML = '<div class="yolo-line assistant"><em>Ольга готова слушать вас. Начните говорить...</em></div>';
 
             startUserListening();
             startVadLoop();
             requestWakeLock(); // Request wake lock to prevent screen sleep
 
-            // Auto-create chat session if none active
             if (!window.currentSessionId) {
                 const session = await API.post('/chat/sessions', { mode: 'dialog' });
                 window.currentSessionId = session.id;
@@ -232,7 +261,6 @@
         } catch (err) {
             isInitializing = false;
             console.error('Failed to initialize YOLO mode:', err);
-            alert('Помилка: не вдалося отримати доступ до мікрофона.');
         }
     }
 
@@ -241,38 +269,29 @@
         yoloOverlay.classList.add('hidden');
         if (yoloFloatingBtn) yoloFloatingBtn.classList.remove('hidden');
 
-        // Stop VAD loop
         if (vadInterval) clearInterval(vadInterval);
         vadInterval = null;
 
-        // Stop micro stream
-        if (micStream) {
-            micStream.getTracks().forEach(track => track.stop());
-            micStream = null;
-        }
+        releaseMicrophone();
 
-        // Cancel TTS
         if (window.stopAudioPlayback) window.stopAudioPlayback(); else {
             speechSynthesis.cancel();
         }
         if (window.activeUtterances) window.activeUtterances.length = 0;
 
-        // Release Screen Wake Lock
         releaseWakeLock();
 
-        // Abort API requests
         if (activeAbortController) {
             activeAbortController.abort();
             activeAbortController = null;
         }
 
-        // Close AudioContext
         if (audioContext && audioContext.state !== 'closed') {
             audioContext.close();
             audioContext = null;
+            analyser = null;
         }
 
-        // Refresh main chat dialogue messages
         if (window.currentSessionId && window.openSession) {
             window.openSession(window.currentSessionId);
         }
@@ -398,7 +417,7 @@
         }, 50);
     }
 
-    function triggerInterruption() {
+    async function triggerInterruption() {
         console.log("YOLO: User interrupted the response.");
         
         // Cancel speech synthesis
@@ -416,8 +435,11 @@
         // Add visual indicator of interruption
         appendPreviewLine('user', '... (Перебито)');
         
-        // Start listening to the new speech
-        startUserListening();
+        // Re-acquire mic and start listening to the new speech
+        const ok = await acquireMicrophone();
+        if (ok) {
+            startUserListening();
+        }
         yoloStatus.textContent = 'Слухаю вас (перебито)...';
     }
 
@@ -448,9 +470,13 @@
         const audioBlob = await stopAndGetBlob();
         currentRecordingChunks = null;
 
+        // Stop microphone immediately to release audio hardware for high-quality speaker/headphone playback
+        releaseMicrophone();
+
         if (!audioBlob) {
             console.warn("YOLO VAD: Failed to capture audio.");
-            startUserListening();
+            const ok = await acquireMicrophone();
+            if (ok) startUserListening();
             return;
         }
 
@@ -480,7 +506,7 @@
                     fullResponseText += chunk;
                 },
                 // onDone
-                (err) => {
+                async (err) => {
                     activeAbortController = null;
                     if (err) {
                         if (err.name === 'AbortError') {
@@ -489,18 +515,23 @@
                             console.warn("YOLO stream error:", err);
                             appendPreviewLine('assistant', 'Ошибка соединения. Попробуйте еще раз.');
                             updateState(STATES.IDLE);
+                            const ok = await acquireMicrophone();
+                            if (ok) startUserListening();
                         }
                     } else {
                         if (fullResponseText.trim() && window.speakText) {
                             updateState(STATES.SPEAKING);
-                            window.speakText(fullResponseText, () => {
+                            window.speakText(fullResponseText, async () => {
                                 // Transition back to listening ONLY if we were not interrupted
                                 if (currentState === STATES.SPEAKING) {
-                                    startUserListening();
+                                    const ok = await acquireMicrophone();
+                                    if (ok) startUserListening();
+                                    else updateState(STATES.IDLE);
                                 }
                             });
                         } else {
-                            startUserListening();
+                            const ok = await acquireMicrophone();
+                            if (ok) startUserListening();
                         }
                     }
                 },
