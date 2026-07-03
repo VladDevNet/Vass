@@ -10,11 +10,13 @@ public class OpenAiTtsService
 {
     private readonly string _defaultApiKey;
     private readonly ILogger<OpenAiTtsService> _logger;
+    private readonly IHttpClientFactory _httpClientFactory;
 
-    public OpenAiTtsService(IConfiguration config, ILogger<OpenAiTtsService> logger)
+    public OpenAiTtsService(IConfiguration config, ILogger<OpenAiTtsService> logger, IHttpClientFactory httpClientFactory)
     {
         _defaultApiKey = config["OpenAI:ApiKey"] ?? "";
         _logger = logger;
+        _httpClientFactory = httpClientFactory;
     }
 
     public async Task<byte[]?> GenerateSpeechAsync(string text, string voice = "nova", string? apiKey = null)
@@ -26,7 +28,7 @@ public class OpenAiTtsService
             return null;
         }
 
-        using var http = new HttpClient();
+        using var http = _httpClientFactory.CreateClient();
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
         http.Timeout = TimeSpan.FromSeconds(30);
 

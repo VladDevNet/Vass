@@ -64,7 +64,11 @@ public class ChatController : ControllerBase
         var settings = await _db.UserSettings.FirstOrDefaultAsync(s => s.UserId == userId);
         var openAiKey = settings?.OpenAiApiKey;
 
+        var sw = Stopwatch.StartNew();
         var audioBytes = await _ttsService.GenerateSpeechAsync(req.Text, req.Voice ?? "nova", openAiKey);
+        sw.Stop();
+        _logger.LogInformation("VoiceAssistant Performance Stats - TTS: {TtsMs}ms for {Chars} chars", sw.ElapsedMilliseconds, req.Text.Length);
+
         if (audioBytes == null)
         {
             return BadRequest(new { error = "Neural TTS generation failed" });

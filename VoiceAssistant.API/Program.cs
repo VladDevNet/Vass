@@ -48,6 +48,8 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddAuthorization();
 
+builder.Services.AddHttpClient();
+
 // Services
 builder.Services.AddSingleton<AnthropicService>();
 builder.Services.AddSingleton<GeminiService>();

@@ -11,11 +11,13 @@ public class GeminiService
 {
     private readonly string _defaultApiKey;
     private readonly ILogger<GeminiService> _logger;
+    private readonly IHttpClientFactory _httpClientFactory;
 
-    public GeminiService(IConfiguration config, ILogger<GeminiService> logger)
+    public GeminiService(IConfiguration config, ILogger<GeminiService> logger, IHttpClientFactory httpClientFactory)
     {
         _defaultApiKey = config["Gemini:ApiKey"] ?? "";
         _logger = logger;
+        _httpClientFactory = httpClientFactory;
     }
 
     public async IAsyncEnumerable<string> StreamResponseAsync(
@@ -57,7 +59,7 @@ public class GeminiService
         var json = JsonSerializer.Serialize(payload);
         var url = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={key}";
 
-        using var http = new HttpClient();
+        using var http = _httpClientFactory.CreateClient();
         http.Timeout = TimeSpan.FromSeconds(60);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, url);

@@ -6,12 +6,14 @@ public class AudioAnalysisService
 {
     private readonly string _apiKey;
     private readonly ILogger<AudioAnalysisService> _logger;
+    private readonly IHttpClientFactory _httpClientFactory;
     private const string Model = "gemini-2.5-flash";
 
-    public AudioAnalysisService(IConfiguration config, ILogger<AudioAnalysisService> logger)
+    public AudioAnalysisService(IConfiguration config, ILogger<AudioAnalysisService> logger, IHttpClientFactory httpClientFactory)
     {
         _apiKey = config["Gemini:ApiKey"]!;
         _logger = logger;
+        _httpClientFactory = httpClientFactory;
     }
 
     public async Task<AudioAnalysisResult?> TranscribeAndAnalyzeAsync(string audioPath, string? apiKey = null)
@@ -29,7 +31,7 @@ public class AudioAnalysisService
             _ => "audio/wav"
         };
 
-        using var http = new HttpClient();
+        using var http = _httpClientFactory.CreateClient();
         http.Timeout = TimeSpan.FromSeconds(45);
 
         var payload = new
