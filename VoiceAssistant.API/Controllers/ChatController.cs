@@ -205,10 +205,8 @@ public class ChatController : ControllerBase
         var anthropicKey = settings?.AnthropicApiKey;
         var geminiKey = settings?.GeminiApiKey;
 
-        // Transcribe + analyze pronunciation via Gemini 3 Flash (one call)
         var messageText = req.Message;
         string? transcription = null;
-        AudioAnalysisResult? audioResult = null;
         string? wavPath = null;
         long convertMs = 0;
         long transcribeMs = 0;
@@ -227,11 +225,10 @@ public class ChatController : ControllerBase
             if (wavPath == null) { _logger.LogWarning("ffmpeg conversion failed for {File}", filePath); Response.StatusCode = 400; return; }
 
             sw.Restart();
-            audioResult = await _audioAnalysis.TranscribeAndAnalyzeAsync(wavPath, geminiKey);
+            transcription = await _audioAnalysis.TranscribeAsync(wavPath, geminiKey);
             sw.Stop();
             transcribeMs = sw.ElapsedMilliseconds;
 
-            transcription = audioResult?.Transcription;
             messageText = transcription;
         }
 

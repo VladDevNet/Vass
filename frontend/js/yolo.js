@@ -41,7 +41,7 @@
     yoloSensitivity.value = sensitivityThreshold;
     yoloSensitivityVal.textContent = sensitivityThreshold.toFixed(3);
 
-    const SILENCE_TIMEOUT = 2200; // ms of silence to trigger end of speech
+    const SILENCE_TIMEOUT = 1000; // ms of silence to trigger end of speech
     const INTERRUPTION_FRAMES = 5; // ~250ms of consecutive loud speech to interrupt AI
     const START_SPEECH_FRAMES = 5;  // ~250ms of consecutive speech to trigger listening state (filters out short coughs/clicks)
 

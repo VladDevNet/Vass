@@ -16,7 +16,7 @@ public class AudioAnalysisService
         _httpClientFactory = httpClientFactory;
     }
 
-    public async Task<AudioAnalysisResult?> TranscribeAndAnalyzeAsync(string audioPath, string? apiKey = null)
+    public async Task<string?> TranscribeAsync(string audioPath, string? apiKey = null)
     {
         var key = string.IsNullOrWhiteSpace(apiKey) ? _apiKey : apiKey;
         var audioBytes = await File.ReadAllBytesAsync(audioPath);
@@ -51,12 +51,7 @@ public class AudioAnalysisService
                             text = """
                                 Это аудиозапись речи пользователя, говорящего на русском или украинском языке.
                                 Сделай точную транскрипцию того, что пользователь сказал в записи. Убери посторонние вздохи, шумы или щелчки, оставив чистый текст.
-                                
-                                Ответь строго в формате JSON (без markdown, без ```):
-                                {"transcription": "текст транскрипции", "accuracy": 10, "feedback": "", "problemWords": []}
-                                
-                                Если запись пустая, тихая или не содержит речи, верни:
-                                {"transcription": "", "accuracy": 0, "feedback": "Речь не распознана", "problemWords": []}
+                                Ответь ТОЛЬКО текстом транскрипции, без кавычек и пояснений. Если запись пустая, тихая или не содержит речи, верни пустую строку.
                                 """
                         }
                     }
@@ -64,7 +59,7 @@ public class AudioAnalysisService
             },
             generationConfig = new
             {
-                maxOutputTokens = 1024,
+                maxOutputTokens = 256,
                 thinkingConfig = new { thinkingBudget = 0 }
             }
         };
@@ -85,7 +80,6 @@ public class AudioAnalysisService
             }
 
             var doc = JsonDocument.Parse(body);
-            // Concatenate text from all parts
             var parts = doc.RootElement
                 .GetProperty("candidates")[0]
                 .GetProperty("content")
@@ -94,43 +88,12 @@ public class AudioAnalysisService
                 .Where(p => p.TryGetProperty("text", out _))
                 .Select(p => p.GetProperty("text").GetString() ?? ""));
 
-            // Strip markdown code fences if present
-            var clean = content.Trim();
-            if (clean.StartsWith("```"))
-            {
-                clean = clean[clean.IndexOf('\n')..];
-                var endFence = clean.LastIndexOf("```");
-                if (endFence >= 0) clean = clean[..endFence];
-                clean = clean.Trim();
-            }
-
-            // Extract JSON from response
-            var jsonStart = clean.IndexOf('{');
-            var jsonEnd = clean.LastIndexOf('}');
-            if (jsonStart < 0 || jsonEnd < 0)
-            {
-                _logger.LogWarning("No JSON found in Gemini response: {Content}", content);
-                return null;
-            }
-
-            var resultJson = clean[jsonStart..(jsonEnd + 1)];
-            return JsonSerializer.Deserialize<AudioAnalysisResult>(resultJson, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
+            return content.Trim().Trim('"');
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Gemini audio analysis failed");
+            _logger.LogWarning(ex, "Gemini transcription failed");
             return null;
         }
     }
-}
-
-public class AudioAnalysisResult
-{
-    public string Transcription { get; set; } = "";
-    public int Accuracy { get; set; }
-    public string Feedback { get; set; } = "";
-    public List<ProblemWord> ProblemWords { get; set; } = [];
 }
