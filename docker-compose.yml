@@ -1,0 +1,49 @@
+services:
+  api:
+    build: ./PolishTutor.Api
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5000
+      - ConnectionStrings__Default=Host=db;Database=polishtutor;Username=app;Password=${DB_PASSWORD}
+      - Anthropic__ApiKey=${ANTHROPIC_API_KEY}
+      - OpenAI__ApiKey=${OPENAI_API_KEY}
+      - Gemini__ApiKey=${GEMINI_API_KEY}
+      - Jwt__Secret=${JWT_SECRET}
+      - Jwt__Issuer=PolishTutor
+      - Jwt__Audience=PolishTutor
+    volumes:
+      - audio:/app/audio
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:17-alpine
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_DB=polishtutor
+      - POSTGRES_USER=app
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d polishtutor"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "127.0.0.1:4000:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  audio:

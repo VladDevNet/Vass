@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polish Tutor — Nauka polskiego</title>
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#2563eb">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Polish Tutor">
+    <link rel="apple-touch-icon" href="/icons/icon-192.png">
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body class="auth-page">
+    <div class="auth-container">
+        <div class="auth-card">
+            <div class="auth-header">
+                <div class="auth-logo">
+                    <span class="logo-accent"></span>
+                    <h1>Polish Tutor</h1>
+                </div>
+                <p class="subtitle">Інтерактивне вивчення польської з AI</p>
+            </div>
+
+            <div class="auth-features">
+                <div class="feature-item">
+                    <span class="feature-icon">&#x1f4ac;</span>
+                    <span>AI-репетитор з адаптацією під рівень</span>
+                </div>
+                <div class="feature-item">
+                    <span class="feature-icon">&#x1f3a4;</span>
+                    <span>Голосовий ввід та вимова</span>
+                </div>
+                <div class="feature-item">
+                    <span class="feature-icon">&#x1f4da;</span>
+                    <span>Від A1 до B2 крок за кроком</span>
+                </div>
+            </div>
+
+            <div id="auth-section">
+                <div class="tabs">
+                    <button class="tab active" data-tab="login">Увійти</button>
+                    <button class="tab" data-tab="register">Реєстрація</button>
+                </div>
+
+                <form id="login-form" class="auth-form">
+                    <input type="email" name="email" placeholder="Email" required>
+                    <input type="password" name="password" placeholder="Пароль" required>
+                    <button type="submit" class="btn-primary">Увійти</button>
+                    <div class="error" id="login-error"></div>
+                </form>
+
+                <form id="register-form" class="auth-form hidden">
+                    <input type="email" name="email" placeholder="Email" required>
+                    <input type="password" name="password" placeholder="Пароль (мін. 6 символів)" required>
+                    <select name="nativeLang">
+                        <option value="uk">Українська</option>
+                        <option value="ru">Русский</option>
+                    </select>
+                    <button type="submit" class="btn-primary">Зареєструватися</button>
+                    <div class="error" id="register-error"></div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/auth.js"></script>
+    <script>if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
+</body>
+</html>

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polish Tutor — Chat</title>
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#2563eb">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Polish Tutor">
+    <link rel="apple-touch-icon" href="/icons/icon-192.png">
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <!-- Onboarding overlay -->
+    <div id="onboarding-overlay" class="overlay hidden">
+        <div class="overlay-card">
+            <h2>Вітаємо!</h2>
+            <p>Давай визначимо твій рівень польської</p>
+
+            <div class="onboarding-options">
+                <button id="onboarding-test-btn" class="btn-primary btn-block">
+                    Пройти тест рівня
+                </button>
+
+                <div class="onboarding-divider"><span>або</span></div>
+
+                <p class="onboarding-manual-label">Я знаю свій рівень:</p>
+                <div class="onboarding-levels">
+                    <button class="onboarding-level-btn" data-level="A1">A1</button>
+                    <button class="onboarding-level-btn" data-level="A2">A2</button>
+                    <button class="onboarding-level-btn" data-level="B1">B1</button>
+                    <button class="onboarding-level-btn" data-level="B2">B2</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Vocabulary panel -->
+    <div id="vocabulary-panel" class="vocab-panel hidden">
+        <div class="vocab-header">
+            <h3>Словник</h3>
+            <button id="vocab-close-btn" class="btn-icon-sm">&times;</button>
+        </div>
+        <div class="vocab-filters">
+            <button class="vocab-filter active" data-status="all">Всі</button>
+            <button class="vocab-filter" data-status="new">Нові</button>
+            <button class="vocab-filter" data-status="learning">Вчу</button>
+            <button class="vocab-filter" data-status="known">Знаю</button>
+        </div>
+        <div class="vocab-stats" id="vocab-stats"></div>
+        <div class="vocab-toolbar">
+            <input type="text" id="vocab-search" class="vocab-search" placeholder="Пошук...">
+            <button id="vocab-add-clipboard-btn" class="btn-icon-sm" title="Додати слово">+</button>
+        </div>
+        <div id="vocab-list" class="vocab-list"></div>
+    </div>
+
+    <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Menu">&#9776;</button>
+    <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+
+    <div class="app-layout">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>Polish Tutor</h2>
+                <span id="user-level" class="badge">A1</span>
+            </div>
+            <button id="new-session-btn" class="btn-primary">+ Нова розмова</button>
+            <button id="vocab-btn" class="btn-sidebar">&#x1f4d6; Словник</button>
+            <div id="sessions-list" class="sessions-list"></div>
+            <div class="sidebar-footer">
+                <span id="user-email"></span>
+                <div class="sidebar-footer-actions">
+                    <a href="settings.html" class="btn-footer-icon" title="Налаштування">&#x2699;</a>
+                    <button id="logout-btn" class="btn-footer-icon" title="Вийти">&#x23FB;</button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Chat area -->
+        <main class="chat-area">
+            <div id="chat-messages" class="messages">
+                <div class="welcome-message">
+                    <p>Cześć! Jestem Kasia, twoja nauczycielka polskiego.</p>
+                    <p>Створи нову розмову, щоб почати!</p>
+                </div>
+            </div>
+            <div id="tts-settings" class="tts-settings hidden">
+                <label>Голос: <select id="tts-voice"></select></label>
+                <label>Швидкість: <input type="range" id="tts-rate" min="0.3" max="1.5" step="0.1" value="0.9"> <span id="tts-rate-val">0.9</span></label>
+            </div>
+            <div id="attachment-preview" class="attachment-preview hidden"></div>
+            <div class="chat-input-area">
+                <button id="voice-btn" class="btn-icon" title="Голосовий ввід">&#x1f3a4;</button>
+                <button id="yolo-btn" class="btn-icon" title="YOLO режим (розмовний чат)">⚡</button>
+                <button id="camera-btn" class="btn-icon" title="Сфотографувати текст">&#x1f4f7;</button>
+                <input type="file" id="camera-input" accept="image/*" capture="environment" class="hidden">
+                <textarea id="message-input" placeholder="Napisz po polsku..." rows="1"></textarea>
+                <button id="tts-settings-btn" class="btn-icon" title="Налаштування голосу">&#x2699;</button>
+                <button id="send-btn" class="btn-primary">Надіслати</button>
+            </div>
+        </main>
+    </div>
+
+    <!-- YOLO Mode Overlay -->
+    <div id="yolo-overlay" class="yolo-overlay hidden">
+        <div class="yolo-container">
+            <div class="yolo-header">
+                <div class="yolo-title-area">
+                    <span class="yolo-badge">YOLO Mode</span>
+                    <h2 class="yolo-session-title">Вільна розмова з Kasia</h2>
+                </div>
+                <button id="yolo-close-btn" class="yolo-close-btn" title="Вийти">&times;</button>
+            </div>
+
+            <div class="yolo-visualizer-container">
+                <div class="yolo-orb-outer">
+                    <div id="yolo-orb" class="yolo-orb state-idle"></div>
+                </div>
+                <div id="yolo-status" class="yolo-status">Готовий до розмови</div>
+            </div>
+
+            <div class="yolo-preview-container">
+                <div class="yolo-preview-header">
+                    <span>Останні репліки</span>
+                    <button id="yolo-toggle-text-btn" class="btn-small">Приховати текст</button>
+                </div>
+                <div id="yolo-text-preview" class="yolo-text-preview"></div>
+            </div>
+
+            <div class="yolo-controls">
+                <div class="yolo-control-row">
+                    <label for="yolo-sensitivity">Поріг тиші (чутливість VAD):</label>
+                    <input type="range" id="yolo-sensitivity" min="0.005" max="0.08" step="0.005" value="0.02">
+                    <span id="yolo-sensitivity-val">0.02</span>
+                </div>
+                <div class="yolo-buttons">
+                    <button id="yolo-mute-btn" class="yolo-btn-secondary" title="Вимкнути мікрофон">🎙️</button>
+                    <button id="yolo-speak-now-btn" class="yolo-btn-primary">Почати говорити</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/onboarding.js"></script>
+    <script src="js/vocabulary.js"></script>
+    <script src="js/chat.js"></script>
+    <script src="js/voice.js"></script>
+    <script src="js/yolo.js"></script>
+</body>
+</html>

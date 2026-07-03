@@ -1,0 +1,22 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+
+## IDE
+.vs/
+.vscode/
+.idea/
+
+## Environment
+.env
+appsettings.Development.json
+
+## Docker
+pgdata/
+
+## OS
+.DS_Store
+Thumbs.db
