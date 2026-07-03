@@ -1,7 +1,7 @@
 {
-  "name": "Polish Tutor",
-  "short_name": "Polish Tutor",
-  "description": "Вивчай польську з AI-репетитором Касею",
+  "name": "Voice Assistant",
+  "short_name": "Voice Assistant",
+  "description": "Голосовой ассистент Ольга",
   "start_url": "/app.html",
   "display": "standalone",
   "background_color": "#1e293b",

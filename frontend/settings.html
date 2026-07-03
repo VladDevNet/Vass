@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Polish Tutor — Налаштування</title>
+    <title>Voice Assistant — Налаштування</title>
     <link rel="manifest" href="/manifest.json">
     <meta name="theme-color" content="#2563eb">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Polish Tutor">
+    <meta name="apple-mobile-web-app-title" content="Voice Assistant">
     <link rel="apple-touch-icon" href="/icons/icon-192.png">
     <link rel="stylesheet" href="css/styles.css">
 </head>
@@ -37,9 +37,9 @@
                         <option value="ru">Русский</option>
                     </select>
                 </label>
-                <label class="settings-toggle">
+                <label class="settings-toggle hidden">
                     <input type="checkbox" id="full-translation">
-                    <span>Повний переклад — Kася додає пословний розбір після кожної відповіді</span>
+                    <span>Повний переклад — Ольга додає пословний розбір після кожної відповіді</span>
                 </label>
             </section>
 
@@ -64,7 +64,7 @@
             <!-- System Prompt -->
             <section class="settings-section">
                 <h2>Системний промпт</h2>
-                <p class="settings-hint">Додаткові інструкції для Касі. <button id="show-default-btn" class="btn-link">Показати стандартний промпт</button></p>
+                <p class="settings-hint">Додаткові інструкції для Ольги. <button id="show-default-btn" class="btn-link">Показати стандартний промпт</button></p>
                 <div id="default-prompt-block" class="settings-default-prompt hidden"></div>
                 <textarea id="custom-prompt" rows="6" placeholder="Наприклад: Завжди давай приклади з реального життя. Фокусуйся на бізнес-лексиці."></textarea>
             </section>

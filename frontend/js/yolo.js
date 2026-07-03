@@ -1,4 +1,4 @@
-// YOLO Mode - Voice-only Hands-free Conversational Polish Tutor
+// YOLO Mode - Voice-only Hands-free Conversational Voice Assistant
 (function() {
     const yoloBtn = document.getElementById('yolo-btn');
     const yoloOverlay = document.getElementById('yolo-overlay');
