@@ -204,6 +204,7 @@
 
             if (!audioContext) {
                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                window.activeAudioContext = audioContext;
             }
             if (audioContext.state === 'suspended') {
                 await audioContext.resume();
@@ -289,6 +290,7 @@
         if (audioContext && audioContext.state !== 'closed') {
             audioContext.close();
             audioContext = null;
+            window.activeAudioContext = null;
             analyser = null;
         }
 
@@ -417,7 +419,7 @@
         }, 50);
     }
 
-    async function triggerInterruption() {
+    function triggerInterruption() {
         console.log("YOLO: User interrupted the response.");
         
         // Cancel speech synthesis
@@ -435,11 +437,8 @@
         // Add visual indicator of interruption
         appendPreviewLine('user', '... (Перебито)');
         
-        // Re-acquire mic and start listening to the new speech
-        const ok = await acquireMicrophone();
-        if (ok) {
-            startUserListening();
-        }
+        // Start listening to the new speech
+        startUserListening();
         yoloStatus.textContent = 'Слухаю вас (перебито)...';
     }
 
@@ -470,13 +469,9 @@
         const audioBlob = await stopAndGetBlob();
         currentRecordingChunks = null;
 
-        // Stop microphone immediately to release audio hardware for high-quality speaker/headphone playback
-        releaseMicrophone();
-
         if (!audioBlob) {
             console.warn("YOLO VAD: Failed to capture audio.");
-            const ok = await acquireMicrophone();
-            if (ok) startUserListening();
+            startUserListening();
             return;
         }
 
@@ -506,7 +501,7 @@
                     fullResponseText += chunk;
                 },
                 // onDone
-                async (err) => {
+                (err) => {
                     activeAbortController = null;
                     if (err) {
                         if (err.name === 'AbortError') {
@@ -515,23 +510,19 @@
                             console.warn("YOLO stream error:", err);
                             appendPreviewLine('assistant', 'Ошибка соединения. Попробуйте еще раз.');
                             updateState(STATES.IDLE);
-                            const ok = await acquireMicrophone();
-                            if (ok) startUserListening();
+                            startUserListening();
                         }
                     } else {
                         if (fullResponseText.trim() && window.speakText) {
                             updateState(STATES.SPEAKING);
-                            window.speakText(fullResponseText, async () => {
+                            window.speakText(fullResponseText, () => {
                                 // Transition back to listening ONLY if we were not interrupted
                                 if (currentState === STATES.SPEAKING) {
-                                    const ok = await acquireMicrophone();
-                                    if (ok) startUserListening();
-                                    else updateState(STATES.IDLE);
+                                    startUserListening();
                                 }
                             });
                         } else {
-                            const ok = await acquireMicrophone();
-                            if (ok) startUserListening();
+                            startUserListening();
                         }
                     }
                 },
@@ -618,6 +609,14 @@
             await requestWakeLock();
         }
     });
+
+    // Temporary hook for TTS diagnostics from voice.js (visible on iPad without devtools)
+    window.yoloDebugLine = (msg) => {
+        const line = appendPreviewLine('assistant', '🔧 ' + msg);
+        line.style.fontSize = '0.7rem';
+        line.style.opacity = '0.6';
+        return line;
+    };
 
     function appendPreviewLine(role, text) {
         // Ensure preview stays neat

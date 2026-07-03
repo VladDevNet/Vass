@@ -128,13 +128,24 @@ ttsVoiceSelect.addEventListener('change', () => {
     localStorage.setItem('tts-voice', ttsVoiceName);
 });
 
+// Temporary TTS diagnostics (visible inside YOLO overlay on devices without devtools)
+function ttsDbg(msg) {
+    console.log('[TTS-DBG]', msg);
+    if (window.yoloDebugLine) window.yoloDebugLine(msg);
+}
+
 // Text-to-Speech (TTS)
 const globalAudioElement = new Audio();
 window.activeAudioElement = globalAudioElement;
+window.activeAudioSourceNode = null;
 
 window.stopAudioPlayback = function() {
     if ('speechSynthesis' in window) {
         speechSynthesis.cancel();
+    }
+    if (window.activeAudioSourceNode) {
+        try { window.activeAudioSourceNode.stop(); } catch(e){}
+        window.activeAudioSourceNode = null;
     }
     if (globalAudioElement) {
         try { globalAudioElement.pause(); } catch(e){}
@@ -176,31 +187,63 @@ window.speakText = async function(text, onEnd) {
                 body: JSON.stringify({ text: clean, voice: 'nova' })
             });
 
+            ttsDbg(`fetch: ${res.status}`);
             if (res.ok) {
-                const blob = await res.blob();
-                const url = URL.createObjectURL(blob);
-                
-                globalAudioElement.src = url;
+                const arrayBuffer = await res.arrayBuffer();
+                ttsDbg(`bytes: ${arrayBuffer.byteLength}`);
 
-                globalAudioElement.onended = () => {
-                    URL.revokeObjectURL(url);
+                let ctx = window.activeAudioContext;
+                if (!ctx) {
+                    if (!window.voiceLocalAudioContext) {
+                        window.voiceLocalAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    }
+                    ctx = window.voiceLocalAudioContext;
+                }
+                ttsDbg(`ctx: ${window.activeAudioContext ? 'shared' : 'local'}, state=${ctx.state}, sr=${ctx.sampleRate}`);
+                ctx.onstatechange = () => ttsDbg(`ctx statechange: ${ctx.state}`);
+
+                if (ctx.state !== 'running') {
+                    await ctx.resume();
+                    ttsDbg(`after resume: ${ctx.state}`);
+                }
+
+                // Decode the MP3 audio data with fallback for older WebKit versions
+                let audioBuffer;
+                try {
+                    audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+                } catch (decodeErr) {
+                    ttsDbg(`decode(promise) failed: ${decodeErr && decodeErr.message}`);
+                    audioBuffer = await new Promise((resolveBuffer, rejectBuffer) => {
+                        ctx.decodeAudioData(arrayBuffer, resolveBuffer, rejectBuffer);
+                    });
+                }
+                ttsDbg(`decoded: ${audioBuffer.duration.toFixed(1)}s`);
+
+                const sourceNode = ctx.createBufferSource();
+                sourceNode.buffer = audioBuffer;
+                sourceNode.connect(ctx.destination);
+                window.activeAudioSourceNode = sourceNode;
+
+                const startedAt = Date.now();
+                sourceNode.onended = () => {
+                    ttsDbg(`ended after ${((Date.now() - startedAt) / 1000).toFixed(1)}s (ctx=${ctx.state})`);
+                    if (window.activeAudioSourceNode === sourceNode) {
+                        window.activeAudioSourceNode = null;
+                    }
                     if (onEnd) onEnd();
                 };
 
-                globalAudioElement.onerror = (err) => {
-                    console.warn("Neural TTS playback error, falling back:", err);
-                    URL.revokeObjectURL(url);
-                    fallbackToWebSpeech(clean, onEnd);
-                };
-
-                await globalAudioElement.play();
+                sourceNode.start(0);
+                ttsDbg('source started');
                 return;
             }
         }
     } catch (err) {
         console.warn("Neural TTS request failed, falling back:", err);
+        ttsDbg(`neural TTS error: ${err && err.message}`);
     }
 
+    ttsDbg('using WebSpeech fallback');
     fallbackToWebSpeech(clean, onEnd);
 };
 
