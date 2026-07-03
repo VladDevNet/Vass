@@ -39,7 +39,7 @@
     yoloSensitivity.value = sensitivityThreshold;
     yoloSensitivityVal.textContent = sensitivityThreshold.toFixed(3);
 
-    const SILENCE_TIMEOUT = 1400; // ms of silence to trigger end of speech
+    const SILENCE_TIMEOUT = 2200; // ms of silence to trigger end of speech
     const INTERRUPTION_FRAMES = 5; // ~250ms of consecutive loud speech to interrupt AI
     const START_SPEECH_FRAMES = 5;  // ~250ms of consecutive speech to trigger listening state (filters out short coughs/clicks)
 
@@ -136,20 +136,20 @@
         yoloOrb.className = `yolo-orb state-${newState}`;
 
         if (newState === STATES.IDLE) {
-            yoloStatus.textContent = 'Готовий до розмови...';
-            yoloSpeakNowBtn.textContent = 'Почати говорити';
+            yoloStatus.textContent = 'Готова к разговору...';
+            yoloSpeakNowBtn.textContent = 'Начать говорить';
             yoloSpeakNowBtn.disabled = false;
         } else if (newState === STATES.LISTENING) {
-            yoloStatus.textContent = 'Слухаю вас...';
-            yoloSpeakNowBtn.textContent = 'Надіслати';
+            yoloStatus.textContent = 'Слушаю вас...';
+            yoloSpeakNowBtn.textContent = 'Отправить';
             yoloSpeakNowBtn.disabled = false;
         } else if (newState === STATES.THINKING) {
-            yoloStatus.textContent = 'Kasia думає...';
-            yoloSpeakNowBtn.textContent = 'Перебити';
+            yoloStatus.textContent = 'Ольга думает...';
+            yoloSpeakNowBtn.textContent = 'Перебить';
             yoloSpeakNowBtn.disabled = false;
         } else if (newState === STATES.SPEAKING) {
-            yoloStatus.textContent = 'Kasia говорить...';
-            yoloSpeakNowBtn.textContent = 'Перебити';
+            yoloStatus.textContent = 'Ольга говорит...';
+            yoloSpeakNowBtn.textContent = 'Перебить';
             yoloSpeakNowBtn.disabled = false;
         }
     }
@@ -177,7 +177,7 @@
             updateState(STATES.IDLE);
             
             // Clear previous preview lines
-            yoloTextPreview.innerHTML = '<div class="yolo-line assistant"><em>Kasia готова слухати вас. Почніть говорити...</em></div>';
+            yoloTextPreview.innerHTML = '<div class="yolo-line assistant"><em>Ольга готова слушать вас. Начните говорить...</em></div>';
 
             startUserListening();
             startVadLoop();
@@ -385,7 +385,7 @@
         const activeSpeechDuration = lastSpeechTime - speechStartTime;
         if (activeSpeechDuration < 450) {
             console.log(`YOLO VAD: Discarded short sound/cough of ${activeSpeechDuration}ms.`);
-            yoloStatus.textContent = 'Ігнорую короткий шум...';
+            yoloStatus.textContent = 'Игнорирую короткий шум...';
             hasSpoken = false;
             currentRecordingChunks = null;
             setTimeout(() => {
@@ -414,7 +414,7 @@
             const audioFileName = result.fileName;
 
             // Generate transcription display placeholder
-            const previewMsgEl = appendPreviewLine('user', 'Розпізнавання...');
+            const previewMsgEl = appendPreviewLine('user', 'Распознавание...');
 
             // Call streaming chat with support for abortion
             activeAbortController = new AbortController();
@@ -441,7 +441,7 @@
                             console.log("YOLO stream aborted.");
                         } else {
                             console.warn("YOLO stream error:", err);
-                            appendPreviewLine('assistant', 'Помилка з\'єднання. Спробуйте ще раз.');
+                            appendPreviewLine('assistant', 'Ошибка соединения. Попробуйте еще раз.');
                             updateState(STATES.IDLE);
                         }
                     } else {
@@ -487,7 +487,7 @@
 
         } catch (err) {
             console.error('YOLO sending failed:', err);
-            appendPreviewLine('assistant', 'Помилка відправки аудіо.');
+            appendPreviewLine('assistant', 'Ошибка отправки аудио.');
             updateState(STATES.IDLE);
         }
     }

@@ -102,15 +102,15 @@ ttsSettingsBtn.addEventListener('click', () => {
 function populateVoices() {
     if (!('speechSynthesis' in window)) return;
     const voices = speechSynthesis.getVoices();
-    const plVoices = voices.filter(v => v.lang.startsWith('pl'));
+    const ruVoices = voices.filter(v => v.lang.startsWith('ru'));
 
     ttsVoiceSelect.innerHTML = '';
-    if (plVoices.length === 0) {
-        ttsVoiceSelect.innerHTML = '<option>Немає польських голосів</option>';
+    if (ruVoices.length === 0) {
+        ttsVoiceSelect.innerHTML = '<option>Нет русских голосов</option>';
         return;
     }
 
-    plVoices.forEach(v => {
+    ruVoices.forEach(v => {
         const opt = document.createElement('option');
         opt.value = v.name;
         opt.textContent = `${v.name} (${v.lang})`;
@@ -118,8 +118,8 @@ function populateVoices() {
         ttsVoiceSelect.appendChild(opt);
     });
 
-    if (!ttsVoiceName && plVoices.length > 0) {
-        ttsVoiceName = plVoices[0].name;
+    if (!ttsVoiceName && ruVoices.length > 0) {
+        ttsVoiceName = ruVoices[0].name;
     }
 }
 
@@ -160,7 +160,7 @@ window.speakText = function(text, onEnd) {
     if (speechSynthesis.paused) speechSynthesis.resume();
 
     const utterance = new SpeechSynthesisUtterance(clean);
-    utterance.lang = 'pl-PL';
+    utterance.lang = 'ru-RU';
     utterance.rate = ttsRate;
 
     const voices = speechSynthesis.getVoices();

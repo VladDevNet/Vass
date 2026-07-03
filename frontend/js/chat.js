@@ -109,19 +109,9 @@ async function openSession(id) {
     loadSessions();
 }
 
-// Format message — parse [word|translation] in assistant messages
+// Format message — simple escape for Voice Assistant
 function formatMessage(text, role) {
-    let html = escapeHtml(text);
-    if (role === 'assistant') {
-        // Replace [word|translation] with word + add button
-        html = html.replace(/\[([^\]|]+)\|([^\]]+)\]/g,
-            '<span class="vocab-word" data-word="$1" data-translation="$2">' +
-            '<strong>$1</strong> <em>($2)</em> ' +
-            '<button class="vocab-add-btn" title="Додати до словника">+</button>' +
-            '</span>'
-        );
-    }
-    return html;
+    return escapeHtml(text);
 }
 
 // Create new session
@@ -187,7 +177,7 @@ async function sendMessage() {
     // Add streaming assistant message with thinking indicator
     const assistantMsg = document.createElement('div');
     assistantMsg.className = 'message assistant streaming';
-    assistantMsg.innerHTML = '<em class="thinking">Kasia думає...</em>';
+    assistantMsg.innerHTML = '<em class="thinking">Ольга думает...</em>';
     container.appendChild(assistantMsg);
     container.scrollTop = container.scrollHeight;
 
@@ -418,10 +408,12 @@ async function init() {
     await loadUser();
     await loadSessions(true);
 
-    // Check onboarding
-    if (window.Onboarding) {
-        Onboarding.init();
-        await Onboarding.check();
-    }
+    // Auto-open YOLO mode on startup
+    setTimeout(() => {
+        const yoloBtn = document.getElementById('yolo-btn');
+        if (yoloBtn && currentSessionId) {
+            yoloBtn.click();
+        }
+    }, 500);
 }
 init();

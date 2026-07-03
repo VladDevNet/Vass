@@ -64,11 +64,11 @@
         <!-- Sidebar -->
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <h2>Polish Tutor</h2>
-                <span id="user-level" class="badge">A1</span>
+                <h2>Ольга</h2>
+                <span id="user-level" class="badge hidden">A1</span>
             </div>
-            <button id="new-session-btn" class="btn-primary">+ Нова розмова</button>
-            <button id="vocab-btn" class="btn-sidebar">&#x1f4d6; Словник</button>
+            <button id="new-session-btn" class="btn-primary hidden">+ Нова розмова</button>
+            <button id="vocab-btn" class="btn-sidebar hidden">&#x1f4d6; Словник</button>
             <div id="sessions-list" class="sessions-list"></div>
             <div class="sidebar-footer">
                 <span id="user-email"></span>
@@ -83,8 +83,7 @@
         <main class="chat-area">
             <div id="chat-messages" class="messages">
                 <div class="welcome-message">
-                    <p>Cześć! Jestem Kasia, twoja nauczycielka polskiego.</p>
-                    <p>Створи нову розмову, щоб почати!</p>
+                    <p>Здравствуйте! Я Ольга, ваш голосовой помощник.</p>
                 </div>
             </div>
             <div id="tts-settings" class="tts-settings hidden">
@@ -110,7 +109,7 @@
             <div class="yolo-header">
                 <div class="yolo-title-area">
                     <span class="yolo-badge">YOLO Mode</span>
-                    <h2 class="yolo-session-title">Вільна розмова з Kasia</h2>
+                    <h2 class="yolo-session-title">Разговор с Ольгой</h2>
                 </div>
                 <button id="yolo-close-btn" class="yolo-close-btn" title="Вийти">&times;</button>
             </div>
@@ -119,7 +118,7 @@
                 <div class="yolo-orb-outer">
                     <div id="yolo-orb" class="yolo-orb state-idle"></div>
                 </div>
-                <div id="yolo-status" class="yolo-status">Готовий до розмови</div>
+                <div id="yolo-status" class="yolo-status">Готова к разговору</div>
             </div>
 
             <div class="yolo-preview-container">
