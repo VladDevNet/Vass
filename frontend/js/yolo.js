@@ -33,6 +33,8 @@
     let isMuted = false;
     let showText = true;
     const activeUtterances = [];
+    let userExitedYolo = false;
+    let isInitializing = false;
 
     // VAD Configuration
     let sensitivityThreshold = parseFloat(localStorage.getItem('yolo-sensitivity') || '0.02');
@@ -74,6 +76,7 @@
     const yoloFloatingBtn = document.getElementById('yolo-floating-btn');
 
     yoloBtn.addEventListener('click', () => {
+        userExitedYolo = false;
         if (currentState === STATES.DISABLED) {
             enterYoloMode();
         }
@@ -81,6 +84,7 @@
 
     if (yoloFloatingBtn) {
         yoloFloatingBtn.addEventListener('click', () => {
+            userExitedYolo = false;
             if (currentState === STATES.DISABLED) {
                 enterYoloMode();
             }
@@ -88,13 +92,16 @@
     }
 
     window.addEventListener('focus', () => {
-        // Automatically enter YOLO mode when tab gains focus
-        if (currentState === STATES.DISABLED && window.currentSessionId) {
+        // Automatically enter YOLO mode when tab gains focus, but only if user didn't explicitly close it
+        if (currentState === STATES.DISABLED && window.currentSessionId && !userExitedYolo) {
             enterYoloMode();
         }
     });
 
-    yoloCloseBtn.addEventListener('click', exitYoloMode);
+    yoloCloseBtn.addEventListener('click', () => {
+        userExitedYolo = true;
+        exitYoloMode();
+    });
 
     yoloToggleTextBtn.addEventListener('click', () => {
         showText = !showText;
@@ -114,6 +121,9 @@
     });
 
     yoloMuteBtn.addEventListener('click', () => {
+        if (audioContext && audioContext.state === 'suspended') {
+            audioContext.resume();
+        }
         isMuted = !isMuted;
         yoloMuteBtn.classList.toggle('muted', isMuted);
         if (isMuted) {
@@ -132,6 +142,9 @@
     });
 
     yoloSpeakNowBtn.addEventListener('click', () => {
+        if (audioContext && audioContext.state === 'suspended') {
+            audioContext.resume();
+        }
         if (currentState === STATES.LISTENING && hasSpoken) {
             // Force submit the current utterance
             submitSpeech();
@@ -144,6 +157,12 @@
             lastSpeechTime = Date.now();
             updateState(STATES.LISTENING);
             yoloStatus.textContent = 'Говоріть, я слухаю...';
+        }
+    });
+
+    yoloOverlay.addEventListener('click', () => {
+        if (audioContext && audioContext.state === 'suspended') {
+            audioContext.resume();
         }
     });
 
@@ -172,6 +191,8 @@
     }
 
     async function enterYoloMode() {
+        if (isInitializing || currentState !== STATES.DISABLED) return;
+        isInitializing = true;
         try {
             // Setup Web Audio API and media recording
             const stream = await navigator.mediaDevices.getUserMedia({
@@ -207,7 +228,9 @@
                 window.currentSessionId = session.id;
                 if (window.loadSessions) window.loadSessions();
             }
+            isInitializing = false;
         } catch (err) {
+            isInitializing = false;
             console.error('Failed to initialize YOLO mode:', err);
             alert('Помилка: не вдалося отримати доступ до мікрофона.');
         }
