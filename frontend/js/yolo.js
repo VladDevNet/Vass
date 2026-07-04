@@ -41,7 +41,7 @@
     yoloSensitivity.value = sensitivityThreshold;
     yoloSensitivityVal.textContent = sensitivityThreshold.toFixed(3);
 
-    const SILENCE_TIMEOUT = 500; // ms of silence to trigger end of speech
+    const SILENCE_TIMEOUT = 1000; // ms of silence to trigger end of speech
     const INTERRUPTION_FRAMES = 5; // ~250ms of consecutive loud speech to interrupt AI
     const START_SPEECH_FRAMES = 5;  // ~250ms of consecutive speech to trigger listening state (filters out short coughs/clicks)
 
@@ -413,12 +413,13 @@
                     if (consecutiveSpeechFrames >= 2) {
                         lastSpeechTime = Date.now();
                     }
-                } else if (currentState === STATES.SPEAKING || currentState === STATES.THINKING) {
-                    // Speech Interruption detection
+                } else if (currentState === STATES.SPEAKING) {
+                    // Speech interruption detection — only once the assistant is actually
+                    // talking. While still THINKING (transcribing/generating, nothing played
+                    // yet), the user speaking again is just a continuation of their turn,
+                    // not an interruption of anything, so we ignore it here.
                     consecutiveSpeechFrames++;
-                    // Require longer sustained sound (500ms vs 250ms) to interrupt while AI is speaking
-                    const requiredFrames = (currentState === STATES.SPEAKING) ? 10 : 5;
-                    if (consecutiveSpeechFrames >= requiredFrames) {
+                    if (consecutiveSpeechFrames >= 10) { // ~500ms of sustained sound
                         // User spoke over the AI!
                         triggerInterruption();
                     }
