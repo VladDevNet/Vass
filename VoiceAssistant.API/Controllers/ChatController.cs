@@ -28,12 +28,12 @@ public class ChatController : ControllerBase
     private readonly ILogger<ChatController> _logger;
     private readonly string _audioPath;
 
-    private readonly OpenAiTtsService _ttsService;
+    private readonly PiperTtsService _ttsService;
 
     public ChatController(AppDbContext db, UserManager<User> userManager,
         AnthropicService anthropic, GeminiService gemini, TutorService tutor,
         TutorTools tutorTools, TutorToolExecutor toolExecutor,
-        AudioAnalysisService audioAnalysis, OpenAiTtsService ttsService,
+        AudioAnalysisService audioAnalysis, PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
         _db = db;
@@ -70,12 +70,8 @@ public class ChatController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(req.Text)) return BadRequest();
 
-        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
-        var settings = await _db.UserSettings.FirstOrDefaultAsync(s => s.UserId == userId);
-        var openAiKey = settings?.OpenAiApiKey;
-
         var sw = Stopwatch.StartNew();
-        var audioBytes = await _ttsService.GenerateSpeechAsync(req.Text, req.Voice ?? "nova", openAiKey);
+        var audioBytes = await _ttsService.GenerateSpeechAsync(req.Text);
         sw.Stop();
         _logger.LogInformation("VoiceAssistant Performance Stats - TTS: {TtsMs}ms for {Chars} chars", sw.ElapsedMilliseconds, req.Text.Length);
 
@@ -84,7 +80,7 @@ public class ChatController : ControllerBase
             return BadRequest(new { error = "Neural TTS generation failed" });
         }
 
-        return File(audioBytes, "audio/mpeg", "speech.mp3");
+        return File(audioBytes, "audio/wav", "speech.wav");
     }
 
     [HttpPost("sessions")]

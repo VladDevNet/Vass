@@ -54,6 +54,7 @@ builder.Services.AddHttpClient();
 builder.Services.AddSingleton<AnthropicService>();
 builder.Services.AddSingleton<GeminiService>();
 builder.Services.AddSingleton<OpenAiTtsService>();
+builder.Services.AddSingleton<PiperTtsService>();
 builder.Services.AddSingleton<TutorService>();
 builder.Services.AddSingleton<TutorTools>();
 builder.Services.AddSingleton<AudioAnalysisService>();

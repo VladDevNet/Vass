@@ -12,11 +12,24 @@ services:
       - Jwt__Secret=${JWT_SECRET}
       - Jwt__Issuer=PolishTutor
       - Jwt__Audience=PolishTutor
+      - Piper__BaseUrl=http://tts:5001
     volumes:
       - audio:/app/audio
     depends_on:
       db:
         condition: service_healthy
+      tts:
+        condition: service_healthy
+    restart: unless-stopped
+
+  tts:
+    build: ./piper-tts
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     restart: unless-stopped
 
   db:
