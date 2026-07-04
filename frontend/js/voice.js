@@ -138,6 +138,10 @@ function ttsDbg(msg) {
 const globalAudioElement = new Audio();
 window.activeAudioElement = globalAudioElement;
 window.activeAudioSourceNode = null;
+window.activeStreamSources = []; // AudioBufferSourceNodes scheduled by the PCM streaming player
+window.activeStreamAbort = null; // AbortController for the in-flight streaming fetch
+
+const PIPER_SAMPLE_RATE = 22050; // must match ru_RU-irina-medium.onnx.json audio.sample_rate
 
 window.stopAudioPlayback = function() {
     if ('speechSynthesis' in window) {
@@ -147,10 +151,92 @@ window.stopAudioPlayback = function() {
         try { window.activeAudioSourceNode.stop(); } catch(e){}
         window.activeAudioSourceNode = null;
     }
+    if (window.activeStreamAbort) {
+        window.activeStreamAbort.abort();
+        window.activeStreamAbort = null;
+    }
+    if (window.activeStreamSources.length) {
+        window.activeStreamSources.forEach(node => { try { node.stop(); } catch(e){} });
+        window.activeStreamSources = [];
+    }
     if (globalAudioElement) {
         try { globalAudioElement.pause(); } catch(e){}
     }
 };
+
+// Plays a stream of raw 16-bit mono PCM chunks back-to-back with no gaps, by
+// manually building an AudioBuffer per chunk instead of decodeAudioData (which
+// needs a complete, self-contained file and can't work off partial data).
+async function playPcmStream(response, ctx, onEnd) {
+    const reader = response.body.getReader();
+    let leftover = null; // one dangling byte when a chunk splits a 16-bit sample
+    let nextStartTime = null;
+    let lastSource = null;
+    let streamDone = false;
+    const sources = window.activeStreamSources;
+
+    const finishIfDone = () => {
+        if (streamDone && (lastSource === null || nextStartTime === null || ctx.currentTime >= nextStartTime)) {
+            if (onEnd) onEnd();
+        }
+    };
+
+    function scheduleChunk(bytes) {
+        const sampleCount = bytes.length / 2;
+        const int16 = new Int16Array(bytes.buffer, bytes.byteOffset, sampleCount);
+        const audioBuffer = ctx.createBuffer(1, sampleCount, PIPER_SAMPLE_RATE);
+        const channel = audioBuffer.getChannelData(0);
+        for (let i = 0; i < sampleCount; i++) {
+            channel[i] = int16[i] / 32768;
+        }
+
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
+
+        const startAt = nextStartTime === null ? ctx.currentTime + 0.08 : Math.max(nextStartTime, ctx.currentTime);
+        source.start(startAt);
+        nextStartTime = startAt + audioBuffer.duration;
+
+        if (lastSource) lastSource.onended = null;
+        lastSource = source;
+        source.onended = () => {
+            if (lastSource === source) finishIfDone();
+        };
+
+        sources.push(source);
+    }
+
+    while (true) {
+        let result;
+        try {
+            result = await reader.read();
+        } catch (err) {
+            if (err.name === 'AbortError') return;
+            throw err;
+        }
+        if (result.done) break;
+
+        let bytes = new Uint8Array(result.value);
+        if (leftover) {
+            const merged = new Uint8Array(leftover.length + bytes.length);
+            merged.set(leftover, 0);
+            merged.set(bytes, leftover.length);
+            bytes = merged;
+            leftover = null;
+        }
+        if (bytes.length % 2 !== 0) {
+            leftover = bytes.slice(bytes.length - 1);
+            bytes = bytes.slice(0, bytes.length - 1);
+        }
+        if (bytes.length > 0) {
+            scheduleChunk(bytes);
+        }
+    }
+
+    streamDone = true;
+    finishIfDone();
+}
 
 window.speakText = async function(text, onEnd) {
     window.stopAudioPlayback();
@@ -174,24 +260,25 @@ window.speakText = async function(text, onEnd) {
         return;
     }
 
-    // Try OpenAI neural TTS via API
+    // Try local neural TTS (streamed raw PCM) via API
     try {
         const token = API.getToken();
         if (token) {
-            const res = await fetch('/api/chat/tts', {
+            const abort = new AbortController();
+            window.activeStreamAbort = abort;
+
+            const res = await fetch('/api/chat/tts_stream', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
-                body: JSON.stringify({ text: clean, voice: 'nova' })
+                body: JSON.stringify({ text: clean }),
+                signal: abort.signal
             });
 
             ttsDbg(`fetch: ${res.status}`);
             if (res.ok) {
-                const arrayBuffer = await res.arrayBuffer();
-                ttsDbg(`bytes: ${arrayBuffer.byteLength}`);
-
                 let ctx = window.activeAudioContext;
                 if (!ctx) {
                     if (!window.voiceLocalAudioContext) {
@@ -200,45 +287,23 @@ window.speakText = async function(text, onEnd) {
                     ctx = window.voiceLocalAudioContext;
                 }
                 ttsDbg(`ctx: ${window.activeAudioContext ? 'shared' : 'local'}, state=${ctx.state}, sr=${ctx.sampleRate}`);
-                ctx.onstatechange = () => ttsDbg(`ctx statechange: ${ctx.state}`);
 
                 if (ctx.state !== 'running') {
                     await ctx.resume();
                     ttsDbg(`after resume: ${ctx.state}`);
                 }
 
-                // Decode the MP3 audio data with fallback for older WebKit versions
-                let audioBuffer;
-                try {
-                    audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-                } catch (decodeErr) {
-                    ttsDbg(`decode(promise) failed: ${decodeErr && decodeErr.message}`);
-                    audioBuffer = await new Promise((resolveBuffer, rejectBuffer) => {
-                        ctx.decodeAudioData(arrayBuffer, resolveBuffer, rejectBuffer);
-                    });
-                }
-                ttsDbg(`decoded: ${audioBuffer.duration.toFixed(1)}s`);
-
-                const sourceNode = ctx.createBufferSource();
-                sourceNode.buffer = audioBuffer;
-                sourceNode.connect(ctx.destination);
-                window.activeAudioSourceNode = sourceNode;
-
                 const startedAt = Date.now();
-                sourceNode.onended = () => {
-                    ttsDbg(`ended after ${((Date.now() - startedAt) / 1000).toFixed(1)}s (ctx=${ctx.state})`);
-                    if (window.activeAudioSourceNode === sourceNode) {
-                        window.activeAudioSourceNode = null;
-                    }
+                await playPcmStream(res, ctx, () => {
+                    ttsDbg(`stream ended after ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+                    window.activeStreamAbort = null;
                     if (onEnd) onEnd();
-                };
-
-                sourceNode.start(0);
-                ttsDbg('source started');
+                });
                 return;
             }
         }
     } catch (err) {
+        if (err.name === 'AbortError') return; // interrupted deliberately, don't fall back
         console.warn("Neural TTS request failed, falling back:", err);
         ttsDbg(`neural TTS error: ${err && err.message}`);
     }

@@ -83,6 +83,26 @@ public class ChatController : ControllerBase
         return File(audioBytes, "audio/wav", "speech.wav");
     }
 
+    // Streams raw 16-bit mono PCM (22050 Hz, little-endian) as it's synthesized,
+    // instead of waiting for the whole utterance like /tts does.
+    [HttpPost("tts_stream")]
+    public async Task GenerateTtsStream([FromBody] TtsRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Text)) { Response.StatusCode = 400; return; }
+
+        Response.ContentType = "application/octet-stream";
+
+        var sw = Stopwatch.StartNew();
+        var ok = await _ttsService.StreamSpeechAsync(req.Text, Response.Body, HttpContext.RequestAborted);
+        sw.Stop();
+        _logger.LogInformation("VoiceAssistant Performance Stats - TTS (streamed): {TtsMs}ms for {Chars} chars", sw.ElapsedMilliseconds, req.Text.Length);
+
+        if (!ok && !Response.HasStarted)
+        {
+            Response.StatusCode = 500;
+        }
+    }
+
     [HttpPost("sessions")]
     public async Task<IActionResult> CreateSession([FromBody] CreateSessionRequest req)
     {
