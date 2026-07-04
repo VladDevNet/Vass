@@ -159,6 +159,37 @@ window.stopAudioPlayback = function() {
     }
 };
 
+// Plays a small complete static audio file (e.g. a filler phrase) on the shared
+// AudioContext, so it participates in the same stop/interrupt tracking as streamed
+// TTS. Fine to use decodeAudioData here since these clips are short and pre-fetched
+// from static hosting, not streamed from the network.
+window.playStaticClip = async function(url, onEnd) {
+    try {
+        let ctx = window.activeAudioContext;
+        if (!ctx) {
+            if (!window.voiceLocalAudioContext) {
+                window.voiceLocalAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            ctx = window.voiceLocalAudioContext;
+        }
+        if (ctx.state !== 'running') await ctx.resume();
+
+        const res = await fetch(url);
+        const arrayBuffer = await res.arrayBuffer();
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
+        window.activeStreamSources.push(source);
+        source.onended = () => { if (onEnd) onEnd(); };
+        source.start(0);
+    } catch (err) {
+        console.warn('playStaticClip failed:', err);
+        if (onEnd) onEnd();
+    }
+};
+
 // Plays a stream of raw 16-bit mono PCM chunks back-to-back with no gaps, by
 // manually building an AudioBuffer per chunk instead of decodeAudioData (which
 // needs a complete, self-contained file and can't work off partial data).

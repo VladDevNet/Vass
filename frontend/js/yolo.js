@@ -54,6 +54,23 @@
 
     let activeTtsQueue = null; // window.createTtsQueue() instance for the in-flight response
 
+    // Pre-synthesized filler clips: played immediately (no synthesis wait) to bridge
+    // the silence while transcription/LLM/TTS are still working, and as a greeting
+    // when YOLO mode starts or regains focus.
+    const THINKING_FILLERS = [
+        '/audio/fillers/thinking-1.wav',
+        '/audio/fillers/thinking-2.wav',
+        '/audio/fillers/thinking-3.wav',
+        '/audio/fillers/thinking-4.wav'
+    ];
+    const GREETING_FILLERS = [
+        '/audio/fillers/greeting-1.wav',
+        '/audio/fillers/greeting-2.wav'
+    ];
+    function pickRandom(arr) {
+        return arr[Math.floor(Math.random() * arr.length)];
+    }
+
     // Splits off any newly-completed sentences from the tail of `text` (starting at
     // `fromIndex`) so they can be sent to TTS as soon as they're ready, instead of
     // waiting for the whole LLM response to finish streaming.
@@ -266,6 +283,7 @@
             updateState(STATES.IDLE);
             
             yoloTextPreview.innerHTML = '<div class="yolo-line assistant"><em>Ольга готова слушать вас. Начните говорить...</em></div>';
+            if (window.playStaticClip) window.playStaticClip(pickRandom(GREETING_FILLERS));
 
             startUserListening();
             startVadLoop();
@@ -515,6 +533,34 @@
             const ttsQueue = window.createTtsQueue();
             activeTtsQueue = ttsQueue;
 
+            // Play a filler phrase immediately so the user hears something right away
+            // instead of silence while transcription/LLM/TTS are still working. Real
+            // sentences are buffered until the filler finishes, then queued right after
+            // it, so they always play in order with no overlap.
+            let fillerDone = false;
+            const bufferedSentences = [];
+            let pendingFinish = null;
+            function flushBuffered() {
+                if (bufferedSentences.length > 0) {
+                    if (currentState !== STATES.SPEAKING) updateState(STATES.SPEAKING);
+                    bufferedSentences.forEach(s => ttsQueue.push(s));
+                    bufferedSentences.length = 0;
+                }
+                if (pendingFinish) {
+                    const fn = pendingFinish;
+                    pendingFinish = null;
+                    fn();
+                }
+            }
+            if (window.playStaticClip) {
+                window.playStaticClip(pickRandom(THINKING_FILLERS), () => {
+                    fillerDone = true;
+                    flushBuffered();
+                });
+            } else {
+                fillerDone = true;
+            }
+
             API.streamChat(window.currentSessionId, '',
                 // onChunk
                 (chunk) => {
@@ -528,8 +574,12 @@
                     const { sentences, nextIndex } = extractCompleteSentences(fullResponseText, dispatchedLen);
                     if (sentences.length > 0) {
                         dispatchedLen = nextIndex;
-                        if (currentState !== STATES.SPEAKING) updateState(STATES.SPEAKING);
-                        sentences.forEach(s => ttsQueue.push(s));
+                        if (fillerDone) {
+                            if (currentState !== STATES.SPEAKING) updateState(STATES.SPEAKING);
+                            sentences.forEach(s => ttsQueue.push(s));
+                        } else {
+                            bufferedSentences.push(...sentences);
+                        }
                     }
                 },
                 // onDone
@@ -548,22 +598,25 @@
                             startUserListening();
                         }
                     } else {
-                        const remainder = fullResponseText.slice(dispatchedLen);
-                        if (remainder.trim()) ttsQueue.push(remainder);
+                        const doFinish = () => {
+                            const remainder = fullResponseText.slice(dispatchedLen);
+                            if (remainder.trim()) ttsQueue.push(remainder);
 
-                        if (fullResponseText.trim()) {
-                            if (currentState !== STATES.SPEAKING) updateState(STATES.SPEAKING);
-                            ttsQueue.finish(() => {
+                            if (fullResponseText.trim()) {
+                                if (currentState !== STATES.SPEAKING) updateState(STATES.SPEAKING);
+                                ttsQueue.finish(() => {
+                                    activeTtsQueue = null;
+                                    // Transition back to listening ONLY if we were not interrupted
+                                    if (currentState === STATES.SPEAKING) {
+                                        startUserListening();
+                                    }
+                                });
+                            } else {
                                 activeTtsQueue = null;
-                                // Transition back to listening ONLY if we were not interrupted
-                                if (currentState === STATES.SPEAKING) {
-                                    startUserListening();
-                                }
-                            });
-                        } else {
-                            activeTtsQueue = null;
-                            startUserListening();
-                        }
+                                startUserListening();
+                            }
+                        };
+                        if (fillerDone) doFinish(); else pendingFinish = doFinish;
                     }
                 },
                 // audioFileName
