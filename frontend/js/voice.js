@@ -137,7 +137,6 @@ function ttsDbg(msg) {
 // Text-to-Speech (TTS)
 const globalAudioElement = new Audio();
 window.activeAudioElement = globalAudioElement;
-window.activeAudioSourceNode = null;
 window.activeStreamSources = []; // AudioBufferSourceNodes scheduled by the PCM streaming player
 window.activeStreamAbort = null; // AbortController for the in-flight streaming fetch
 
@@ -146,10 +145,6 @@ const PIPER_SAMPLE_RATE = 22050; // must match ru_RU-irina-medium.onnx.json audi
 window.stopAudioPlayback = function() {
     if ('speechSynthesis' in window) {
         speechSynthesis.cancel();
-    }
-    if (window.activeAudioSourceNode) {
-        try { window.activeAudioSourceNode.stop(); } catch(e){}
-        window.activeAudioSourceNode = null;
     }
     if (window.activeStreamAbort) {
         window.activeStreamAbort.abort();
@@ -238,10 +233,8 @@ async function playPcmStream(response, ctx, onEnd) {
     finishIfDone();
 }
 
-window.speakText = async function(text, onEnd) {
-    window.stopAudioPlayback();
-
-    const clean = text
+function cleanTextForTts(text) {
+    return text
         .replace(/[\u{1F600}-\u{1F6FF}\u{1F900}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F000}-\u{1F02F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu, '')
         .replace(/\[([^\]|]+)\|[^\]]*\]/g, '$1')  // [word|translation] → word
         .replace(/\*{1,3}/g, '')                   // *, **, ***
@@ -255,12 +248,18 @@ window.speakText = async function(text, onEnd) {
         .replace(/\n/g, ' ')                        // single newlines → space
         .replace(/\s{2,}/g, ' ')                    // collapse spaces
         .trim();
+}
+
+// Plays a single utterance (local neural TTS, streamed, with WebSpeech fallback).
+// Unlike window.speakText, it does NOT stop whatever's currently playing first —
+// used by the TTS queue below to play consecutive sentences back-to-back.
+async function playOneUtterance(text, onEnd) {
+    const clean = cleanTextForTts(text);
     if (!clean) {
         if (onEnd) onEnd();
         return;
     }
 
-    // Try local neural TTS (streamed raw PCM) via API
     try {
         const token = API.getToken();
         if (token) {
@@ -310,6 +309,61 @@ window.speakText = async function(text, onEnd) {
 
     ttsDbg('using WebSpeech fallback');
     fallbackToWebSpeech(clean, onEnd);
+}
+
+window.speakText = async function(text, onEnd) {
+    window.stopAudioPlayback();
+    await playOneUtterance(text, onEnd);
+};
+
+// A queue of utterances that play back-to-back in arrival order, without
+// interrupting each other — lets a caller feed it sentences as they stream in
+// from an LLM instead of waiting for the whole reply before speaking anything.
+window.createTtsQueue = function() {
+    const queue = [];
+    let playing = false;
+    let stopped = false;
+    let finishRequested = false;
+    let onAllDone = null;
+
+    function playNext() {
+        if (stopped) return;
+        if (queue.length === 0) {
+            playing = false;
+            if (finishRequested && onAllDone) {
+                const cb = onAllDone;
+                onAllDone = null;
+                cb();
+            }
+            return;
+        }
+        playing = true;
+        const text = queue.shift();
+        playOneUtterance(text, playNext);
+    }
+
+    return {
+        push(text) {
+            if (stopped || !text || !text.trim()) return;
+            queue.push(text);
+            if (!playing) playNext();
+        },
+        // Call once no more sentences are coming; onDone fires once the queue drains.
+        finish(onDone) {
+            finishRequested = true;
+            if (!playing && queue.length === 0) {
+                onDone();
+            } else {
+                onAllDone = onDone;
+            }
+        },
+        // Cancels any not-yet-played queued sentences. Does not stop audio already
+        // playing — pair with window.stopAudioPlayback() for a full interrupt.
+        stop() {
+            stopped = true;
+            queue.length = 0;
+        }
+    };
 };
 
 function fallbackToWebSpeech(clean, onEnd) {

@@ -52,7 +52,25 @@
     let hasSpoken = false;
     let smoothedRms = 0;
 
-    // TTS queue logic is now handled via the global window.speakText with callbacks
+    let activeTtsQueue = null; // window.createTtsQueue() instance for the in-flight response
+
+    // Splits off any newly-completed sentences from the tail of `text` (starting at
+    // `fromIndex`) so they can be sent to TTS as soon as they're ready, instead of
+    // waiting for the whole LLM response to finish streaming.
+    const SENTENCE_END_RE = /[.!?…]+(?=\s|$)/;
+    function extractCompleteSentences(text, fromIndex) {
+        const sentences = [];
+        let cursor = fromIndex;
+        while (true) {
+            const match = SENTENCE_END_RE.exec(text.slice(cursor));
+            if (!match) break;
+            const cutAt = cursor + match.index + match[0].length;
+            sentences.push(text.slice(fromIndex, cutAt));
+            fromIndex = cutAt;
+            cursor = cutAt;
+        }
+        return { sentences, nextIndex: fromIndex };
+    }
 
     // Clean text for TTS (strip formatting & translation details)
     function cleanTextForTTS(text) {
@@ -275,6 +293,7 @@
 
         releaseMicrophone();
 
+        if (activeTtsQueue) { activeTtsQueue.stop(); activeTtsQueue = null; }
         if (window.stopAudioPlayback) window.stopAudioPlayback(); else {
             speechSynthesis.cancel();
         }
@@ -421,8 +440,9 @@
 
     function triggerInterruption() {
         console.log("YOLO: User interrupted the response.");
-        
-        // Cancel speech synthesis
+
+        // Stop any not-yet-played queued sentences and cancel speech synthesis
+        if (activeTtsQueue) { activeTtsQueue.stop(); activeTtsQueue = null; }
         if (window.stopAudioPlayback) window.stopAudioPlayback(); else {
             speechSynthesis.cancel();
         }
@@ -489,6 +509,10 @@
 
             let assistantPreviewEl = null;
             let fullResponseText = "";
+            let dispatchedLen = 0;
+
+            const ttsQueue = window.createTtsQueue();
+            activeTtsQueue = ttsQueue;
 
             API.streamChat(window.currentSessionId, '',
                 // onChunk
@@ -499,6 +523,13 @@
                     assistantPreviewEl.textContent += chunk;
                     yoloTextPreview.scrollTop = yoloTextPreview.scrollHeight;
                     fullResponseText += chunk;
+
+                    const { sentences, nextIndex } = extractCompleteSentences(fullResponseText, dispatchedLen);
+                    if (sentences.length > 0) {
+                        dispatchedLen = nextIndex;
+                        if (currentState !== STATES.SPEAKING) updateState(STATES.SPEAKING);
+                        sentences.forEach(s => ttsQueue.push(s));
+                    }
                 },
                 // onDone
                 (err) => {
@@ -509,19 +540,27 @@
                         } else {
                             console.warn("YOLO stream error:", err);
                             appendPreviewLine('assistant', 'Ошибка соединения. Попробуйте еще раз.');
+                            ttsQueue.stop();
+                            activeTtsQueue = null;
+                            if (window.stopAudioPlayback) window.stopAudioPlayback();
                             updateState(STATES.IDLE);
                             startUserListening();
                         }
                     } else {
-                        if (fullResponseText.trim() && window.speakText) {
-                            updateState(STATES.SPEAKING);
-                            window.speakText(fullResponseText, () => {
+                        const remainder = fullResponseText.slice(dispatchedLen);
+                        if (remainder.trim()) ttsQueue.push(remainder);
+
+                        if (fullResponseText.trim()) {
+                            if (currentState !== STATES.SPEAKING) updateState(STATES.SPEAKING);
+                            ttsQueue.finish(() => {
+                                activeTtsQueue = null;
                                 // Transition back to listening ONLY if we were not interrupted
                                 if (currentState === STATES.SPEAKING) {
                                     startUserListening();
                                 }
                             });
                         } else {
+                            activeTtsQueue = null;
                             startUserListening();
                         }
                     }
