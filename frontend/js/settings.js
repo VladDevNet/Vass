@@ -23,12 +23,16 @@ document.getElementById('save-btn').addEventListener('click', async () => {
     hideMessages();
 
     try {
+        const openAiApiKey = document.getElementById('openai-key').value.trim();
+        const anthropicApiKey = document.getElementById('anthropic-key').value.trim();
+        const geminiApiKey = document.getElementById('gemini-key').value.trim();
+
         await API.put('/settings', {
             displayName: document.getElementById('display-name').value.trim() || null,
             interfaceLanguage: document.getElementById('interface-language').value,
-            openAiApiKey: document.getElementById('openai-key').value.trim() || null,
-            anthropicApiKey: document.getElementById('anthropic-key').value.trim() || null,
-            geminiApiKey: document.getElementById('gemini-key').value.trim() || null,
+            openAiApiKey,
+            anthropicApiKey,
+            geminiApiKey,
             customSystemPrompt: document.getElementById('custom-prompt').value.trim() || null,
             fullTranslation: document.getElementById('full-translation').checked
         });

@@ -389,6 +389,9 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+window.loadSessions = loadSessions;
+window.openSession = openSession;
+
 // Sidebar toggle (mobile drawer)
 (function() {
     const toggle = document.getElementById('sidebar-toggle');

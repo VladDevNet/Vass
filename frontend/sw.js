@@ -1,4 +1,4 @@
-const CACHE_NAME = 'polish-tutor-v1';
+const CACHE_NAME = 'vass-v2';
 const STATIC_ASSETS = [
   '/',
   '/app.html',
@@ -6,11 +6,12 @@ const STATIC_ASSETS = [
   '/settings.html',
   '/css/styles.css',
   '/js/api.js',
+  '/js/auth.js',
   '/js/chat.js',
   '/js/voice.js',
+  '/js/yolo.js',
   '/js/vocabulary.js',
   '/js/settings.js',
-  '/js/onboarding.js',
   '/manifest.json'
 ];
 

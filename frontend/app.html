@@ -1,42 +1,18 @@
 <!DOCTYPE html>
-<html lang="pl">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voice Assistant — Chat</title>
+    <title>Vass — Ольга</title>
     <link rel="manifest" href="/manifest.json">
     <meta name="theme-color" content="#2563eb">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Voice Assistant">
+    <meta name="apple-mobile-web-app-title" content="Vass">
     <link rel="apple-touch-icon" href="/icons/icon-192.png">
     <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
-    <!-- Onboarding overlay -->
-    <div id="onboarding-overlay" class="overlay hidden">
-        <div class="overlay-card">
-            <h2>Вітаємо!</h2>
-            <p>Давай визначимо твій рівень польської</p>
-
-            <div class="onboarding-options">
-                <button id="onboarding-test-btn" class="btn-primary btn-block">
-                    Пройти тест рівня
-                </button>
-
-                <div class="onboarding-divider"><span>або</span></div>
-
-                <p class="onboarding-manual-label">Я знаю свій рівень:</p>
-                <div class="onboarding-levels">
-                    <button class="onboarding-level-btn" data-level="A1">A1</button>
-                    <button class="onboarding-level-btn" data-level="A2">A2</button>
-                    <button class="onboarding-level-btn" data-level="B1">B1</button>
-                    <button class="onboarding-level-btn" data-level="B2">B2</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <!-- Vocabulary panel -->
     <div id="vocabulary-panel" class="vocab-panel hidden">
         <div class="vocab-header">
@@ -96,7 +72,7 @@
                 <button id="yolo-btn" class="btn-icon" title="YOLO режим (розмовний чат)">⚡</button>
                 <button id="camera-btn" class="btn-icon" title="Сфотографувати текст">&#x1f4f7;</button>
                 <input type="file" id="camera-input" accept="image/*" capture="environment" class="hidden">
-                <textarea id="message-input" placeholder="Napisz po polsku..." rows="1"></textarea>
+                <textarea id="message-input" placeholder="Напишите сообщение..." rows="1"></textarea>
                 <button id="tts-settings-btn" class="btn-icon" title="Налаштування голосу">&#x2699;</button>
                 <button id="send-btn" class="btn-primary">Надіслати</button>
             </div>
@@ -147,7 +123,6 @@
     </div>
 
     <script src="js/api.js"></script>
-    <script src="js/onboarding.js"></script>
     <script src="js/vocabulary.js"></script>
     <script src="js/chat.js"></script>
     <script src="js/voice.js"></script>

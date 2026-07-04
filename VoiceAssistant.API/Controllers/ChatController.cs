@@ -24,7 +24,9 @@ public class ChatController : ControllerBase
     private readonly TutorTools _tutorTools;
     private readonly TutorToolExecutor _toolExecutor;
     private readonly AudioAnalysisService _audioAnalysis;
+    private readonly IConfiguration _config;
     private readonly ILogger<ChatController> _logger;
+    private readonly string _audioPath;
 
     private readonly OpenAiTtsService _ttsService;
 
@@ -32,7 +34,7 @@ public class ChatController : ControllerBase
         AnthropicService anthropic, GeminiService gemini, TutorService tutor,
         TutorTools tutorTools, TutorToolExecutor toolExecutor,
         AudioAnalysisService audioAnalysis, OpenAiTtsService ttsService,
-        ILogger<ChatController> logger)
+        IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
         _db = db;
         _userManager = userManager;
@@ -43,13 +45,21 @@ public class ChatController : ControllerBase
         _toolExecutor = toolExecutor;
         _audioAnalysis = audioAnalysis;
         _ttsService = ttsService;
+        _config = config;
         _logger = logger;
+
+        var configuredAudioPath = config["Audio:Path"];
+        var audioPath = string.IsNullOrWhiteSpace(configuredAudioPath)
+            ? Path.Combine(env.ContentRootPath, "audio")
+            : configuredAudioPath;
+        _audioPath = Path.GetFullPath(Path.IsPathRooted(audioPath)
+            ? audioPath
+            : Path.Combine(env.ContentRootPath, audioPath));
     }
 
     public record SendRequest(int SessionId, string Message, string? AudioFileName = null);
     public record CreateSessionRequest(string? Mode, string? Title);
 
-    private const string AudioPath = "/app/audio";
     private const long MaxAudioSize = 5 * 1024 * 1024; // 5MB
     private const long MaxImageSize = 10 * 1024 * 1024; // 10MB
 
@@ -156,7 +166,7 @@ public class ChatController : ControllerBase
         {
             if (!string.IsNullOrEmpty(msg.AudioFileName))
             {
-                var filePath = Path.Combine(AudioPath, msg.AudioFileName);
+                var filePath = Path.Combine(_audioPath, msg.AudioFileName);
                 if (System.IO.File.Exists(filePath))
                     System.IO.File.Delete(filePath);
             }
@@ -213,7 +223,7 @@ public class ChatController : ControllerBase
 
         if (string.IsNullOrWhiteSpace(messageText) && !string.IsNullOrEmpty(req.AudioFileName))
         {
-            var filePath = Path.Combine(AudioPath, req.AudioFileName);
+            var filePath = Path.Combine(_audioPath, req.AudioFileName);
             if (!System.IO.File.Exists(filePath)) { Response.StatusCode = 400; return; }
 
             // Convert webm → wav (Gemini doesn't support webm)
@@ -327,9 +337,9 @@ public class ChatController : ControllerBase
         if (!file.ContentType.StartsWith("audio/"))
             return BadRequest(new { error = "Only audio files are allowed" });
 
-        Directory.CreateDirectory(AudioPath);
+        Directory.CreateDirectory(_audioPath);
         var fileName = $"{Guid.NewGuid()}.webm";
-        var filePath = Path.Combine(AudioPath, fileName);
+        var filePath = Path.Combine(_audioPath, fileName);
 
         await using var stream = new FileStream(filePath, FileMode.Create);
         await file.CopyToAsync(stream);
@@ -352,7 +362,7 @@ public class ChatController : ControllerBase
 
         if (!ownsAudio) return NotFound();
 
-        var filePath = Path.Combine(AudioPath, fileName);
+        var filePath = Path.Combine(_audioPath, fileName);
         if (!System.IO.File.Exists(filePath)) return NotFound();
 
         var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
@@ -373,8 +383,10 @@ public class ChatController : ControllerBase
         var settings = await _db.UserSettings.FirstOrDefaultAsync(s => s.UserId == userId);
         var geminiKey = settings?.GeminiApiKey;
         var key = string.IsNullOrWhiteSpace(geminiKey)
-            ? HttpContext.RequestServices.GetRequiredService<IConfiguration>()["Gemini:ApiKey"]!
+            ? _config["Gemini:ApiKey"]
             : geminiKey;
+        if (string.IsNullOrWhiteSpace(key))
+            return BadRequest(new { error = "Gemini API key is not configured" });
 
         using var ms = new MemoryStream();
         await file.CopyToAsync(ms);

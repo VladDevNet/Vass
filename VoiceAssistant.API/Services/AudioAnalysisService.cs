@@ -19,6 +19,12 @@ public class AudioAnalysisService
     public async Task<string?> TranscribeAsync(string audioPath, string? apiKey = null)
     {
         var key = string.IsNullOrWhiteSpace(apiKey) ? _apiKey : apiKey;
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            _logger.LogWarning("Gemini API key is missing. Cannot transcribe audio.");
+            return null;
+        }
+
         var audioBytes = await File.ReadAllBytesAsync(audioPath);
         var base64Audio = Convert.ToBase64String(audioBytes);
         var ext = Path.GetExtension(audioPath).TrimStart('.'); // wav, mp3, ogg

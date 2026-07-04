@@ -1,6 +1,6 @@
 {
-  "name": "Voice Assistant",
-  "short_name": "Voice Assistant",
+  "name": "Vass",
+  "short_name": "Vass",
   "description": "Голосовой ассистент Ольга",
   "start_url": "/app.html",
   "display": "standalone",

@@ -1,318 +1,336 @@
-# Polish Tutor App — Development Guide
+# Vass - Development Guide
 
-## Технологічний стек
+Vass is a personal voice assistant web app. The assistant persona is Olga: a warm Russian-speaking voice companion for short, natural conversations, everyday help, and hands-free voice interaction.
 
-### Backend: .NET 10 (LTS, підтримка до Nov 2028)
-| Компонент | Пакет | Версія |
-|-----------|-------|--------|
-| Runtime | .NET 10 | 10.0.3 (Feb 2026) |
-| Web API | ASP.NET Core 10 | 10.0.3 |
-| Auth | Microsoft.AspNetCore.Identity.EntityFrameworkCore | 10.0.3 |
-| ORM | Microsoft.EntityFrameworkCore | 10.0.x |
-| PostgreSQL | Npgsql.EntityFrameworkCore.PostgreSQL | 10.0.0 |
-| Claude API | Anthropic (official C# SDK) | 12.4.0 (beta) |
-| MCP | ModelContextProtocol (official C# SDK, by Microsoft) | preview |
+The repository was originally copied from a Polish tutor prototype, so some domain names still say `Tutor`, `Vocabulary`, `Level`, or `Onboarding`. The current product direction is the Vass/Olga voice companion.
 
-### Frontend: Vanilla JS (без фреймворків)
-| Компонент | Технологія | Нотатки |
-|-----------|-----------|---------|
-| UI | HTML5 + CSS3 + vanilla JS | Мінімум залежностей |
-| Speech-to-Text | Web Speech API (браузер) | Безкоштовно, Chrome/Edge |
-| Text-to-Speech | SpeechSynthesis API (браузер) | Польські голоси доступні |
-| Streaming | EventSource (SSE) | Нативний API |
-| Альтернатива STT (v2) | Whisper API або Voxtral | Краща якість для PL |
+## Current Product
+
+Core user flow:
+
+1. User logs in with email/password.
+2. Browser opens the chat screen and can auto-enter YOLO hands-free mode.
+3. User speaks into the microphone.
+4. Frontend uploads a `webm` audio clip to the API.
+5. API converts `webm` to `wav` with `ffmpeg`.
+6. Gemini transcribes the audio and generates Olga's response through SSE streaming.
+7. Frontend speaks the response using OpenAI neural TTS when configured, otherwise Web Speech fallback.
+
+Secondary features:
+
+- Text chat with SSE streaming.
+- Camera/image OCR through Gemini.
+- Per-user API keys and custom system prompt.
+- PWA shell with service worker.
+- Legacy vocabulary panel for Polish learning experiments.
+
+## Technology Stack
+
+### Backend
+
+| Area | Technology |
+| --- | --- |
+| Runtime | .NET 10 |
+| Web API | ASP.NET Core |
+| Auth | ASP.NET Core Identity + JWT |
+| ORM | Entity Framework Core |
+| Database | PostgreSQL |
+| LLM chat | Gemini API |
+| Audio transcription/analysis | Gemini API |
+| Neural TTS | OpenAI Audio Speech API |
+| Legacy vocabulary analysis | Anthropic SDK |
+| Audio conversion | ffmpeg |
+
+### Frontend
+
+| Area | Technology |
+| --- | --- |
+| UI | HTML, CSS, vanilla JavaScript |
+| App shell | Static files served by nginx |
+| Streaming | Fetch + readable stream parsing of SSE-style events |
+| Audio recording | MediaRecorder |
+| Voice activity detection | Web Audio API analyser |
+| TTS fallback | Web Speech API |
+| PWA | manifest + service worker |
 
 ### Infrastructure
-| Компонент | Технологія | Версія |
-|-----------|-----------|--------|
-| Container | Docker | latest |
-| Orchestration | docker-compose | v2 |
-| Reverse proxy | nginx | alpine |
-| Database | PostgreSQL | 17 |
 
----
+| Service | Purpose |
+| --- | --- |
+| `api` | ASP.NET Core backend on port `5000` |
+| `db` | PostgreSQL 17 |
+| `nginx` | Static frontend + `/api/*` reverse proxy |
+| `audio` volume | Persist uploaded user audio in Docker |
 
-## Архітектура
+## Repository Layout
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    nginx (443/80)                     │
-│          static files + reverse proxy                │
-├──────────────┬──────────────────────────────────────┤
-│   Frontend   │         /api/* → Backend              │
-│  (HTML/JS)   │         /mcp/* → MCP Server           │
-└──────────────┴──────────────────────────────────────┘
-                          │
-              ┌───────────▼───────────┐
-              │   .NET 10 Web API     │
-              │                       │
-              │  ├─ Auth (Identity+JWT)│
-              │  ├─ Chat (SSE stream) │
-              │  ├─ Tests             │
-              │  ├─ Lessons CRUD      │
-              │  ├─ Progress tracking │
-              │  └─ MCP Server        │
-              └───────┬───────┬───────┘
-                      │       │
-              ┌───────▼┐  ┌──▼──────────┐
-              │ PgSQL  │  │ Claude API  │
-              │  :5432 │  │ (Anthropic) │
-              └────────┘  └─────────────┘
-```
-
----
-
-## Структура проекту
-
-```
-app/
-├── PolishTutor.Api/
+```text
+.
+├── VoiceAssistant.API/
 │   ├── Controllers/
-│   │   ├── AuthController.cs         # POST /api/auth/register, /login, /me
-│   │   ├── ChatController.cs         # POST /api/chat/send (SSE), GET /sessions
-│   │   ├── TestController.cs         # GET /api/test/start, POST /submit
-│   │   ├── LessonController.cs       # CRUD /api/lessons
-│   │   └── ProgressController.cs     # GET /api/progress
-│   ├── Services/
-│   │   ├── AnthropicService.cs       # Claude API wrapper (streaming)
-│   │   ├── TutorService.cs           # System prompts, context assembly
-│   │   ├── TestService.cs            # Level assessment logic
-│   │   ├── ProgressService.cs        # Error tracking, stats
-│   │   └── PlanService.cs            # Adaptive learning plans
-│   ├── Mcp/
-│   │   ├── McpServerSetup.cs         # MCP registration in DI
-│   │   └── Tools/
-│   │       ├── UserTools.cs          # get_users, get_user_progress
-│   │       ├── LessonTools.cs        # create/update_lesson, create_exercise
-│   │       ├── PlanTools.cs          # set_user_plan, get_analytics
-│   │       └── ChatTools.cs          # get_chat_sessions, get_user_errors
+│   │   ├── AuthController.cs
+│   │   ├── ChatController.cs
+│   │   ├── OnboardingController.cs      # legacy Polish-level flow
+│   │   ├── SettingsController.cs
+│   │   └── VocabularyController.cs      # legacy vocabulary feature
 │   ├── Data/
 │   │   ├── AppDbContext.cs
-│   │   ├── Entities/
-│   │   │   ├── User.cs
-│   │   │   ├── ChatSession.cs
-│   │   │   ├── Message.cs
-│   │   │   ├── Lesson.cs
-│   │   │   ├── Exercise.cs
-│   │   │   ├── TestResult.cs
-│   │   │   └── LearningPlan.cs
-│   │   └── Migrations/
+│   │   └── Entities/
+│   ├── Migrations/
 │   ├── Prompts/
-│   │   ├── tutor-system.txt          # головний system prompt тьютора
-│   │   ├── test-grading.txt          # prompt для оцінювання тестів
-│   │   └── error-analysis.txt        # prompt для аналізу помилок
-│   ├── Program.cs
-│   ├── appsettings.json
-│   ├── appsettings.Development.json
-│   ├── PolishTutor.Api.csproj
-│   └── Dockerfile
+│   │   ├── tutor-system.txt             # current Olga system prompt
+│   │   ├── conductor-analysis.txt       # legacy nightly learner analysis
+│   │   └── level-test.txt               # legacy Polish tutor prompt
+│   ├── Services/
+│   │   ├── GeminiService.cs
+│   │   ├── AudioAnalysisService.cs
+│   │   ├── OpenAiTtsService.cs
+│   │   ├── AnthropicService.cs
+│   │   └── NightlyAnalysisJob.cs
+│   ├── Dockerfile
+│   └── VoiceAssistant.API.csproj
 ├── frontend/
-│   ├── index.html                    # Landing + auth forms
-│   ├── app.html                      # Main SPA shell
-│   ├── css/
-│   │   └── styles.css
+│   ├── app.html
+│   ├── index.html
+│   ├── settings.html
+│   ├── sw.js
+│   ├── css/styles.css
 │   └── js/
-│       ├── auth.js                   # Login/register, JWT storage
-│       ├── chat.js                   # Chat UI + SSE streaming
-│       ├── voice.js                  # STT/TTS integration
-│       ├── test.js                   # Level test UI
-│       ├── progress.js               # Dashboard
-│       └── api.js                    # HTTP client wrapper
+│       ├── api.js
+│       ├── auth.js
+│       ├── chat.js
+│       ├── voice.js
+│       ├── yolo.js
+│       ├── settings.js
+│       └── vocabulary.js
 ├── docker-compose.yml
 ├── nginx.conf
 ├── .env.example
-└── DEVELOPMENT.md                    # ← цей файл
+└── DEVELOPMENT.md
 ```
 
----
+## Backend Architecture
 
-## API Endpoints
+### Startup
+
+`VoiceAssistant.API/Program.cs` configures:
+
+- PostgreSQL `AppDbContext`.
+- ASP.NET Identity with relaxed password rules for early development.
+- JWT bearer authentication.
+- Shared `IHttpClientFactory`.
+- Application services: Gemini, OpenAI TTS, Anthropic, tutor prompt helper, audio analysis.
+- Hosted nightly analysis job.
+- Controller routing and `/health`.
+- EF Core migrations on startup.
+
+### Active Controllers
+
+| Controller | Base route | Purpose |
+| --- | --- | --- |
+| `AuthController` | `/api/auth` | Register, login, current user |
+| `ChatController` | `/api/chat` | Sessions, SSE chat, audio upload/playback, TTS, OCR |
+| `SettingsController` | `/api/settings` | Per-user profile, API keys, custom system prompt |
+| `VocabularyController` | `/api/vocabulary` | Legacy vocabulary CRUD and analysis |
+| `OnboardingController` | `/api/onboarding` | Legacy Polish level selection |
+
+## Main API Surface
 
 ### Auth
-| Method | Path | Опис |
-|--------|------|------|
-| POST | `/api/auth/register` | Реєстрація (email, password, nativeLang) |
-| POST | `/api/auth/login` | Логін → JWT token |
-| GET | `/api/auth/me` | Поточний юзер + рівень |
 
-### Chat
-| Method | Path | Опис |
-|--------|------|------|
-| POST | `/api/chat/send` | Надіслати повідомлення → SSE stream відповіді |
-| GET | `/api/chat/sessions` | Список сесій користувача |
-| POST | `/api/chat/sessions` | Нова сесія (mode: dialog/lesson/situation) |
-| GET | `/api/chat/sessions/{id}` | Історія повідомлень сесії |
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/api/auth/register` | Creates user and returns JWT |
+| `POST` | `/api/auth/login` | Returns JWT |
+| `GET` | `/api/auth/me` | Current user data |
 
-### Tests
-| Method | Path | Опис |
-|--------|------|------|
-| GET | `/api/test/start?type=level` | Почати тест рівня |
-| POST | `/api/test/submit` | Відправити відповіді → результат + рівень |
-| GET | `/api/test/history` | Історія тестів |
+### Chat And Voice
 
-### Lessons & Progress
-| Method | Path | Опис |
-|--------|------|------|
-| GET | `/api/lessons` | Список уроків (фільтр по рівню) |
-| GET | `/api/lessons/{id}` | Деталі уроку |
-| GET | `/api/progress` | Прогрес + рекомендації |
-| GET | `/api/progress/errors` | Типові помилки користувача |
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/chat/sessions` | Returns the single current dialog session |
+| `POST` | `/api/chat/sessions` | Creates or returns the existing dialog session |
+| `GET` | `/api/chat/sessions/{id}` | Loads messages |
+| `PATCH` | `/api/chat/sessions/{id}` | Renames a session |
+| `DELETE` | `/api/chat/sessions/{id}` | Deletes session and linked audio files |
+| `POST` | `/api/chat/send` | Streams assistant response as SSE-style `data:` events |
+| `POST` | `/api/chat/upload-audio` | Uploads `audio/*` up to 5 MB |
+| `GET` | `/api/chat/audio/{fileName}` | Returns user-owned uploaded audio |
+| `POST` | `/api/chat/tts` | Generates MP3 speech with OpenAI |
+| `POST` | `/api/chat/ocr-image` | Extracts text from image with Gemini |
 
----
+### Settings
 
-## MCP Tools (для Claude Code)
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/settings` | Loads masked API keys and preferences |
+| `PUT` | `/api/settings` | Saves profile, keys, and custom prompt |
+| `GET` | `/api/settings/default-prompt` | Returns Olga's default system prompt |
+
+## Streaming Events
+
+`POST /api/chat/send` writes SSE-style lines:
+
+```text
+data: {"transcription":"..."}
+data: {"text":"..."}
+data: [DONE]
+data: {"stats":{"convertMs":0,"transcribeMs":0,"llmFirstTokenMs":0,"llmTotalMs":0,"translationMs":0}}
+```
+
+The frontend parses these events in `frontend/js/api.js`.
+
+## Audio Pipeline
+
+Normal YOLO flow:
+
+```text
+Browser microphone
+  -> MediaRecorder webm chunks
+  -> POST /api/chat/upload-audio
+  -> save webm under configured audio directory
+  -> POST /api/chat/send with audioFileName
+  -> ffmpeg webm -> wav
+  -> Gemini audio transcription
+  -> Gemini streaming answer
+  -> OpenAI TTS or Web Speech fallback
+```
+
+Audio storage:
+
+- Docker default: `/app/audio`, mounted as the `audio` volume.
+- Local default: `VoiceAssistant.API/audio`.
+- Override with `Audio:Path` or `Audio__Path`.
+
+## Configuration
+
+Environment variables used by Docker:
+
+```env
+DB_PASSWORD=your_secure_password
+JWT_SECRET=your_jwt_secret_min_32_chars_long_here
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+GEMINI_API_KEY=AIza...
+```
+
+Key usage:
+
+- `GEMINI_API_KEY` is required for chat, audio transcription, and OCR unless the user saves a personal Gemini key in settings.
+- `OPENAI_API_KEY` is required for neural TTS; the frontend falls back to browser Web Speech when unavailable.
+- `ANTHROPIC_API_KEY` is currently used by legacy vocabulary analysis and nightly learner analysis.
+- User-level keys in `/settings` override server keys for the corresponding services.
+
+## Local Development
+
+### Backend Only
+
+```powershell
+cd VoiceAssistant.API
+dotnet restore
+dotnet build
+dotnet run
+```
+
+The API listens according to `launchSettings.json` or `ASPNETCORE_URLS`.
+
+### Full Docker Stack
+
+```powershell
+copy .env.example .env
+# edit .env
+docker compose up --build
+```
+
+Default nginx mapping:
+
+```text
+http://127.0.0.1:4001
+```
+
+Health check:
+
+```powershell
+curl http://127.0.0.1:4001/api/health
+```
+
+## Database
+
+The app uses EF Core migrations in `VoiceAssistant.API/Migrations`.
+
+Startup currently runs:
 
 ```csharp
-[McpServerTool("get_users")]
-// Повертає список юзерів з рівнями та останньою активністю
-
-[McpServerTool("get_user_progress")]
-// userId → детальний прогрес: пройдені уроки, помилки, рівень
-
-[McpServerTool("get_user_errors")]
-// userId → часті помилки з діалогів (граматика, лексика)
-
-[McpServerTool("create_lesson")]
-// title, level, content(md), exercises → створює урок в БД
-
-[McpServerTool("update_lesson")]
-// lessonId, content → оновлює контент
-
-[McpServerTool("create_exercise")]
-// lessonId, type(fill_gap/translate/choice), data(json) → вправа
-
-[McpServerTool("create_test")]
-// level, questions(json) → тест для рівня
-
-[McpServerTool("set_user_plan")]
-// userId, plan(json) → оновити навчальний план
-
-[McpServerTool("get_chat_sessions")]
-// userId, limit → останні діалоги з повідомленнями
-
-[McpServerTool("get_analytics")]
-// загальна статистика: активні юзери, середній рівень, прогрес
+db.Database.Migrate();
 ```
 
----
+That is convenient during development. Revisit this before production if startup migration control becomes important.
 
-## Голосове спілкування
+Useful commands:
 
-### Speech-to-Text (STT)
-```
-Браузер (мікрофон) → Web Speech API → текст → POST /api/chat/send
-```
-- `SpeechRecognition` API з `lang: 'pl-PL'`
-- Підтримка: Chrome, Edge (найкраща якість)
-- Fallback: ручне введення тексту
-
-### Text-to-Speech (TTS)
-```
-SSE відповідь → текст → SpeechSynthesis API → звук
-```
-- `speechSynthesis.speak()` з голосом `pl-PL`
-- Автоматичне програвання відповідей тьютора
-
-### Апгрейд (v2)
-- STT: OpenAI Whisper API або Voxtral (краща якість для польської)
-- TTS: OpenAI TTS або ElevenLabs (природніший голос)
-
----
-
-## Docker
-
-### docker-compose.yml
-```yaml
-services:
-  api:
-    build: ./PolishTutor.Api
-    environment:
-      - ConnectionStrings__Default=Host=db;Database=polishtutor;Username=app;Password=${DB_PASSWORD}
-      - Anthropic__ApiKey=${ANTHROPIC_API_KEY}
-    depends_on:
-      - db
-
-  db:
-    image: postgres:17-alpine
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_DB=polishtutor
-      - POSTGRES_USER=app
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
-
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "80:80"
-    volumes:
-      - ./frontend:/usr/share/nginx/html
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf
-    depends_on:
-      - api
-
-volumes:
-  pgdata:
+```powershell
+dotnet ef migrations add MigrationName --project VoiceAssistant.API
+dotnet ef database update --project VoiceAssistant.API
 ```
 
-### .env.example
+## Frontend Runtime Notes
+
+The frontend is plain static HTML/JS. There is no bundler.
+
+Important scripts:
+
+- `api.js`: authenticated requests and streaming chat parser.
+- `chat.js`: chat view, session loading, message sending, OCR attachment flow.
+- `voice.js`: manual recording and TTS playback.
+- `yolo.js`: hands-free mode, VAD, interruption handling, wake lock.
+- `settings.js`: user settings and API keys.
+- `vocabulary.js`: legacy vocabulary panel.
+
+YOLO mode depends on:
+
+- microphone permission;
+- browser MediaRecorder support;
+- Web Audio API;
+- server-side `ffmpeg`;
+- Gemini API key for audio transcription and chat;
+- OpenAI API key only for neural TTS.
+
+## Known Legacy Areas
+
+These are intentionally left visible because they still exist in code:
+
+- `OnboardingController` and `onboarding.js` are from the old Polish level test flow.
+- `VocabularyController`, `UserWord`, and vocabulary UI are from the tutor prototype.
+- `Lesson`, `Exercise`, `LearningPlan`, `LearnerError`, and `TutorInstruction` are still in the data model.
+- Some service names still contain `Tutor`.
+- `NightlyAnalysisJob` still performs learner-style analysis using Anthropic.
+
+When hardening the product, decide whether to remove these areas or reframe them as real Vass features.
+
+## Recent Product Direction
+
+Recent commits moved the project toward:
+
+- Vass/Olga branding.
+- Gemini as the low-latency chat brain.
+- OpenAI neural TTS with browser fallback.
+- YOLO hands-free conversation.
+- iOS/iPad audio unlock and Web Audio playback fixes.
+- A single default dialog session instead of a lesson/session workflow.
+
+## Pre-commit Checklist
+
+```powershell
+dotnet build VoiceAssistant.API/VoiceAssistant.API.csproj
+git status --short
 ```
-ANTHROPIC_API_KEY=sk-ant-...
-DB_PASSWORD=your_secure_password
-JWT_SECRET=your_jwt_secret
-```
 
----
+For browser-facing changes, also test:
 
-## Фази розробки
-
-### Фаза 1: Скелет ✦ ПОТОЧНА
-- [ ] `dotnet new webapi` з .NET 10
-- [ ] NuGet пакети (Identity, EF Core, Npgsql, Anthropic)
-- [ ] Entities + DbContext + міграції
-- [ ] Auth: register/login/JWT
-- [ ] Chat: відправка → Claude API → SSE streaming
-- [ ] Фронтенд: login + chat UI
-- [ ] Docker compose + nginx
-
-### Фаза 2: Голос + тести
-- [ ] Web Speech API інтеграція (STT/TTS)
-- [ ] Тест рівня (A1-B2)
-- [ ] Визначення рівня → адаптація system prompt
-
-### Фаза 3: Контент + адаптивність
-- [ ] Lessons CRUD
-- [ ] Завантаження існуючих md-матеріалів
-- [ ] Error tracking з діалогів
-- [ ] Адаптивний план
-
-### Фаза 4: MCP
-- [ ] MCP Server (ModelContextProtocol SDK)
-- [ ] Tools для керування контентом
-- [ ] Підключення до Claude Code
-
----
-
-## Команди розробки
-
-```bash
-# Створення проекту
-dotnet new webapi -n PolishTutor.Api --framework net10.0
-
-# Додати пакети
-dotnet add package Microsoft.AspNetCore.Identity.EntityFrameworkCore
-dotnet add package Microsoft.AspNetCore.Authentication.JwtBearer
-dotnet add package Npgsql.EntityFrameworkCore.PostgreSQL
-dotnet add package Anthropic
-dotnet add package ModelContextProtocol --prerelease
-
-# Міграції
-dotnet ef migrations add InitialCreate
-dotnet ef database update
-
-# Запуск
-dotnet run
-
-# Docker
-docker-compose up --build
-```
+- login/register;
+- opening `app.html`;
+- text message streaming;
+- audio recording;
+- YOLO mode start/stop;
+- TTS playback;
+- settings save with empty and populated API keys.

@@ -8,6 +8,7 @@ services:
       - Anthropic__ApiKey=${ANTHROPIC_API_KEY}
       - OpenAI__ApiKey=${OPENAI_API_KEY}
       - Gemini__ApiKey=${GEMINI_API_KEY}
+      - Audio__Path=/app/audio
       - Jwt__Secret=${JWT_SECRET}
       - Jwt__Issuer=PolishTutor
       - Jwt__Audience=PolishTutor
