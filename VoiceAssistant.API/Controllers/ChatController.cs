@@ -20,6 +20,7 @@ public class ChatController : ControllerBase
     private readonly UserManager<User> _userManager;
     private readonly AnthropicService _anthropic;
     private readonly GeminiService _gemini;
+    private readonly OpenAiChatService _openAiChat;
     private readonly TutorService _tutor;
     private readonly TutorTools _tutorTools;
     private readonly TutorToolExecutor _toolExecutor;
@@ -31,7 +32,7 @@ public class ChatController : ControllerBase
     private readonly PiperTtsService _ttsService;
 
     public ChatController(AppDbContext db, UserManager<User> userManager,
-        AnthropicService anthropic, GeminiService gemini, TutorService tutor,
+        AnthropicService anthropic, GeminiService gemini, OpenAiChatService openAiChat, TutorService tutor,
         TutorTools tutorTools, TutorToolExecutor toolExecutor,
         AudioAnalysisService audioAnalysis, PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
@@ -40,6 +41,7 @@ public class ChatController : ControllerBase
         _userManager = userManager;
         _anthropic = anthropic;
         _gemini = gemini;
+        _openAiChat = openAiChat;
         _tutor = tutor;
         _tutorTools = tutorTools;
         _toolExecutor = toolExecutor;
@@ -264,9 +266,9 @@ public class ChatController : ControllerBase
         session.Messages.Add(new Message { Role = "user", Content = messageText, AudioFileName = req.AudioFileName });
         await _db.SaveChangesAsync();
 
-        // Build conversation history for Gemini
+        // Build conversation history
         var messages = session.Messages.Select(m => new GeminiMessage(
-            m.Role == "user" ? "user" : "model",
+            m.Role == "user" ? "user" : "assistant",
             m.Content
         )).ToList();
 
@@ -301,8 +303,8 @@ public class ChatController : ControllerBase
         var swLlm = Stopwatch.StartNew();
         long llmFirstTokenMs = 0;
 
-        // Use Gemini 3.5 Flash for dialogue
-        var stream = _gemini.StreamResponseAsync(systemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey);
+        // Use GPT-5.5 (medium reasoning effort) as the dialogue brain
+        var stream = _openAiChat.StreamResponseAsync(systemPrompt, messages, model: "gpt-5.5", reasoningEffort: "medium", apiKey: openAiKey);
 
         await foreach (var chunk in stream)
         {

@@ -53,6 +53,7 @@ builder.Services.AddHttpClient();
 // Services
 builder.Services.AddSingleton<AnthropicService>();
 builder.Services.AddSingleton<GeminiService>();
+builder.Services.AddSingleton<OpenAiChatService>();
 builder.Services.AddSingleton<OpenAiTtsService>();
 builder.Services.AddSingleton<PiperTtsService>();
 builder.Services.AddSingleton<TutorService>();
