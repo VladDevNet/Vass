@@ -49,6 +49,7 @@ public class GeminiService
             {
                 parts = new[] { new { text = systemPrompt } }
             },
+            tools = new object[] { new { google_search = new { } } },
             generationConfig = new
             {
                 maxOutputTokens = maxTokens,

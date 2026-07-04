@@ -303,8 +303,8 @@ public class ChatController : ControllerBase
         var swLlm = Stopwatch.StartNew();
         long llmFirstTokenMs = 0;
 
-        // Use GPT-5.5 (medium reasoning effort) as the dialogue brain
-        var stream = _openAiChat.StreamResponseAsync(systemPrompt, messages, model: "gpt-5.5", reasoningEffort: "medium", apiKey: openAiKey);
+        // Use Gemini 3.5 Flash with Google Search grounding for real-time facts (news, weather, etc.)
+        var stream = _gemini.StreamResponseAsync(systemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey);
 
         await foreach (var chunk in stream)
         {

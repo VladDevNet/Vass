@@ -28,6 +28,11 @@ public class TutorService
     {
         var template = _systemPrompt;
 
+        var now = DateTime.UtcNow;
+        var ruCulture = System.Globalization.CultureInfo.GetCultureInfo("ru-RU");
+        var dateStr = now.ToString("yyyy-MM-dd (dddd, d MMMM yyyy)", ruCulture);
+        template = $"Сегодняшняя дата: {dateStr}, время {now:HH:mm} (UTC). Используй эту дату как единственный источник истины о том, какое сегодня число — не полагайся на свои внутренние знания о текущей дате.\n\n{template}";
+
         if (!string.IsNullOrEmpty(customSystemPrompt))
         {
             template += $"\n\n## Дополнительные инструкции пользователя:\n{customSystemPrompt}";
