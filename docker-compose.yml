@@ -13,12 +13,15 @@ services:
       - Jwt__Issuer=PolishTutor
       - Jwt__Audience=PolishTutor
       - Piper__BaseUrl=http://tts:5001
+      - SpeakerId__BaseUrl=http://speaker-id:5003
     volumes:
       - audio:/app/audio
     depends_on:
       db:
         condition: service_healthy
       tts:
+        condition: service_healthy
+      speaker-id:
         condition: service_healthy
     restart: unless-stopped
 
@@ -38,6 +41,16 @@ services:
     build: ./silero-tts
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  speaker-id:
+    build: ./speaker-id
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
       interval: 10s
       timeout: 5s
       retries: 5
