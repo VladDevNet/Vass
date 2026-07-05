@@ -431,11 +431,17 @@
                     if (consecutiveSpeechFrames >= 2) {
                         lastSpeechTime = Date.now();
                     }
+                } else if (currentState === STATES.THINKING) {
+                    // Still transcribing/generating, nothing has been said out loud yet —
+                    // treat renewed speech as a continuation of the same thought, not an
+                    // interruption. Abandon the in-flight turn and start capturing the rest.
+                    consecutiveSpeechFrames++;
+                    if (consecutiveSpeechFrames >= 5) { // ~250ms of sustained sound
+                        captureContinuation();
+                    }
                 } else if (currentState === STATES.SPEAKING) {
                     // Speech interruption detection — only once the assistant is actually
-                    // talking. While still THINKING (transcribing/generating, nothing played
-                    // yet), the user speaking again is just a continuation of their turn,
-                    // not an interruption of anything, so we ignore it here.
+                    // talking out loud.
                     consecutiveSpeechFrames++;
                     if (consecutiveSpeechFrames >= 10) { // ~500ms of sustained sound
                         // User spoke over the AI!
@@ -479,6 +485,23 @@
         // Start listening to the new speech
         startUserListening();
         yoloStatus.textContent = 'Слухаю вас (перебито)...';
+    }
+
+    // User kept talking while we were still transcribing/generating (nothing spoken
+    // out loud yet) — abandon this in-flight turn and start recording the rest. The
+    // continuation gets submitted as a normal follow-up message in the same session,
+    // so the model sees both fragments as consecutive turns and answers the combined
+    // thought — no manual text-splicing needed.
+    function captureContinuation() {
+        console.log("YOLO: User continued speaking before the response started — merging.");
+
+        if (activeTtsQueue) { activeTtsQueue.stop(); activeTtsQueue = null; }
+        if (activeAbortController) {
+            activeAbortController.abort();
+            activeAbortController = null;
+        }
+
+        startUserListening();
     }
 
     async function submitSpeech() {

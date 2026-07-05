@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
@@ -25,7 +26,8 @@ public class GeminiService
         List<GeminiMessage> messages,
         string model = "gemini-3.5-flash",
         int maxTokens = 2048,
-        string? apiKey = null)
+        string? apiKey = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var key = string.IsNullOrWhiteSpace(apiKey) ? _defaultApiKey : apiKey;
         if (string.IsNullOrWhiteSpace(key))
@@ -70,13 +72,19 @@ public class GeminiService
         string? errorMessage = null;
         try
         {
-            response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
                 var errBody = await response.Content.ReadAsStringAsync();
                 _logger.LogError("Gemini API error {Status}: {Body}", response.StatusCode, errBody);
                 errorMessage = $"Ошибка API Gemini: {(int)response.StatusCode}";
             }
+        }
+        catch (OperationCanceledException)
+        {
+            // Caller (client) disconnected/aborted — propagate as cancellation, not a
+            // content chunk, so nothing gets saved as if the model actually said it.
+            throw;
         }
         catch (Exception ex)
         {
@@ -96,7 +104,7 @@ public class GeminiService
         using var reader = new StreamReader(stream);
 
         string? line;
-        while ((line = await reader.ReadLineAsync()) != null)
+        while ((line = await reader.ReadLineAsync(cancellationToken)) != null)
         {
             if (line.StartsWith("data: "))
             {

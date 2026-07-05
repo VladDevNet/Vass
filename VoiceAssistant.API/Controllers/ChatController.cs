@@ -304,18 +304,28 @@ public class ChatController : ControllerBase
         long llmFirstTokenMs = 0;
 
         // Use Gemini 3.5 Flash with Google Search grounding for real-time facts (news, weather, etc.)
-        var stream = _gemini.StreamResponseAsync(systemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey);
+        var stream = _gemini.StreamResponseAsync(systemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey, cancellationToken: HttpContext.RequestAborted);
 
-        await foreach (var chunk in stream)
+        try
         {
-            if (fullResponse.Length == 0)
+            await foreach (var chunk in stream)
             {
-                llmFirstTokenMs = swLlm.ElapsedMilliseconds;
+                if (fullResponse.Length == 0)
+                {
+                    llmFirstTokenMs = swLlm.ElapsedMilliseconds;
+                }
+                fullResponse.Append(chunk);
+                var data = JsonSerializer.Serialize(new { text = chunk });
+                await Response.WriteAsync($"data: {data}\n\n");
+                await Response.Body.FlushAsync();
             }
-            fullResponse.Append(chunk);
-            var data = JsonSerializer.Serialize(new { text = chunk });
-            await Response.WriteAsync($"data: {data}\n\n");
-            await Response.Body.FlushAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            // Client abandoned this turn (e.g. user kept talking) — stop without
+            // saving a partial/incomplete assistant reply. The user's message stays saved.
+            _logger.LogInformation("Chat stream cancelled by client for session {SessionId}", req.SessionId);
+            return;
         }
         swLlm.Stop();
         long llmTotalMs = swLlm.ElapsedMilliseconds;
