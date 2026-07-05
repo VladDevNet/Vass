@@ -25,6 +25,7 @@ public class ChatController : ControllerBase
     private readonly TutorTools _tutorTools;
     private readonly TutorToolExecutor _toolExecutor;
     private readonly AudioAnalysisService _audioAnalysis;
+    private readonly SpeakerRegistryService _speakerRegistry;
     private readonly IConfiguration _config;
     private readonly ILogger<ChatController> _logger;
     private readonly string _audioPath;
@@ -34,7 +35,7 @@ public class ChatController : ControllerBase
     public ChatController(AppDbContext db, UserManager<User> userManager,
         AnthropicService anthropic, GeminiService gemini, OpenAiChatService openAiChat, TutorService tutor,
         TutorTools tutorTools, TutorToolExecutor toolExecutor,
-        AudioAnalysisService audioAnalysis, PiperTtsService ttsService,
+        AudioAnalysisService audioAnalysis, SpeakerRegistryService speakerRegistry, PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
         _db = db;
@@ -46,6 +47,7 @@ public class ChatController : ControllerBase
         _tutorTools = tutorTools;
         _toolExecutor = toolExecutor;
         _audioAnalysis = audioAnalysis;
+        _speakerRegistry = speakerRegistry;
         _ttsService = ttsService;
         _config = config;
         _logger = logger;
@@ -238,6 +240,7 @@ public class ChatController : ControllerBase
         string? wavPath = null;
         long convertMs = 0;
         long transcribeMs = 0;
+        SpeakerIdResult? speakerResult = null;
 
         if (string.IsNullOrWhiteSpace(messageText) && !string.IsNullOrEmpty(req.AudioFileName))
         {
@@ -258,6 +261,11 @@ public class ChatController : ControllerBase
             transcribeMs = sw.ElapsedMilliseconds;
 
             messageText = transcription;
+
+            if (!string.IsNullOrWhiteSpace(transcription))
+            {
+                speakerResult = await _speakerRegistry.IdentifyAsync(wavPath, transcription, geminiKey);
+            }
         }
 
         if (string.IsNullOrWhiteSpace(messageText)) { Response.StatusCode = 400; return; }
@@ -279,6 +287,15 @@ public class ChatController : ControllerBase
         var systemPrompt = _tutor.GetSystemPrompt(user, session.Mode,
             instruction?.InstructionsJson, settings?.CustomSystemPrompt,
             settings?.FullTranslation ?? false);
+
+        if (speakerResult?.KnownName != null)
+        {
+            systemPrompt = $"Сейчас с тобой говорит: {speakerResult.KnownName}. Обращайся к нему соответственно, если это уместно.\n\n{systemPrompt}";
+        }
+        else if (speakerResult?.ShouldAskForName == true)
+        {
+            systemPrompt = $"Ты слышишь новый, ранее не знакомый тебе голос несколько реплик подряд. Ненавязчиво, как естественную часть своего ответа по теме разговора, поинтересуйся как зовут собеседника — не делай это отдельным резким вопросом или объявлением о распознавании голоса.\n\n{systemPrompt}";
+        }
 
         // SSE streaming response
         Response.ContentType = "text/event-stream";

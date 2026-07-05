@@ -18,6 +18,7 @@ public class AppDbContext : IdentityDbContext<User>
     public DbSet<TutorInstruction> TutorInstructions => Set<TutorInstruction>();
     public DbSet<LearnerError> LearnerErrors => Set<LearnerError>();
     public DbSet<UserSettings> UserSettings => Set<UserSettings>();
+    public DbSet<SpeakerProfile> SpeakerProfiles => Set<SpeakerProfile>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -103,6 +104,11 @@ public class AppDbContext : IdentityDbContext<User>
             e.HasOne(le => le.ChatSession).WithMany()
                 .HasForeignKey(le => le.ChatSessionId).OnDelete(DeleteBehavior.NoAction);
             e.Property(le => le.ErrorType).HasMaxLength(20);
+        });
+
+        builder.Entity<SpeakerProfile>(e =>
+        {
+            e.Property(s => s.Name).HasMaxLength(100);
         });
     }
 }

@@ -59,6 +59,9 @@ builder.Services.AddSingleton<PiperTtsService>();
 builder.Services.AddSingleton<TutorService>();
 builder.Services.AddSingleton<TutorTools>();
 builder.Services.AddSingleton<AudioAnalysisService>();
+builder.Services.AddSingleton<SpeakerIdService>();
+builder.Services.AddSingleton<SpeakerPendingStore>();
+builder.Services.AddScoped<SpeakerRegistryService>();
 builder.Services.AddScoped<TutorToolExecutor>();
 builder.Services.AddHostedService<NightlyAnalysisJob>();
 
