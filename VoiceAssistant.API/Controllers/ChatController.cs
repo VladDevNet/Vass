@@ -240,6 +240,7 @@ public class ChatController : ControllerBase
         string? wavPath = null;
         long convertMs = 0;
         long transcribeMs = 0;
+        long speakerIdMs = 0;
         SpeakerIdResult? speakerResult = null;
 
         if (string.IsNullOrWhiteSpace(messageText) && !string.IsNullOrEmpty(req.AudioFileName))
@@ -264,7 +265,10 @@ public class ChatController : ControllerBase
 
             if (!string.IsNullOrWhiteSpace(transcription))
             {
+                sw.Restart();
                 speakerResult = await _speakerRegistry.IdentifyAsync(wavPath, transcription, geminiKey);
+                sw.Stop();
+                speakerIdMs = sw.ElapsedMilliseconds;
             }
         }
 
@@ -356,14 +360,15 @@ public class ChatController : ControllerBase
         await _db.SaveChangesAsync();
 
         // Log stats to server logs
-        _logger.LogInformation("VoiceAssistant Performance Stats - User: {UserEmail}, Session: {SessionId}, Convert: {ConvertMs}ms, Transcribe: {TranscribeMs}ms, LLM (First Token): {LlmFirstMs}ms, LLM (Total): {LlmTotalMs}ms",
-            user.Email, req.SessionId, convertMs, transcribeMs, llmFirstTokenMs, llmTotalMs);
+        _logger.LogInformation("VoiceAssistant Performance Stats - User: {UserEmail}, Session: {SessionId}, Convert: {ConvertMs}ms, Transcribe: {TranscribeMs}ms, SpeakerId: {SpeakerIdMs}ms, LLM (First Token): {LlmFirstMs}ms, LLM (Total): {LlmTotalMs}ms",
+            user.Email, req.SessionId, convertMs, transcribeMs, speakerIdMs, llmFirstTokenMs, llmTotalMs);
 
         // Send stats event to client
         var stats = new
         {
             ConvertMs = convertMs,
             TranscribeMs = transcribeMs,
+            SpeakerIdMs = speakerIdMs,
             LlmFirstTokenMs = llmFirstTokenMs,
             LlmTotalMs = llmTotalMs,
             TranslationMs = 0L

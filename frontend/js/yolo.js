@@ -734,6 +734,7 @@
         const statsParts = [];
         if (stats.convertMs > 0) statsParts.push(`Conv: ${stats.convertMs}ms`);
         if (stats.transcribeMs > 0) statsParts.push(`Trans: ${stats.transcribeMs}ms`);
+        if (stats.speakerIdMs > 0) statsParts.push(`SpkID: ${stats.speakerIdMs}ms`);
         if (stats.llmFirstTokenMs > 0) statsParts.push(`TTFT: ${stats.llmFirstTokenMs}ms`);
         if (stats.llmTotalMs > 0) statsParts.push(`LLM: ${stats.llmTotalMs}ms`);
         if (stats.translationMs > 0) statsParts.push(`Tr: ${stats.translationMs}ms`);
