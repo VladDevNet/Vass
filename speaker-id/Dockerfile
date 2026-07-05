@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir --break-system-packages flask numpy
-RUN pip install --no-cache-dir --break-system-packages torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir --break-system-packages torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir --break-system-packages speechbrain
 
 WORKDIR /app
