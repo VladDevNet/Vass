@@ -54,15 +54,19 @@
 
     let activeTtsQueue = null; // window.createTtsQueue() instance for the in-flight response
 
-    // Pre-synthesized filler clips: played immediately (no synthesis wait) to bridge
-    // the silence while transcription/LLM/TTS are still working, and as a greeting
-    // when YOLO mode starts or regains focus.
-    const THINKING_FILLERS = [
-        '/audio/fillers/thinking-1.wav',
-        '/audio/fillers/thinking-2.wav',
-        '/audio/fillers/thinking-3.wav',
-        '/audio/fillers/thinking-4.wav'
-    ];
+    // Shadow recording: while THINKING, records in parallel WITHOUT touching the
+    // in-flight response, so a knock or background noise never disturbs a
+    // perfectly good answer. Only once the sound is confirmed as real, sustained
+    // speech (same bar as a normal utterance) do we abandon the in-flight response
+    // and treat it as a continuation.
+    let shadowRecorder = null;
+    let shadowChunks = null;
+    let shadowHasSpoken = false;
+    let shadowSpeechStart = 0;
+    let shadowLastSpeechTime = 0;
+    let shadowConsecutiveSpeechFrames = 0;
+
+    // Pre-synthesized greeting clip, played when YOLO mode starts or regains focus.
     const GREETING_FILLERS = [
         '/audio/fillers/greeting-1.wav',
         '/audio/fillers/greeting-2.wav'
@@ -309,6 +313,7 @@
         if (vadInterval) clearInterval(vadInterval);
         vadInterval = null;
 
+        stopShadowCapture();
         releaseMicrophone();
 
         if (activeTtsQueue) { activeTtsQueue.stop(); activeTtsQueue = null; }
@@ -403,6 +408,14 @@
                 yoloOrb.style.transform = '';
             }
 
+            // Shadow-record in parallel while THINKING (see tickShadowCapture for why);
+            // clean it up the moment we're no longer in that state.
+            if (currentState === STATES.THINKING) {
+                tickShadowCapture(smoothedRms);
+            } else if (shadowRecorder) {
+                stopShadowCapture();
+            }
+
             // VAD State transitions
             // Prevent AI's own voice from interrupting itself by raising threshold and frames during playback
             const activeThreshold = (currentState === STATES.SPEAKING)
@@ -430,14 +443,6 @@
                     consecutiveSpeechFrames++;
                     if (consecutiveSpeechFrames >= 2) {
                         lastSpeechTime = Date.now();
-                    }
-                } else if (currentState === STATES.THINKING) {
-                    // Still transcribing/generating, nothing has been said out loud yet —
-                    // treat renewed speech as a continuation of the same thought, not an
-                    // interruption. Abandon the in-flight turn and start capturing the rest.
-                    consecutiveSpeechFrames++;
-                    if (consecutiveSpeechFrames >= 5) { // ~250ms of sustained sound
-                        captureContinuation();
                     }
                 } else if (currentState === STATES.SPEAKING) {
                     // Speech interruption detection — only once the assistant is actually
@@ -487,13 +492,67 @@
         yoloStatus.textContent = 'Слухаю вас (перебито)...';
     }
 
-    // User kept talking while we were still transcribing/generating (nothing spoken
-    // out loud yet) — abandon this in-flight turn and start recording the rest. The
-    // continuation gets submitted as a normal follow-up message in the same session,
-    // so the model sees both fragments as consecutive turns and answers the combined
-    // thought — no manual text-splicing needed.
-    function captureContinuation() {
-        console.log("YOLO: User continued speaking before the response started — merging.");
+    function startShadowCapture() {
+        shadowChunks = [];
+        shadowHasSpoken = false;
+        shadowConsecutiveSpeechFrames = 0;
+        shadowRecorder = new MediaRecorder(micStream);
+        shadowRecorder.ondataavailable = (e) => { if (e.data.size > 0) shadowChunks.push(e.data); };
+        shadowRecorder.start(250);
+    }
+
+    function stopShadowCapture() {
+        if (shadowRecorder && shadowRecorder.state !== 'inactive') {
+            try { shadowRecorder.stop(); } catch(e){}
+        }
+        shadowRecorder = null;
+        shadowChunks = null;
+        shadowHasSpoken = false;
+        shadowConsecutiveSpeechFrames = 0;
+    }
+
+    // Called every VAD tick while THINKING. Records in parallel without touching the
+    // in-flight response until the sound is confirmed as real, sustained speech —
+    // same 450ms bar used to filter coughs/knocks for a normal utterance — so a
+    // stray noise never disrupts a perfectly good in-flight answer.
+    function tickShadowCapture(rms) {
+        if (!shadowRecorder) startShadowCapture();
+
+        if (rms > sensitivityThreshold) {
+            shadowConsecutiveSpeechFrames++;
+            if (!shadowHasSpoken && shadowConsecutiveSpeechFrames >= START_SPEECH_FRAMES) {
+                shadowHasSpoken = true;
+                shadowSpeechStart = Date.now();
+            }
+            if (shadowHasSpoken) shadowLastSpeechTime = Date.now();
+        } else {
+            shadowConsecutiveSpeechFrames = 0;
+            if (shadowHasSpoken && Date.now() - shadowLastSpeechTime >= SILENCE_TIMEOUT) {
+                const activeDuration = shadowLastSpeechTime - shadowSpeechStart;
+                if (activeDuration >= 450) {
+                    commitShadowAsContinuation();
+                } else {
+                    // Too short to be real speech (knock/click) — discard and keep shadowing.
+                    console.log(`YOLO shadow VAD: discarded short sound/noise of ${activeDuration}ms.`);
+                    shadowHasSpoken = false;
+                    shadowConsecutiveSpeechFrames = 0;
+                }
+            }
+        }
+    }
+
+    // Confirmed real continued speech — only now do we abandon the in-flight
+    // response. The continuation gets submitted as a normal follow-up message in
+    // the same session, so the model sees both fragments as consecutive turns and
+    // answers the combined thought — no manual text-splicing needed.
+    function commitShadowAsContinuation() {
+        console.log("YOLO: Confirmed continued speech — merging.");
+        const recorder = shadowRecorder;
+        const chunks = shadowChunks;
+        shadowRecorder = null;
+        shadowChunks = null;
+        shadowHasSpoken = false;
+        shadowConsecutiveSpeechFrames = 0;
 
         if (activeTtsQueue) { activeTtsQueue.stop(); activeTtsQueue = null; }
         if (activeAbortController) {
@@ -501,7 +560,19 @@
             activeAbortController = null;
         }
 
-        startUserListening();
+        const finalize = (blob) => {
+            if (!blob) { startUserListening(); return; }
+            processAudioTurn(blob);
+        };
+
+        if (recorder && recorder.state !== 'inactive') {
+            recorder.onstop = () => {
+                finalize(chunks.length > 0 ? new Blob(chunks, { type: 'audio/webm' }) : null);
+            };
+            recorder.stop();
+        } else {
+            finalize(chunks && chunks.length > 0 ? new Blob(chunks, { type: 'audio/webm' }) : null);
+        }
     }
 
     async function submitSpeech() {
@@ -537,6 +608,12 @@
             return;
         }
 
+        await processAudioTurn(audioBlob);
+    }
+
+    // Transcribes+sends one recorded utterance and speaks the response. Used both
+    // for a normal turn and for a confirmed shadow-captured continuation.
+    async function processAudioTurn(audioBlob) {
         try {
             // Upload audio to the API
             const result = await API.uploadAudio(audioBlob);
@@ -556,34 +633,6 @@
             const ttsQueue = window.createTtsQueue();
             activeTtsQueue = ttsQueue;
 
-            // Play a filler phrase immediately so the user hears something right away
-            // instead of silence while transcription/LLM/TTS are still working. Real
-            // sentences are buffered until the filler finishes, then queued right after
-            // it, so they always play in order with no overlap.
-            let fillerDone = false;
-            const bufferedSentences = [];
-            let pendingFinish = null;
-            function flushBuffered() {
-                if (bufferedSentences.length > 0) {
-                    if (currentState !== STATES.SPEAKING) updateState(STATES.SPEAKING);
-                    bufferedSentences.forEach(s => ttsQueue.push(s));
-                    bufferedSentences.length = 0;
-                }
-                if (pendingFinish) {
-                    const fn = pendingFinish;
-                    pendingFinish = null;
-                    fn();
-                }
-            }
-            if (window.playStaticClip) {
-                window.playStaticClip(pickRandom(THINKING_FILLERS), () => {
-                    fillerDone = true;
-                    flushBuffered();
-                });
-            } else {
-                fillerDone = true;
-            }
-
             API.streamChat(window.currentSessionId, '',
                 // onChunk
                 (chunk) => {
@@ -597,12 +646,8 @@
                     const { sentences, nextIndex } = extractCompleteSentences(fullResponseText, dispatchedLen);
                     if (sentences.length > 0) {
                         dispatchedLen = nextIndex;
-                        if (fillerDone) {
-                            if (currentState !== STATES.SPEAKING) updateState(STATES.SPEAKING);
-                            sentences.forEach(s => ttsQueue.push(s));
-                        } else {
-                            bufferedSentences.push(...sentences);
-                        }
+                        if (currentState !== STATES.SPEAKING) updateState(STATES.SPEAKING);
+                        sentences.forEach(s => ttsQueue.push(s));
                     }
                 },
                 // onDone
@@ -621,25 +666,22 @@
                             startUserListening();
                         }
                     } else {
-                        const doFinish = () => {
-                            const remainder = fullResponseText.slice(dispatchedLen);
-                            if (remainder.trim()) ttsQueue.push(remainder);
+                        const remainder = fullResponseText.slice(dispatchedLen);
+                        if (remainder.trim()) ttsQueue.push(remainder);
 
-                            if (fullResponseText.trim()) {
-                                if (currentState !== STATES.SPEAKING) updateState(STATES.SPEAKING);
-                                ttsQueue.finish(() => {
-                                    activeTtsQueue = null;
-                                    // Transition back to listening ONLY if we were not interrupted
-                                    if (currentState === STATES.SPEAKING) {
-                                        startUserListening();
-                                    }
-                                });
-                            } else {
+                        if (fullResponseText.trim()) {
+                            if (currentState !== STATES.SPEAKING) updateState(STATES.SPEAKING);
+                            ttsQueue.finish(() => {
                                 activeTtsQueue = null;
-                                startUserListening();
-                            }
-                        };
-                        if (fillerDone) doFinish(); else pendingFinish = doFinish;
+                                // Transition back to listening ONLY if we were not interrupted
+                                if (currentState === STATES.SPEAKING) {
+                                    startUserListening();
+                                }
+                            });
+                        } else {
+                            activeTtsQueue = null;
+                            startUserListening();
+                        }
                     }
                 },
                 // audioFileName
