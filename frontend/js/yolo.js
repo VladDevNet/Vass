@@ -422,6 +422,18 @@
                 ? (sensitivityThreshold * 2.5)
                 : sensitivityThreshold;
 
+            // Temporary diagnostic: shows whether the mic actually picks up the
+            // user's voice while audio is playing (some platforms suppress input
+            // during simultaneous playback, which would make interruption impossible
+            // no matter how loud the user talks).
+            if (currentState === STATES.SPEAKING && window.yoloDebugLine) {
+                const now = Date.now();
+                if (!window._lastMicDbgAt || now - window._lastMicDbgAt > 700) {
+                    window._lastMicDbgAt = now;
+                    window.yoloDebugLine(`mic rms=${smoothedRms.toFixed(4)} threshold=${activeThreshold.toFixed(4)} frames=${consecutiveSpeechFrames}`);
+                }
+            }
+
             if (smoothedRms > activeThreshold) {
                 consecutiveSilenceFrames = 0;
                 
