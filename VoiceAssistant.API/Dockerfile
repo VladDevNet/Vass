@@ -9,7 +9,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
-RUN groupadd -r app && useradd -r -g app app
+# mcr.microsoft.com/dotnet/aspnet already ships a non-root "app" user (uid 1654) — reuse it
 RUN mkdir -p /app/audio && chown -R app:app /app/audio
 USER app
 
