@@ -1,28 +1,28 @@
 # Vass - Development Guide
 
-Vass is a personal voice assistant web app. The assistant persona is Olga: a warm Russian-speaking voice companion for short, natural conversations, everyday help, and hands-free voice interaction.
+Vass is a personal voice assistant web app. The assistant persona is Olga: a warm Russian-speaking voice companion for short, natural conversations, everyday help, and hands-free voice interaction. Primary audience is older users — the design favors patience and simplicity over speed or feature density.
 
-The repository was originally copied from a Polish tutor prototype, so some domain names still say `Tutor`, `Vocabulary`, `Level`, or `Onboarding`. The current product direction is the Vass/Olga voice companion.
+The repository was originally copied from a Polish tutor prototype. Legacy tutor/vocabulary/onboarding code has been removed (see `docs/AUDIT-LEGACY.md` for the full audit and what was deleted vs. deliberately kept). A React Native mobile app is planned; see `docs/react-native/`.
 
 ## Current Product
 
-Core user flow:
+Core user flow (YOLO hands-free mode):
 
-1. User logs in with email/password.
-2. Browser opens the chat screen and can auto-enter YOLO hands-free mode.
-3. User speaks into the microphone.
-4. Frontend uploads a `webm` audio clip to the API.
-5. API converts `webm` to `wav` with `ffmpeg`.
-6. Gemini transcribes the audio and generates Olga's response through SSE streaming.
-7. Frontend speaks the response using OpenAI neural TTS when configured, otherwise Web Speech fallback.
+1. User logs in with email/password; browser opens the chat screen and auto-enters YOLO mode.
+2. Continuous VAD (voice activity detection) listens on the microphone.
+3. Frontend uploads the recorded `webm` clip to the API once the user is judged done speaking.
+4. API converts `webm` to `wav` with `ffmpeg` and sends it to Gemini for transcription.
+5. Gemini (3.5 Flash, with Google Search grounding) streams Olga's response over SSE.
+6. The response is spoken via self-hosted Piper TTS, streamed as raw PCM and played sentence-by-sentence as it arrives — no waiting for the full reply.
+
+Real turn-taking (the main thing that sets this apart from a fixed silence-timeout voice bot): instead of cutting the user off after a fixed short pause, the client tracks silence against a soft re-check interval and a hard 7-second ceiling. During a pause it asks a small, fast Gemini call ("is this utterance actually complete, or is the person still thinking?") — `POST /api/v1/chat/check-utterance`. If the model says "not complete" and the user is currently silent, a short human backchannel phrase plays ("да", "слушаю", "так", "хорошо", "понятно") to signal Olga is still listening, without ending the turn. See `frontend/js/yolo.js` for the state machine and `AudioAnalysisService.CheckUtteranceCompletionAsync` for the check itself.
 
 Secondary features:
 
-- Text chat with SSE streaming.
+- Text chat with SSE streaming (`frontend/js/chat.js`), independent of YOLO mode.
 - Camera/image OCR through Gemini.
-- Per-user API keys and custom system prompt.
-- PWA shell with service worker.
-- Legacy vocabulary panel for Polish learning experiments.
+- Per-user API keys (Gemini/OpenAI/Anthropic key fields exist in settings for future use, but only Gemini is actually consumed today) and a custom system prompt, which the assistant can update itself when a user asks it to remember a behavioral preference ("говори медленнее").
+- PWA shell with service worker for offline app-shell caching.
 
 ## Technology Stack
 
@@ -32,35 +32,36 @@ Secondary features:
 | --- | --- |
 | Runtime | .NET 10 |
 | Web API | ASP.NET Core |
-| Auth | ASP.NET Core Identity + JWT |
+| Auth | ASP.NET Core Identity + JWT (issuer/audience `Vass`) |
 | ORM | Entity Framework Core |
-| Database | PostgreSQL |
-| LLM chat | Gemini API |
-| Audio transcription/analysis | Gemini API |
-| Neural TTS | OpenAI Audio Speech API |
-| Legacy vocabulary analysis | Anthropic SDK |
+| Database | PostgreSQL 17 |
+| LLM chat | Gemini API (`gemini-3.5-flash`, Google Search grounding) |
+| Audio transcription/completeness check | Gemini API (`gemini-2.5-flash`) |
+| Neural TTS | Self-hosted Piper (`ru_RU-irina-medium`), raw PCM streamed |
 | Audio conversion | ffmpeg |
 
 ### Frontend
 
 | Area | Technology |
 | --- | --- |
-| UI | HTML, CSS, vanilla JavaScript |
+| UI | HTML, CSS, vanilla JavaScript (no bundler, no framework) |
 | App shell | Static files served by nginx |
 | Streaming | Fetch + readable stream parsing of SSE-style events |
-| Audio recording | MediaRecorder |
-| Voice activity detection | Web Audio API analyser |
-| TTS fallback | Web Speech API |
+| Audio recording | MediaRecorder + Web Audio API `AnalyserNode` for VAD |
+| TTS playback | Manual raw-PCM `AudioBuffer` scheduling (bypasses `decodeAudioData`, which needs a complete file) for gapless streamed playback |
 | PWA | manifest + service worker |
 
 ### Infrastructure
 
 | Service | Purpose |
 | --- | --- |
-| `api` | ASP.NET Core backend on port `5000` |
+| `api` | ASP.NET Core backend on port `5000`, has a real Docker healthcheck against `/api/health` |
 | `db` | PostgreSQL 17 |
-| `nginx` | Static frontend + `/api/*` reverse proxy |
-| `audio` volume | Persist uploaded user audio in Docker |
+| `tts` | Self-hosted Piper TTS (Flask wrapper around the Piper CLI) |
+| `nginx` | Static frontend + `/api/*` reverse proxy (prefix-match, not path rewrite — `/api/v1/...` passes through unchanged) |
+| `audio` volume | Persists uploaded user audio |
+
+`speaker-id` (SpeechBrain-based voice identification) and `tts-silero` (a TTS quality comparison) exist as code/Dockerfiles in the repo but are **not** in `docker-compose.yml` — both are paused, see below.
 
 ## Repository Layout
 
@@ -68,44 +69,48 @@ Secondary features:
 .
 ├── VoiceAssistant.API/
 │   ├── Controllers/
-│   │   ├── AuthController.cs
-│   │   ├── ChatController.cs
-│   │   ├── OnboardingController.cs      # legacy Polish-level flow
-│   │   ├── SettingsController.cs
-│   │   └── VocabularyController.cs      # legacy vocabulary feature
+│   │   ├── AuthController.cs        # api/v1/auth — register, login, current user
+│   │   ├── ChatController.cs        # api/v1/chat — sessions, SSE chat, audio, TTS, OCR
+│   │   └── SettingsController.cs    # api/v1/settings — per-user profile, API keys, custom prompt
 │   ├── Data/
 │   │   ├── AppDbContext.cs
-│   │   └── Entities/
+│   │   └── Entities/                # ChatSession, Message, User, UserSettings, SpeakerProfile
 │   ├── Migrations/
 │   ├── Prompts/
-│   │   ├── tutor-system.txt             # current Olga system prompt
-│   │   ├── conductor-analysis.txt       # legacy nightly learner analysis
-│   │   └── level-test.txt               # legacy Polish tutor prompt
+│   │   └── companion-system.txt     # Olga's system prompt
 │   ├── Services/
-│   │   ├── GeminiService.cs
-│   │   ├── AudioAnalysisService.cs
-│   │   ├── OpenAiTtsService.cs
-│   │   ├── AnthropicService.cs
-│   │   └── NightlyAnalysisJob.cs
+│   │   ├── GeminiService.cs         # LLM streaming + Google Search grounding
+│   │   ├── PiperTtsService.cs       # self-hosted TTS, buffered + streaming
+│   │   ├── CompanionPromptService.cs
+│   │   ├── AudioAnalysisService.cs  # transcription + utterance-completeness check
+│   │   ├── SpeakerIdService.cs      # paused feature — see "Paused Features" below
+│   │   ├── SpeakerPendingStore.cs
+│   │   └── SpeakerRegistryService.cs
 │   ├── Dockerfile
 │   └── VoiceAssistant.API.csproj
+├── piper-tts/                       # Flask wrapper around the Piper TTS CLI
+├── speaker-id/                      # SpeechBrain ECAPA-TDNN voice-ID microservice (paused, not in compose)
+├── silero-tts/                      # Standalone TTS quality comparison (not in compose)
 ├── frontend/
-│   ├── app.html
-│   ├── index.html
+│   ├── app.html                     # main chat/YOLO screen
+│   ├── index.html                   # login/register
 │   ├── settings.html
 │   ├── sw.js
+│   ├── audio/fillers/               # pre-synthesized greeting + backchannel WAV clips
 │   ├── css/styles.css
 │   └── js/
-│       ├── api.js
+│       ├── api.js                   # authenticated requests, SSE parser, baseUrl /api/v1
 │       ├── auth.js
-│       ├── chat.js
-│       ├── voice.js
-│       ├── yolo.js
-│       ├── settings.js
-│       └── vocabulary.js
+│       ├── chat.js                  # text chat view, session list, OCR attach
+│       ├── voice.js                 # raw-PCM TTS playback, TTS queue
+│       ├── yolo.js                  # hands-free mode: VAD, turn-taking, interruption
+│       └── settings.js
 ├── docker-compose.yml
 ├── nginx.conf
 ├── .env.example
+├── docs/
+│   ├── AUDIT-LEGACY.md              # legacy-cleanup audit (mostly executed)
+│   └── react-native/                # mobile app plan, backlog, WSL build guide
 └── DEVELOPMENT.md
 ```
 
@@ -117,22 +122,19 @@ Secondary features:
 
 - PostgreSQL `AppDbContext`.
 - ASP.NET Identity with relaxed password rules for early development.
-- JWT bearer authentication.
+- JWT bearer authentication (issuer/audience `Vass`).
 - Shared `IHttpClientFactory`.
-- Application services: Gemini, OpenAI TTS, Anthropic, tutor prompt helper, audio analysis.
-- Hosted nightly analysis job.
-- Controller routing and `/health`.
-- EF Core migrations on startup.
+- Application services: Gemini, Piper TTS, companion prompt, audio analysis, speaker-ID (registered but its call site in `ChatController` is commented out — see below).
+- Controller routing and `/api/health`.
+- EF Core migrations on startup (`db.Database.Migrate()`).
 
 ### Active Controllers
 
 | Controller | Base route | Purpose |
 | --- | --- | --- |
-| `AuthController` | `/api/auth` | Register, login, current user |
-| `ChatController` | `/api/chat` | Sessions, SSE chat, audio upload/playback, TTS, OCR |
-| `SettingsController` | `/api/settings` | Per-user profile, API keys, custom system prompt |
-| `VocabularyController` | `/api/vocabulary` | Legacy vocabulary CRUD and analysis |
-| `OnboardingController` | `/api/onboarding` | Legacy Polish level selection |
+| `AuthController` | `/api/v1/auth` | Register, login, current user |
+| `ChatController` | `/api/v1/chat` | Sessions, SSE chat, audio upload/playback, TTS, utterance-completeness check, OCR |
+| `SettingsController` | `/api/v1/settings` | Per-user profile, API keys, custom system prompt |
 
 ## Main API Surface
 
@@ -140,60 +142,66 @@ Secondary features:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/api/auth/register` | Creates user and returns JWT |
-| `POST` | `/api/auth/login` | Returns JWT |
-| `GET` | `/api/auth/me` | Current user data |
+| `POST` | `/api/v1/auth/register` | Creates user and returns JWT |
+| `POST` | `/api/v1/auth/login` | Returns JWT |
+| `GET` | `/api/v1/auth/me` | Current user data |
 
 ### Chat And Voice
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/api/chat/sessions` | Returns the single current dialog session |
-| `POST` | `/api/chat/sessions` | Creates or returns the existing dialog session |
-| `GET` | `/api/chat/sessions/{id}` | Loads messages |
-| `PATCH` | `/api/chat/sessions/{id}` | Renames a session |
-| `DELETE` | `/api/chat/sessions/{id}` | Deletes session and linked audio files |
-| `POST` | `/api/chat/send` | Streams assistant response as SSE-style `data:` events |
-| `POST` | `/api/chat/upload-audio` | Uploads `audio/*` up to 5 MB |
-| `GET` | `/api/chat/audio/{fileName}` | Returns user-owned uploaded audio |
-| `POST` | `/api/chat/tts` | Generates MP3 speech with OpenAI |
-| `POST` | `/api/chat/ocr-image` | Extracts text from image with Gemini |
+| `GET` | `/api/v1/chat/sessions` | Returns the single current dialog session |
+| `POST` | `/api/v1/chat/sessions` | Creates or returns the existing dialog session |
+| `GET` | `/api/v1/chat/sessions/{id}` | Loads messages |
+| `PATCH` | `/api/v1/chat/sessions/{id}` | Renames a session |
+| `DELETE` | `/api/v1/chat/sessions/{id}` | Deletes session and linked audio files |
+| `POST` | `/api/v1/chat/send` | Streams assistant response as SSE-style `data:` events |
+| `POST` | `/api/v1/chat/upload-audio` | Uploads `audio/*` up to 5 MB |
+| `GET` | `/api/v1/chat/audio/{fileName}` | Returns user-owned uploaded audio |
+| `POST` | `/api/v1/chat/tts` | Generates a full WAV clip via Piper |
+| `POST` | `/api/v1/chat/tts_stream` | Streams raw PCM as it's synthesized |
+| `POST` | `/api/v1/chat/check-utterance` | Transcribes a snapshot and judges complete vs. still-thinking (turn-taking) |
+| `POST` | `/api/v1/chat/ocr-image` | Extracts text from image with Gemini |
 
 ### Settings
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/api/settings` | Loads masked API keys and preferences |
-| `PUT` | `/api/settings` | Saves profile, keys, and custom prompt |
-| `GET` | `/api/settings/default-prompt` | Returns Olga's default system prompt |
+| `GET` | `/api/v1/settings` | Loads masked API keys and preferences |
+| `PUT` | `/api/v1/settings` | Saves profile, keys, and custom prompt |
+| `GET` | `/api/v1/settings/default-prompt` | Returns Olga's current system prompt |
+
+### Health
+
+`GET /api/health` returns a plain `"healthy"` body. This is what the Docker healthcheck and any external monitoring should hit — note that a bare `/health` (no `/api` prefix) is **not** reachable through the public nginx port; it falls through to the SPA catch-all and silently returns `index.html`.
 
 ## Streaming Events
 
-`POST /api/chat/send` writes SSE-style lines:
+`POST /api/v1/chat/send` writes SSE-style lines:
 
 ```text
 data: {"transcription":"..."}
+data: {"preamble":"..."}
 data: {"text":"..."}
 data: [DONE]
-data: {"stats":{"convertMs":0,"transcribeMs":0,"llmFirstTokenMs":0,"llmTotalMs":0,"translationMs":0}}
+data: {"stats":{"convertMs":0,"transcribeMs":0,"speakerIdMs":0,"llmFirstTokenMs":0,"llmTotalMs":0,"translationMs":0}}
 ```
 
-The frontend parses these events in `frontend/js/api.js`.
+`preamble` is an optional short "hold on, let me think/search" phrase, spoken if a fast side-call decides the real response will take a while (search grounding, complex reasoning). The frontend parses these events in `frontend/js/api.js`.
 
 ## Audio Pipeline
 
-Normal YOLO flow:
+YOLO hands-free flow:
 
 ```text
-Browser microphone
-  -> MediaRecorder webm chunks
-  -> POST /api/chat/upload-audio
-  -> save webm under configured audio directory
-  -> POST /api/chat/send with audioFileName
-  -> ffmpeg webm -> wav
-  -> Gemini audio transcription
-  -> Gemini streaming answer
-  -> OpenAI TTS or Web Speech fallback
+Browser microphone (continuous VAD)
+  -> silence-duration tracking against a soft re-check interval and a 7s hard ceiling
+  -> periodic POST /api/v1/chat/check-utterance snapshot (non-destructive) while still listening
+  -> not complete + currently silent -> play a backchannel filler, keep listening
+  -> complete, or hard ceiling reached -> finalize
+  -> POST /api/v1/chat/upload-audio, then POST /api/v1/chat/send with audioFileName
+  -> ffmpeg webm -> wav -> Gemini transcription -> Gemini streaming answer
+  -> Piper TTS streamed as raw PCM, played sentence-by-sentence
 ```
 
 Audio storage:
@@ -204,22 +212,19 @@ Audio storage:
 
 ## Configuration
 
-Environment variables used by Docker:
+Environment variables used by Docker (see `.env.example`):
 
 ```env
+GEMINI_API_KEY=AIza...
 DB_PASSWORD=your_secure_password
 JWT_SECRET=your_jwt_secret_min_32_chars_long_here
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
-GEMINI_API_KEY=AIza...
 ```
 
 Key usage:
 
-- `GEMINI_API_KEY` is required for chat, audio transcription, and OCR unless the user saves a personal Gemini key in settings.
-- `OPENAI_API_KEY` is required for neural TTS; the frontend falls back to browser Web Speech when unavailable.
-- `ANTHROPIC_API_KEY` is currently used by legacy vocabulary analysis and nightly learner analysis.
-- User-level keys in `/settings` override server keys for the corresponding services.
+- `GEMINI_API_KEY` is required for chat, audio transcription, utterance-completeness checks, and OCR, unless the user saves a personal Gemini key in settings.
+- `JWT_SECRET`/`Jwt:Issuer`/`Jwt:Audience` (`Vass`) — changing the issuer/audience invalidates all previously-issued tokens.
+- User-level Gemini/OpenAI/Anthropic key fields exist in `/settings` (the latter two are stored but currently unused by any active service — kept for possible future use, not cleaned up because `AUDIT-LEGACY.md` didn't call for it).
 
 ## Local Development
 
@@ -248,7 +253,7 @@ Default nginx mapping:
 http://127.0.0.1:4001
 ```
 
-Health check:
+Health check (real backend response, not the SPA fallback):
 
 ```powershell
 curl http://127.0.0.1:4001/api/health
@@ -264,7 +269,7 @@ Startup currently runs:
 db.Database.Migrate();
 ```
 
-That is convenient during development. Revisit this before production if startup migration control becomes important.
+Convenient during development; take a `pg_dump` backup before any migration that drops columns/tables in production — `Program.cs` applies migrations unconditionally on every container start.
 
 Useful commands:
 
@@ -279,12 +284,11 @@ The frontend is plain static HTML/JS. There is no bundler.
 
 Important scripts:
 
-- `api.js`: authenticated requests and streaming chat parser.
+- `api.js`: authenticated requests (`baseUrl: '/api/v1'`) and streaming chat parser.
 - `chat.js`: chat view, session loading, message sending, OCR attachment flow.
-- `voice.js`: manual recording and TTS playback.
-- `yolo.js`: hands-free mode, VAD, interruption handling, wake lock.
+- `voice.js`: raw-PCM TTS playback (`playPcmStream`), sequential TTS queue (`createTtsQueue`), static clip playback for greeting/backchannel WAVs.
+- `yolo.js`: hands-free mode — VAD state machine, real turn-taking (completeness checks, backchannel fillers), shadow-capture (validates a real interruption before disturbing an in-flight response), wake lock.
 - `settings.js`: user settings and API keys.
-- `vocabulary.js`: legacy vocabulary panel.
 
 YOLO mode depends on:
 
@@ -292,31 +296,20 @@ YOLO mode depends on:
 - browser MediaRecorder support;
 - Web Audio API;
 - server-side `ffmpeg`;
-- Gemini API key for audio transcription and chat;
-- OpenAI API key only for neural TTS.
+- a Gemini API key for transcription, completeness checks, and chat;
+- the `tts` (Piper) container for speech output.
 
-## Known Legacy Areas
+## Paused Features
 
-These are intentionally left visible because they still exist in code:
-
-- `OnboardingController` and `onboarding.js` are from the old Polish level test flow.
-- `VocabularyController`, `UserWord`, and vocabulary UI are from the tutor prototype.
-- `Lesson`, `Exercise`, `LearningPlan`, `LearnerError`, and `TutorInstruction` are still in the data model.
-- Some service names still contain `Tutor`.
-- `NightlyAnalysisJob` still performs learner-style analysis using Anthropic.
-
-When hardening the product, decide whether to remove these areas or reframe them as real Vass features.
+- **Speaker identification** (`SpeakerIdService`, `SpeakerRegistryService`, `SpeakerProfile` entity, the `speaker-id` SpeechBrain microservice): built, then paused — real short phone-mic clips scored too close to the noise-floor similarity seen between different speakers to trust yet. The call site in `ChatController.Send()` is commented out with the reasoning inline. Infrastructure is kept intentionally; revisit if there's demand (e.g. multiple household members using the same device).
+- **`tts-silero`**: a standalone quality comparison against Piper, never wired into the API. Kept as a reference, not run by default.
 
 ## Recent Product Direction
 
-Recent commits moved the project toward:
-
-- Vass/Olga branding.
-- Gemini as the low-latency chat brain.
-- OpenAI neural TTS with browser fallback.
-- YOLO hands-free conversation.
-- iOS/iPad audio unlock and Web Audio playback fixes.
-- A single default dialog session instead of a lesson/session workflow.
+- Voice-first, turn-taking-aware companion for older users (not a lesson/tutor flow).
+- Self-hosted Piper TTS with sentence-level streaming, replacing the earlier OpenAI TTS integration.
+- Legacy Polish-tutor code (vocabulary, onboarding, level tests, nightly analysis) removed — see `docs/AUDIT-LEGACY.md`.
+- `/api/v1/` versioning ahead of a planned React Native mobile client — see `docs/react-native/`.
 
 ## Pre-commit Checklist
 
@@ -330,7 +323,6 @@ For browser-facing changes, also test:
 - login/register;
 - opening `app.html`;
 - text message streaming;
-- audio recording;
-- YOLO mode start/stop;
+- audio recording and YOLO mode start/stop, including a pause long enough to trigger a completeness check;
 - TTS playback;
 - settings save with empty and populated API keys.
