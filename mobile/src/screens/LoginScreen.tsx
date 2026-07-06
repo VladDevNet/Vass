@@ -11,11 +11,14 @@ import {
 } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 
+type Mode = 'login' | 'register' | 'code';
+
 export function LoginScreen() {
-  const { login, register } = useAuth();
-  const [isRegisterMode, setIsRegisterMode] = useState(false);
+  const { login, register, loginWithDeviceCode } = useAuth();
+  const [mode, setMode] = useState<Mode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -23,8 +26,10 @@ export function LoginScreen() {
     setError(null);
     setIsSubmitting(true);
     try {
-      if (isRegisterMode) {
+      if (mode === 'register') {
         await register(email.trim(), password);
+      } else if (mode === 'code') {
+        await loginWithDeviceCode(code.trim());
       } else {
         await login(email.trim(), password);
       }
@@ -42,25 +47,46 @@ export function LoginScreen() {
     >
       <Text style={styles.title}>Ольга</Text>
       <Text style={styles.subtitle}>
-        {isRegisterMode ? 'Создать аккаунт' : 'Вход'}
+        {mode === 'register' && 'Создать аккаунт'}
+        {mode === 'login' && 'Вход'}
+        {mode === 'code' && 'Вход по коду с другого устройства'}
       </Text>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Email"
-        autoCapitalize="none"
-        keyboardType="email-address"
-        value={email}
-        onChangeText={setEmail}
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Пароль"
-        secureTextEntry
-        autoCapitalize="none"
-        value={password}
-        onChangeText={setPassword}
-      />
+      {mode === 'code' ? (
+        <>
+          <Text style={styles.codeHint}>
+            Попросите родственника открыть на своём телефоне «Показать код для
+            нового устройства» и назвать код
+          </Text>
+          <TextInput
+            style={[styles.input, styles.codeInput]}
+            placeholder="000000"
+            keyboardType="number-pad"
+            maxLength={6}
+            value={code}
+            onChangeText={setCode}
+          />
+        </>
+      ) : (
+        <>
+          <TextInput
+            style={styles.input}
+            placeholder="Email"
+            autoCapitalize="none"
+            keyboardType="email-address"
+            value={email}
+            onChangeText={setEmail}
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="Пароль"
+            secureTextEntry
+            autoCapitalize="none"
+            value={password}
+            onChangeText={setPassword}
+          />
+        </>
+      )}
 
       {error && <Text style={styles.error}>{error}</Text>}
 
@@ -73,16 +99,28 @@ export function LoginScreen() {
           <ActivityIndicator color="#fff" />
         ) : (
           <Text style={styles.buttonText}>
-            {isRegisterMode ? 'Зарегистрироваться' : 'Войти'}
+            {mode === 'register' && 'Зарегистрироваться'}
+            {mode === 'login' && 'Войти'}
+            {mode === 'code' && 'Войти по коду'}
           </Text>
         )}
       </Pressable>
 
-      <Pressable onPress={() => setIsRegisterMode(!isRegisterMode)}>
-        <Text style={styles.switchModeText}>
-          {isRegisterMode ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Зарегистрироваться'}
-        </Text>
-      </Pressable>
+      {mode !== 'login' && (
+        <Pressable onPress={() => setMode('login')}>
+          <Text style={styles.switchModeText}>Уже есть аккаунт? Войти</Text>
+        </Pressable>
+      )}
+      {mode !== 'register' && (
+        <Pressable onPress={() => setMode('register')}>
+          <Text style={styles.switchModeText}>Нет аккаунта? Зарегистрироваться</Text>
+        </Pressable>
+      )}
+      {mode !== 'code' && (
+        <Pressable onPress={() => setMode('code')}>
+          <Text style={styles.switchModeText}>Есть код с другого устройства?</Text>
+        </Pressable>
+      )}
     </KeyboardAvoidingView>
   );
 }
@@ -106,6 +144,12 @@ const styles = StyleSheet.create({
     color: '#666',
     marginBottom: 32,
   },
+  codeHint: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
   input: {
     borderWidth: 1,
     borderColor: '#ccc',
@@ -113,6 +157,11 @@ const styles = StyleSheet.create({
     padding: 14,
     fontSize: 16,
     marginBottom: 12,
+  },
+  codeInput: {
+    fontSize: 28,
+    textAlign: 'center',
+    letterSpacing: 8,
   },
   error: {
     color: '#c0392b',
@@ -137,7 +186,7 @@ const styles = StyleSheet.create({
   switchModeText: {
     textAlign: 'center',
     color: '#4a6fa5',
-    marginTop: 20,
+    marginTop: 16,
     fontSize: 15,
   },
 });
