@@ -5,7 +5,6 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:5000
       - ConnectionStrings__Default=Host=db;Database=vass;Username=app;Password=${DB_PASSWORD}
-      - OpenAI__ApiKey=${OPENAI_API_KEY}
       - Gemini__ApiKey=${GEMINI_API_KEY}
       - Audio__Path=/app/audio
       - Jwt__Secret=${JWT_SECRET}
