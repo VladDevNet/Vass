@@ -11,7 +11,6 @@ async function loadSettings() {
         document.getElementById('anthropic-key').value = s.anthropicApiKey || '';
         document.getElementById('gemini-key').value = s.geminiApiKey || '';
         document.getElementById('custom-prompt').value = s.customSystemPrompt || '';
-        document.getElementById('full-translation').checked = s.fullTranslation || false;
     } catch (e) {
         showError('Не вдалося завантажити налаштування');
     }
@@ -33,8 +32,7 @@ document.getElementById('save-btn').addEventListener('click', async () => {
             openAiApiKey,
             anthropicApiKey,
             geminiApiKey,
-            customSystemPrompt: document.getElementById('custom-prompt').value.trim() || null,
-            fullTranslation: document.getElementById('full-translation').checked
+            customSystemPrompt: document.getElementById('custom-prompt').value.trim() || null
         });
         showSuccess();
     } catch (e) {
