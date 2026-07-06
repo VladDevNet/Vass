@@ -53,21 +53,12 @@
     const RECHECK_INTERVAL = 1800; // additional ms of silence between re-checks
     const MAX_SILENCE_CEILING = 7000; // hard cap — finalize no matter what past this
 
-    // Backchannel ("угу", "слушаю") is purely time-based, independent of the Gemini
-    // check above — a real listener acknowledges continuously while waiting, not
-    // only once a slow network round-trip decides to. This also sidesteps the
-    // check's staleness guard: by the time a check resolves, the user has often
-    // already resumed talking, which would otherwise throw the whole verdict away.
-    const BACKCHANNEL_START = 1000; // ms of silence before the first "still listening" cue
-    const BACKCHANNEL_INTERVAL = 2200; // ms between subsequent cues
-
     let lastSpeechTime = 0;
     let speechStartTime = 0; // Timestamp of when the user started speaking this turn
     let consecutiveSpeechFrames = 0;
     let consecutiveSilenceFrames = 0;
     let hasSpoken = false;
     let smoothedRms = 0;
-    let nextBackchannelAt = BACKCHANNEL_START;
     let nextCheckAt = CHECK_SILENCE_THRESHOLD; // silenceDuration threshold for the next check
     let pendingCompletenessCheck = false;
 
@@ -378,7 +369,6 @@
         consecutiveSilenceFrames = 0;
         nextCheckAt = CHECK_SILENCE_THRESHOLD;
         pendingCompletenessCheck = false;
-        nextBackchannelAt = BACKCHANNEL_START;
 
         if (mediaRecorder && mediaRecorder.state !== 'inactive') {
             try { mediaRecorder.stop(); } catch(e){}
@@ -506,17 +496,9 @@
                     if (silenceDuration >= MAX_SILENCE_CEILING) {
                         // Hard ceiling reached — stop waiting no matter what the last check said.
                         submitSpeech();
-                    } else {
-                        // Backchannel: purely time-based, so it lands reliably even though
-                        // the Gemini completeness check below is a slower round-trip.
-                        if (silenceDuration >= nextBackchannelAt) {
-                            nextBackchannelAt = silenceDuration + BACKCHANNEL_INTERVAL;
-                            if (window.playStaticClip) window.playStaticClip(pickRandom(BACKCHANNEL_FILLERS));
-                        }
-                        if (silenceDuration >= nextCheckAt && !pendingCompletenessCheck) {
-                            nextCheckAt = silenceDuration + RECHECK_INTERVAL;
-                            triggerCompletenessCheck();
-                        }
+                    } else if (silenceDuration >= nextCheckAt && !pendingCompletenessCheck) {
+                        nextCheckAt = silenceDuration + RECHECK_INTERVAL;
+                        triggerCompletenessCheck();
                     }
                 }
             }
@@ -647,17 +629,23 @@
 
         try {
             const result = await API.checkUtteranceComplete(snapshotBlob);
-
-            // If the user spoke again (or we've moved on) while this check was in
-            // flight, its verdict is stale — the next natural checkpoint handles it.
-            const stillFresh = currentState === STATES.LISTENING && lastSpeechTime === lastSpeechTimeAtTrigger;
-            if (!stillFresh) return;
+            if (currentState !== STATES.LISTENING) return; // moved on entirely (interrupted, etc.)
 
             if (result.complete && result.transcription && result.transcription.trim()) {
-                submitKnownText(result.transcription.trim());
+                // Only act on "complete" if nothing new was said since this snapshot —
+                // otherwise the transcription no longer covers the whole thought, and a
+                // later check (with fresher audio) will judge the fuller utterance.
+                if (lastSpeechTime === lastSpeechTimeAtTrigger) {
+                    submitKnownText(result.transcription.trim());
+                }
+            } else if (!result.complete) {
+                // Reassure them only if they're still actually mid-pause right now — if
+                // they've already resumed talking, a filler would land awkwardly over them.
+                const currentSilence = Date.now() - lastSpeechTime;
+                if (currentSilence >= 300 && window.playStaticClip) {
+                    window.playStaticClip(pickRandom(BACKCHANNEL_FILLERS));
+                }
             }
-            // "Not complete" needs no action here — the time-based backchannel above
-            // already keeps the user reassured we're still listening.
         } catch (err) {
             console.warn('YOLO: completeness check failed:', err);
         } finally {
