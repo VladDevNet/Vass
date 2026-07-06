@@ -68,6 +68,21 @@ const API = {
         return res.json();
     },
 
+    // Checks a not-yet-finalized recording snapshot: transcribes it and reports
+    // whether the speaker sounds done or is likely still talking/pausing to think.
+    async checkUtteranceComplete(blob) {
+        const token = this.getToken();
+        const form = new FormData();
+        form.append('audio', blob, 'snapshot.webm');
+        const res = await fetch(this.baseUrl + '/chat/check-utterance', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}` },
+            body: form
+        });
+        if (!res.ok) throw new Error(`Check failed: ${res.status}`);
+        return res.json();
+    },
+
     async ocrImage(file) {
         const token = this.getToken();
         const form = new FormData();

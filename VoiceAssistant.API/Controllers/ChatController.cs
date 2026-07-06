@@ -458,6 +458,44 @@ public class ChatController : ControllerBase
         return Ok(new { fileName });
     }
 
+    // Checks a not-yet-finalized recording snapshot: transcribes it and judges whether
+    // the speaker sounds done with their thought or is likely still talking/pausing to
+    // think. Used to give real conversational patience instead of a fixed silence cutoff.
+    // Nothing here gets persisted — the snapshot is a scratch file, deleted immediately after.
+    [HttpPost("check-utterance")]
+    public async Task<IActionResult> CheckUtterance(IFormFile audio)
+    {
+        if (audio.Length == 0 || audio.Length > MaxAudioSize)
+            return BadRequest(new { error = "File must be between 1 byte and 5MB" });
+
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
+        var settings = await _db.UserSettings.FirstOrDefaultAsync(s => s.UserId == userId);
+        var geminiKey = settings?.GeminiApiKey;
+
+        var tempWebm = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid()}.webm");
+        string? wavPath = null;
+        try
+        {
+            await using (var stream = new FileStream(tempWebm, FileMode.Create))
+            {
+                await audio.CopyToAsync(stream);
+            }
+
+            wavPath = await ConvertToWavAsync(tempWebm);
+            if (wavPath == null) return BadRequest(new { error = "conversion failed" });
+
+            var result = await _audioAnalysis.CheckUtteranceCompletionAsync(wavPath, geminiKey);
+            if (result == null) return StatusCode(502, new { error = "check failed" });
+
+            return Ok(new { transcription = result.Transcription, complete = result.Complete });
+        }
+        finally
+        {
+            try { if (System.IO.File.Exists(tempWebm)) System.IO.File.Delete(tempWebm); } catch { }
+            try { if (wavPath != null && System.IO.File.Exists(wavPath)) System.IO.File.Delete(wavPath); } catch { }
+        }
+    }
+
     [HttpGet("audio/{fileName}")]
     public async Task<IActionResult> GetAudio(string fileName)
     {

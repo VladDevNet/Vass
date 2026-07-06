@@ -41,9 +41,17 @@
     yoloSensitivity.value = sensitivityThreshold;
     yoloSensitivityVal.textContent = sensitivityThreshold.toFixed(3);
 
-    const SILENCE_TIMEOUT = 1000; // ms of silence to trigger end of speech
+    const SILENCE_TIMEOUT = 1000; // ms of silence to trigger end of speech (used by shadow-capture only)
     const INTERRUPTION_FRAMES = 5; // ~250ms of consecutive loud speech to interrupt AI
     const START_SPEECH_FRAMES = 5;  // ~250ms of consecutive speech to trigger listening state (filters out short coughs/clicks)
+
+    // Real turn-taking patience: instead of cutting the user off at a fixed short
+    // silence, ask Gemini whether they sound done or are just pausing to think.
+    // Keeps snappy replies for clear-cut questions while giving real thinking room
+    // otherwise — a hard ceiling still applies so we never wait forever.
+    const CHECK_SILENCE_THRESHOLD = 1200; // ms of silence before the first completeness check
+    const RECHECK_INTERVAL = 1800; // additional ms of silence between re-checks
+    const MAX_SILENCE_CEILING = 7000; // hard cap — finalize no matter what past this
 
     let lastSpeechTime = 0;
     let speechStartTime = 0; // Timestamp of when the user started speaking this turn
@@ -51,6 +59,8 @@
     let consecutiveSilenceFrames = 0;
     let hasSpoken = false;
     let smoothedRms = 0;
+    let nextCheckAt = CHECK_SILENCE_THRESHOLD; // silenceDuration threshold for the next check
+    let pendingCompletenessCheck = false;
 
     let activeTtsQueue = null; // window.createTtsQueue() instance for the in-flight response
 
@@ -70,6 +80,15 @@
     const GREETING_FILLERS = [
         '/audio/fillers/greeting-1.wav',
         '/audio/fillers/greeting-2.wav'
+    ];
+    // Short "still listening" acknowledgments played when a completeness check
+    // decides the user is likely still thinking, not done — mimics how a human
+    // listener stays engaged during a pause instead of jumping in or going silent.
+    const BACKCHANNEL_FILLERS = [
+        '/audio/fillers/back-1.wav',
+        '/audio/fillers/back-2.wav',
+        '/audio/fillers/back-3.wav',
+        '/audio/fillers/back-4.wav'
     ];
     function pickRandom(arr) {
         return arr[Math.floor(Math.random() * arr.length)];
@@ -348,6 +367,8 @@
         hasSpoken = false;
         consecutiveSpeechFrames = 0;
         consecutiveSilenceFrames = 0;
+        nextCheckAt = CHECK_SILENCE_THRESHOLD;
+        pendingCompletenessCheck = false;
 
         if (mediaRecorder && mediaRecorder.state !== 'inactive') {
             try { mediaRecorder.stop(); } catch(e){}
@@ -467,13 +488,17 @@
                 }
             } else {
                 consecutiveSpeechFrames = 0;
-                
+
                 if (currentState === STATES.LISTENING && hasSpoken) {
                     consecutiveSilenceFrames++;
                     const silenceDuration = Date.now() - lastSpeechTime;
-                    
-                    if (silenceDuration >= SILENCE_TIMEOUT) {
+
+                    if (silenceDuration >= MAX_SILENCE_CEILING) {
+                        // Hard ceiling reached — stop waiting no matter what the last check said.
                         submitSpeech();
+                    } else if (silenceDuration >= nextCheckAt && !pendingCompletenessCheck) {
+                        nextCheckAt = silenceDuration + RECHECK_INTERVAL;
+                        triggerCompletenessCheck();
                     }
                 }
             }
@@ -587,6 +612,53 @@
         }
     }
 
+    // Snapshots the in-progress recording (non-destructively — the same recorder
+    // keeps running and accumulating afterward) and asks the server whether the
+    // speaker sounds done or is likely still talking/pausing to think.
+    async function triggerCompletenessCheck() {
+        if (pendingCompletenessCheck) return;
+        pendingCompletenessCheck = true;
+        const lastSpeechTimeAtTrigger = lastSpeechTime;
+
+        const chunks = currentRecordingChunks;
+        if (!chunks || chunks.length === 0) {
+            pendingCompletenessCheck = false;
+            return;
+        }
+        const snapshotBlob = new Blob(chunks, { type: 'audio/webm' });
+
+        try {
+            const result = await API.checkUtteranceComplete(snapshotBlob);
+
+            // If the user spoke again (or we've moved on) while this check was in
+            // flight, its verdict is stale — the next natural checkpoint handles it.
+            const stillFresh = currentState === STATES.LISTENING && lastSpeechTime === lastSpeechTimeAtTrigger;
+            if (!stillFresh) return;
+
+            if (result.complete && result.transcription && result.transcription.trim()) {
+                submitKnownText(result.transcription.trim());
+            } else if (window.playStaticClip) {
+                window.playStaticClip(pickRandom(BACKCHANNEL_FILLERS));
+            }
+        } catch (err) {
+            console.warn('YOLO: completeness check failed:', err);
+        } finally {
+            pendingCompletenessCheck = false;
+        }
+    }
+
+    // A completeness check already transcribed the utterance and judged it done —
+    // submit that text directly as the message, skipping a redundant re-transcription.
+    async function submitKnownText(text) {
+        if (currentState !== STATES.LISTENING) return;
+        updateState(STATES.THINKING);
+        currentRecordingChunks = null;
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            try { mediaRecorder.stop(); } catch(e){}
+        }
+        await processTurn({ messageText: text });
+    }
+
     async function submitSpeech() {
         if (!hasSpoken) {
             startUserListening();
@@ -627,12 +699,23 @@
     // for a normal turn and for a confirmed shadow-captured continuation.
     async function processAudioTurn(audioBlob) {
         try {
-            // Upload audio to the API
             const result = await API.uploadAudio(audioBlob);
-            const audioFileName = result.fileName;
+            await processTurn({ audioFileName: result.fileName });
+        } catch (err) {
+            console.error('YOLO sending failed:', err);
+            appendPreviewLine('assistant', 'Ошибка отправки аудио.');
+            updateState(STATES.IDLE);
+        }
+    }
 
-            // Generate transcription display placeholder
-            const previewMsgEl = appendPreviewLine('user', 'Распознавание...');
+    // Shared turn logic: either transcribes audio server-side (audioFileName) or
+    // sends an already-known message straight through (messageText, from a
+    // completeness check that already transcribed it — skips re-transcription).
+    async function processTurn({ audioFileName, messageText }) {
+        try {
+            const previewMsgEl = messageText
+                ? appendPreviewLine('user', messageText)
+                : appendPreviewLine('user', 'Распознавание...');
 
             // Call streaming chat with support for abortion
             activeAbortController = new AbortController();
@@ -645,7 +728,7 @@
             const ttsQueue = window.createTtsQueue();
             activeTtsQueue = ttsQueue;
 
-            API.streamChat(window.currentSessionId, '',
+            API.streamChat(window.currentSessionId, messageText || '',
                 // onChunk
                 (chunk) => {
                     if (!assistantPreviewEl) {
@@ -732,7 +815,7 @@
 
         } catch (err) {
             console.error('YOLO sending failed:', err);
-            appendPreviewLine('assistant', 'Ошибка отправки аудио.');
+            appendPreviewLine('assistant', 'Ошибка отправки сообщения.');
             updateState(STATES.IDLE);
         }
     }
