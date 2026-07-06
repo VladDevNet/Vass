@@ -313,7 +313,7 @@ document.getElementById('chat-messages').addEventListener('click', async (e) => 
     playBtn.textContent = '...';
     try {
         const token = API.getToken();
-        const res = await fetch(`/api/chat/audio/${fileName}`, {
+        const res = await fetch(`/api/v1/chat/audio/${fileName}`, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
         if (!res.ok) throw new Error('Failed to load audio');
