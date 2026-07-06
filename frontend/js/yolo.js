@@ -88,7 +88,8 @@
         '/audio/fillers/back-1.wav',
         '/audio/fillers/back-2.wav',
         '/audio/fillers/back-3.wav',
-        '/audio/fillers/back-4.wav'
+        '/audio/fillers/back-4.wav',
+        '/audio/fillers/back-5.wav'
     ];
     function pickRandom(arr) {
         return arr[Math.floor(Math.random() * arr.length)];
