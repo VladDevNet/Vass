@@ -82,7 +82,7 @@ const API = {
     },
 
     // SSE streaming for chat
-    streamChat(sessionId, message, onChunk, onDone, audioFileName, onTranscription, onPronunciation, onTranslation, onTranslationDone, signal) {
+    streamChat(sessionId, message, onChunk, onDone, audioFileName, onTranscription, onPronunciation, onTranslation, onTranslationDone, signal, onPreamble) {
         const token = this.getToken();
         let mainDone = false;
 
@@ -124,6 +124,8 @@ const API = {
                                     onPronunciation(parsed.pronunciation);
                                 } else if (parsed.translation && onTranslation) {
                                     onTranslation(parsed.translation);
+                                } else if (parsed.preamble && onPreamble) {
+                                    onPreamble(parsed.preamble);
                                 } else if (parsed.text) {
                                     onChunk(parsed.text);
                                 }

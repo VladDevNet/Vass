@@ -27,6 +27,7 @@ public class GeminiService
         string model = "gemini-3.5-flash",
         int maxTokens = 2048,
         string? apiKey = null,
+        bool enableGrounding = true,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var key = string.IsNullOrWhiteSpace(apiKey) ? _defaultApiKey : apiKey;
@@ -51,7 +52,7 @@ public class GeminiService
             {
                 parts = new[] { new { text = systemPrompt } }
             },
-            tools = new object[] { new { google_search = new { } } },
+            tools = enableGrounding ? new object[] { new { google_search = new { } } } : Array.Empty<object>(),
             generationConfig = new
             {
                 maxOutputTokens = maxTokens,

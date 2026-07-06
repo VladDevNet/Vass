@@ -720,7 +720,14 @@
                 // onTranslationDone (ignored)
                 null,
                 // signal
-                signal
+                signal,
+                // onPreamble — a short "hold on" phrase while the real (possibly slow,
+                // search-grounded) response is still generating
+                (preamble) => {
+                    if (currentState !== STATES.SPEAKING) updateState(STATES.SPEAKING);
+                    appendPreviewLine('assistant', preamble);
+                    ttsQueue.push(preamble);
+                }
             );
 
         } catch (err) {

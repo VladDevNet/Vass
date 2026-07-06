@@ -324,13 +324,32 @@ public class ChatController : ControllerBase
         var swLlm = Stopwatch.StartNew();
         long llmFirstTokenMs = 0;
 
+        // Kick off a fast, non-grounded "will this need search/deep thought?" check
+        // in parallel with the real (possibly slow, search-grounded) response, so we
+        // can speak a natural "hold on" phrase while the real answer is still cooking
+        // instead of leaving the user in silence for several seconds.
+        var preambleTask = GetPreambleIfNeededAsync(messageText, geminiKey, HttpContext.RequestAborted);
+
         // Use Gemini 3.5 Flash with Google Search grounding for real-time facts (news, weather, etc.)
         var stream = _gemini.StreamResponseAsync(systemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey, cancellationToken: HttpContext.RequestAborted);
+        var enumerator = stream.GetAsyncEnumerator(HttpContext.RequestAborted);
 
         try
         {
-            await foreach (var chunk in stream)
+            var moveNextTask = enumerator.MoveNextAsync().AsTask();
+            var winner = await Task.WhenAny(preambleTask, moveNextTask);
+
+            if (winner == preambleTask && preambleTask.Result != null)
             {
+                var preData = JsonSerializer.Serialize(new { preamble = preambleTask.Result });
+                await Response.WriteAsync($"data: {preData}\n\n");
+                await Response.Body.FlushAsync();
+            }
+
+            var hasMore = await moveNextTask;
+            while (hasMore)
+            {
+                var chunk = enumerator.Current;
                 if (fullResponse.Length == 0)
                 {
                     llmFirstTokenMs = swLlm.ElapsedMilliseconds;
@@ -339,6 +358,7 @@ public class ChatController : ControllerBase
                 var data = JsonSerializer.Serialize(new { text = chunk });
                 await Response.WriteAsync($"data: {data}\n\n");
                 await Response.Body.FlushAsync();
+                hasMore = await enumerator.MoveNextAsync();
             }
         }
         catch (OperationCanceledException)
@@ -347,6 +367,10 @@ public class ChatController : ControllerBase
             // saving a partial/incomplete assistant reply. The user's message stays saved.
             _logger.LogInformation("Chat stream cancelled by client for session {SessionId}", req.SessionId);
             return;
+        }
+        finally
+        {
+            await enumerator.DisposeAsync();
         }
         swLlm.Stop();
         long llmTotalMs = swLlm.ElapsedMilliseconds;
@@ -496,6 +520,48 @@ public class ChatController : ControllerBase
             _logger.LogWarning(ex, "Gemini OCR failed");
             return StatusCode(502, new { error = "OCR service error" });
         }
+    }
+
+    // Fast, non-grounded check: will answering this well require web search or
+    // careful multi-step reasoning? If so, returns a short natural "hold on" phrase
+    // to speak while the real (possibly slow) response is still generating.
+    // Returns null for ordinary conversational messages that don't need a heads-up.
+    private async Task<string?> GetPreambleIfNeededAsync(string userMessage, string? geminiKey, CancellationToken ct)
+    {
+        var prompt = $$"""
+            Сообщение пользователя: "{{userMessage}}"
+            Чтобы дать на него хороший ответ, ассистенту понадобится (а) искать актуальную информацию в интернете или (б) тщательно обдумывать сложную, многогранную задачу?
+            Если да — выведи короткую, естественную, каждый раз разную по формулировке русскую фразу-предупреждение о паузе (например "Секунду, поищу это..." или "Дай мне подумать над этим..."), без кавычек.
+            Если это обычный разговорный вопрос, не требующий поиска или долгих раздумий — выведи ровно NONE.
+            Ничего кроме фразы или NONE не пиши.
+            """;
+
+        var messages = new List<GeminiMessage> { new("user", prompt) };
+        var sb = new System.Text.StringBuilder();
+        try
+        {
+            await foreach (var chunk in _gemini.StreamResponseAsync("", messages, model: "gemini-3.5-flash",
+                maxTokens: 30, apiKey: geminiKey, enableGrounding: false, cancellationToken: ct))
+            {
+                sb.Append(chunk);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Preamble check failed");
+            return null;
+        }
+
+        var result = sb.ToString().Trim().Trim('"');
+        if (string.IsNullOrEmpty(result) || result.Equals("NONE", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+        return result;
     }
 
     private async Task<string?> ConvertToWavAsync(string webmPath)
