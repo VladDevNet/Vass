@@ -19,7 +19,7 @@ public class ChatController : ControllerBase
     private readonly AppDbContext _db;
     private readonly UserManager<User> _userManager;
     private readonly GeminiService _gemini;
-    private readonly TutorService _tutor;
+    private readonly CompanionPromptService _tutor;
     private readonly AudioAnalysisService _audioAnalysis;
     private readonly SpeakerRegistryService _speakerRegistry;
     private readonly IConfiguration _config;
@@ -29,7 +29,7 @@ public class ChatController : ControllerBase
     private readonly PiperTtsService _ttsService;
 
     public ChatController(AppDbContext db, UserManager<User> userManager,
-        GeminiService gemini, TutorService tutor,
+        GeminiService gemini, CompanionPromptService tutor,
         AudioAnalysisService audioAnalysis, SpeakerRegistryService speakerRegistry, PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
@@ -307,9 +307,7 @@ public class ChatController : ControllerBase
             m.Content
         )).ToList();
 
-        var systemPrompt = _tutor.GetSystemPrompt(user, session.Mode,
-            null, settings?.CustomSystemPrompt,
-            settings?.FullTranslation ?? false);
+        var systemPrompt = _tutor.GetSystemPrompt(settings?.CustomSystemPrompt);
 
         if (speakerResult?.KnownName != null)
         {

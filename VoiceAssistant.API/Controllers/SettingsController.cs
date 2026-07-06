@@ -14,9 +14,9 @@ namespace VoiceAssistant.API.Controllers;
 public class SettingsController : ControllerBase
 {
     private readonly AppDbContext _db;
-    private readonly TutorService _tutor;
+    private readonly CompanionPromptService _tutor;
 
-    public SettingsController(AppDbContext db, TutorService tutor)
+    public SettingsController(AppDbContext db, CompanionPromptService tutor)
     {
         _db = db;
         _tutor = tutor;
