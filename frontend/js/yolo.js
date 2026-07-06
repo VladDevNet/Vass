@@ -166,10 +166,10 @@
         showText = !showText;
         if (showText) {
             yoloTextPreview.classList.remove('hidden');
-            yoloToggleTextBtn.textContent = 'Приховати текст';
+            yoloToggleTextBtn.textContent = 'Скрыть текст';
         } else {
             yoloTextPreview.classList.add('hidden');
-            yoloToggleTextBtn.textContent = 'Показати текст';
+            yoloToggleTextBtn.textContent = 'Показать текст';
         }
     });
 
@@ -186,13 +186,13 @@
         isMuted = !isMuted;
         yoloMuteBtn.classList.toggle('muted', isMuted);
         if (isMuted) {
-            yoloStatus.textContent = 'Мікрофон вимкнено';
+            yoloStatus.textContent = 'Микрофон выключен';
             yoloOrb.className = 'yolo-orb state-idle';
             if (mediaRecorder && mediaRecorder.state === 'recording') {
                 mediaRecorder.pause();
             }
         } else {
-            yoloStatus.textContent = 'Слухаю...';
+            yoloStatus.textContent = 'Слушаю...';
             yoloOrb.className = 'yolo-orb state-listening';
             if (mediaRecorder && mediaRecorder.state === 'paused') {
                 mediaRecorder.resume();
@@ -215,7 +215,7 @@
             hasSpoken = true;
             lastSpeechTime = Date.now();
             updateState(STATES.LISTENING);
-            yoloStatus.textContent = 'Говоріть, я слухаю...';
+            yoloStatus.textContent = 'Говорите, я слушаю...';
         }
     });
 
@@ -297,7 +297,7 @@
         try {
             const ok = await acquireMicrophone();
             if (!ok) {
-                alert('Помилка: не вдалося отримати доступ до мікрофона.');
+                alert('Ошибка: не удалось получить доступ к микрофону.');
                 isInitializing = false;
                 return;
             }
@@ -523,11 +523,11 @@
         }
 
         // Add visual indicator of interruption
-        appendPreviewLine('user', '... (Перебито)');
-        
+        appendPreviewLine('user', '... (Прервано)');
+
         // Start listening to the new speech
         startUserListening();
-        yoloStatus.textContent = 'Слухаю вас (перебито)...';
+        yoloStatus.textContent = 'Слушаю вас (прервано)...';
     }
 
     function startShadowCapture() {
@@ -794,17 +794,8 @@
                         previewMsgEl.textContent = transcription;
                     }
                 },
-                // onPronunciation
-                (pron) => {
-                    // Optionally display pronunciation feedback in the preview
-                    if (previewMsgEl) {
-                        const stars = pron.accuracy >= 8 ? '⭐' : pron.accuracy >= 5 ? '🟡' : '🔴';
-                        const scoreEl = document.createElement('div');
-                        scoreEl.className = 'yolo-pron-score';
-                        scoreEl.innerHTML = `<small style="color: #94a3b8">${stars} Вимова: ${pron.accuracy}/10. ${pron.feedback}</small>`;
-                        previewMsgEl.appendChild(scoreEl);
-                    }
-                },
+                // onPronunciation — server no longer sends this event; kept as null placeholder to preserve argument order
+                null,
                 // onTranslation (ignored in YOLO voice overlay to keep UI simple)
                 null,
                 // onTranslationDone (ignored)

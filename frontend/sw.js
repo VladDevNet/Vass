@@ -10,7 +10,6 @@ const STATIC_ASSETS = [
   '/js/chat.js',
   '/js/voice.js',
   '/js/yolo.js',
-  '/js/vocabulary.js',
   '/js/settings.js',
   '/manifest.json'
 ];

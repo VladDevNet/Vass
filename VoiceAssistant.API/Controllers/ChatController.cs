@@ -18,12 +18,8 @@ public class ChatController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly UserManager<User> _userManager;
-    private readonly AnthropicService _anthropic;
     private readonly GeminiService _gemini;
-    private readonly OpenAiChatService _openAiChat;
     private readonly TutorService _tutor;
-    private readonly TutorTools _tutorTools;
-    private readonly TutorToolExecutor _toolExecutor;
     private readonly AudioAnalysisService _audioAnalysis;
     private readonly SpeakerRegistryService _speakerRegistry;
     private readonly IConfiguration _config;
@@ -33,19 +29,14 @@ public class ChatController : ControllerBase
     private readonly PiperTtsService _ttsService;
 
     public ChatController(AppDbContext db, UserManager<User> userManager,
-        AnthropicService anthropic, GeminiService gemini, OpenAiChatService openAiChat, TutorService tutor,
-        TutorTools tutorTools, TutorToolExecutor toolExecutor,
+        GeminiService gemini, TutorService tutor,
         AudioAnalysisService audioAnalysis, SpeakerRegistryService speakerRegistry, PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
         _db = db;
         _userManager = userManager;
-        _anthropic = anthropic;
         _gemini = gemini;
-        _openAiChat = openAiChat;
         _tutor = tutor;
-        _tutorTools = tutorTools;
-        _toolExecutor = toolExecutor;
         _audioAnalysis = audioAnalysis;
         _speakerRegistry = speakerRegistry;
         _ttsService = ttsService;
@@ -231,8 +222,6 @@ public class ChatController : ControllerBase
 
         // Load user settings for per-user API keys + custom prompt
         var settings = await _db.UserSettings.FirstOrDefaultAsync(s => s.UserId == userId);
-        var openAiKey = settings?.OpenAiApiKey;
-        var anthropicKey = settings?.AnthropicApiKey;
         var geminiKey = settings?.GeminiApiKey;
 
         var messageText = req.Message;
@@ -318,12 +307,8 @@ public class ChatController : ControllerBase
             m.Content
         )).ToList();
 
-        // Get conductor instructions
-        var instruction = await _db.TutorInstructions
-            .FirstOrDefaultAsync(t => t.UserId == userId);
-
         var systemPrompt = _tutor.GetSystemPrompt(user, session.Mode,
-            instruction?.InstructionsJson, settings?.CustomSystemPrompt,
+            null, settings?.CustomSystemPrompt,
             settings?.FullTranslation ?? false);
 
         if (speakerResult?.KnownName != null)

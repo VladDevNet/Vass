@@ -18,7 +18,6 @@ async function loadUser() {
     try {
         const user = await API.get('/auth/me');
         document.getElementById('user-email').textContent = user.email;
-        document.getElementById('user-level').textContent = user.level;
     } catch {}
 }
 
@@ -32,8 +31,8 @@ async function loadSessions(autoOpen = false) {
             <span class="session-title">${escapeHtml(s.title || s.mode)} — ${new Date(s.createdAt).toLocaleDateString()}</span>
             <button class="session-menu-btn" data-id="${s.id}" title="Menu">&#8942;</button>
             <div class="session-menu hidden" data-id="${s.id}">
-                <div class="session-menu-item rename" data-id="${s.id}">Перейменувати</div>
-                <div class="session-menu-item delete" data-id="${s.id}">Видалити</div>
+                <div class="session-menu-item rename" data-id="${s.id}">Переименовать</div>
+                <div class="session-menu-item delete" data-id="${s.id}">Удалить</div>
             </div>
         </div>
     `).join('');
@@ -59,7 +58,7 @@ async function loadSessions(autoOpen = false) {
             const id = parseInt(item.dataset.id);
             const titleEl = item.closest('.session-item').querySelector('.session-title');
             const currentTitle = titleEl.textContent.split(' — ')[0];
-            const newTitle = prompt('Нова назва:', currentTitle);
+            const newTitle = prompt('Новое название:', currentTitle);
             if (!newTitle || newTitle.trim() === currentTitle) return;
             try {
                 await API.patch(`/chat/sessions/${id}`, { title: newTitle.trim() });
@@ -170,7 +169,7 @@ async function sendMessage() {
     // Show user message — placeholder if audio-only (will be replaced by transcription)
     const userMsg = document.createElement('div');
     userMsg.className = 'message user';
-    const displayText = text || 'Розпізнавання...';
+    const displayText = text || 'Распознавание...';
     userMsg.innerHTML = `${audioHtml}<span class="user-text">${escapeHtml(displayText)}</span>`;
     container.appendChild(userMsg);
 
@@ -196,7 +195,7 @@ async function sendMessage() {
         (err) => {
             assistantMsg.classList.remove('streaming');
             if (err) {
-                assistantMsg.innerHTML = '<em class="error">Помилка з\'єднання. Спробуй ще раз.</em>';
+                assistantMsg.innerHTML = '<em class="error">Ошибка соединения. Попробуй ещё раз.</em>';
                 isStreaming = false;
                 document.getElementById('send-btn').disabled = false;
             } else {
@@ -214,9 +213,8 @@ async function sendMessage() {
             const textSpan = userMsg.querySelector('.user-text');
             if (textSpan) textSpan.textContent = transcription;
         },
-        (pronunciation) => {
-            showPronunciationBlock(userMsg, pronunciation);
-        },
+        // onPronunciation — server no longer sends this event; kept as null placeholder to preserve argument order
+        null,
         // onTranslation chunk
         (chunk) => {
             if (!transMsg) {
@@ -264,7 +262,7 @@ document.getElementById('camera-input').addEventListener('change', async (e) => 
     // Show attachment preview
     const preview = document.getElementById('attachment-preview');
     const thumbUrl = URL.createObjectURL(file);
-    preview.innerHTML = `<img src="${thumbUrl}" class="attachment-thumb"><span class="attachment-label">Розпізнаю текст...</span><button class="attachment-remove">&times;</button>`;
+    preview.innerHTML = `<img src="${thumbUrl}" class="attachment-thumb"><span class="attachment-label">Распознаю текст...</span><button class="attachment-remove">&times;</button>`;
     preview.classList.remove('hidden');
     preview.querySelector('.attachment-remove').addEventListener('click', () => {
         preview.classList.add('hidden');
@@ -284,14 +282,14 @@ document.getElementById('camera-input').addEventListener('change', async (e) => 
             input.style.height = 'auto';
             input.style.height = Math.min(input.scrollHeight, 150) + 'px';
             input.focus();
-            preview.querySelector('.attachment-label').textContent = 'Текст розпізнано';
+            preview.querySelector('.attachment-label').textContent = 'Текст распознан';
             setTimeout(() => { preview.classList.add('hidden'); preview.innerHTML = ''; }, 2000);
         } else {
-            preview.querySelector('.attachment-label').textContent = 'Текст не знайдено';
+            preview.querySelector('.attachment-label').textContent = 'Текст не найден';
         }
     } catch (err) {
         console.warn('OCR failed:', err);
-        preview.querySelector('.attachment-label').textContent = 'Помилка розпізнавання';
+        preview.querySelector('.attachment-label').textContent = 'Ошибка распознавания';
     } finally {
         cameraBtn.classList.remove('ocr-loading');
         cameraBtn.disabled = false;
@@ -345,19 +343,6 @@ document.getElementById('chat-messages').addEventListener('click', (e) => {
     window.speakText(clone.textContent);
 });
 
-// Delegate click on vocab add buttons
-document.getElementById('chat-messages').addEventListener('click', (e) => {
-    const btn = e.target.closest('.vocab-add-btn');
-    if (!btn) return;
-    const span = btn.closest('.vocab-word');
-    if (!span) return;
-    const word = span.dataset.word;
-    const translation = span.dataset.translation;
-    if (window.Vocabulary) {
-        window.Vocabulary.showAddWordDialog(word);
-    }
-});
-
 // Close all session context menus
 function closeAllSessionMenus() {
     document.querySelectorAll('.session-menu').forEach(m => m.classList.add('hidden'));
@@ -365,23 +350,6 @@ function closeAllSessionMenus() {
 
 // Close menus on click outside
 document.addEventListener('click', () => closeAllSessionMenus());
-
-function showPronunciationBlock(userMsg, pron) {
-    const block = document.createElement('div');
-    block.className = 'pronunciation-block';
-    const stars = pron.accuracy >= 8 ? '&#11088;' : pron.accuracy >= 5 ? '&#128993;' : '&#128308;';
-    let html = `<div class="pron-header">${stars} Вимова: <strong>${pron.accuracy}/10</strong></div>`;
-    html += `<div class="pron-feedback">${escapeHtml(pron.feedback)}</div>`;
-    if (pron.problemWords && pron.problemWords.length > 0) {
-        html += '<div class="pron-problems">';
-        for (const pw of pron.problemWords) {
-            html += `<span class="pron-problem"><strong>${escapeHtml(pw.word)}</strong>: ${escapeHtml(pw.issue)}</span>`;
-        }
-        html += '</div>';
-    }
-    block.innerHTML = html;
-    userMsg.appendChild(block);
-}
 
 function escapeHtml(text) {
     const div = document.createElement('div');
