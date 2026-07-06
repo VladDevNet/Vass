@@ -290,8 +290,30 @@ public class ChatController : ControllerBase
         // [DONE], so this adds no perceived latency.
         var instructionUpdateTask = MaybeUpdateCustomInstructionsAsync(userId, messageText, settings?.CustomSystemPrompt, geminiKey, HttpContext.RequestAborted);
 
-        // Build conversation history
-        var messages = session.Messages.Select(m => new GeminiMessage(
+        // Build conversation history: this session is persistent and never rotates
+        // (single ongoing session per user), so resending every message ever exchanged
+        // would grow unbounded — already 294 messages deep for one user. Cap it to a
+        // recent window: take at most the last MaxCandidateMessages, then walk
+        // backwards from the newest adding messages until HistoryCharBudget is hit
+        // (~4 chars/token, so ~6000 tokens of actual history — not an exact tokenizer,
+        // just enough to keep latency/cost bounded without losing recent context).
+        const int MaxCandidateMessages = 100;
+        const int HistoryCharBudget = 24000;
+
+        var windowed = new List<Message>();
+        var usedChars = 0;
+        foreach (var m in session.Messages.OrderByDescending(m => m.CreatedAt).Take(MaxCandidateMessages))
+        {
+            if (windowed.Count > 0 && usedChars + m.Content.Length > HistoryCharBudget)
+            {
+                break;
+            }
+            windowed.Add(m);
+            usedChars += m.Content.Length;
+        }
+        windowed.Reverse(); // back to chronological order for the API
+
+        var messages = windowed.Select(m => new GeminiMessage(
             m.Role == "user" ? "user" : "assistant",
             m.Content
         )).ToList();
