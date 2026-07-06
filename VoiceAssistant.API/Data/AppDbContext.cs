@@ -12,6 +12,7 @@ public class AppDbContext : IdentityDbContext<User>
     public DbSet<Message> Messages => Set<Message>();
     public DbSet<UserSettings> UserSettings => Set<UserSettings>();
     public DbSet<SpeakerProfile> SpeakerProfiles => Set<SpeakerProfile>();
+    public DbSet<DeviceLinkCode> DeviceLinkCodes => Set<DeviceLinkCode>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -50,6 +51,14 @@ public class AppDbContext : IdentityDbContext<User>
         builder.Entity<SpeakerProfile>(e =>
         {
             e.Property(s => s.Name).HasMaxLength(100);
+        });
+
+        builder.Entity<DeviceLinkCode>(e =>
+        {
+            e.HasOne(d => d.User).WithMany()
+                .HasForeignKey(d => d.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(d => d.Code).HasMaxLength(6);
+            e.HasIndex(d => d.Code).IsUnique();
         });
     }
 }
