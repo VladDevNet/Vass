@@ -10,7 +10,7 @@ using VoiceAssistant.API.Data.Entities;
 namespace VoiceAssistant.API.Controllers;
 
 [ApiController]
-[Route("api/auth")]
+[Route("api/v1/auth")]
 public class AuthController : ControllerBase
 {
     private readonly UserManager<User> _userManager;

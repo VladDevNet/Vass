@@ -12,7 +12,7 @@ using VoiceAssistant.API.Services;
 namespace VoiceAssistant.API.Controllers;
 
 [ApiController]
-[Route("api/chat")]
+[Route("api/v1/chat")]
 [Authorize]
 public class ChatController : ControllerBase
 {

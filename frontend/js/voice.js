@@ -297,7 +297,7 @@ async function playOneUtterance(text, onEnd) {
             const abort = new AbortController();
             window.activeStreamAbort = abort;
 
-            const res = await fetch('/api/chat/tts_stream', {
+            const res = await fetch('/api/v1/chat/tts_stream', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

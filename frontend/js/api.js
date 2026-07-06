@@ -1,5 +1,5 @@
 const API = {
-    baseUrl: '/api',
+    baseUrl: '/api/v1',
 
     getToken() {
         return localStorage.getItem('token');

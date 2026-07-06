@@ -9,7 +9,7 @@ using VoiceAssistant.API.Services;
 namespace VoiceAssistant.API.Controllers;
 
 [ApiController]
-[Route("api/settings")]
+[Route("api/v1/settings")]
 [Authorize]
 public class SettingsController : ControllerBase
 {
