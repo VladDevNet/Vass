@@ -1,5 +1,11 @@
 # Локальная сборка через WSL + установка на физическое устройство
 
+> **Проверено 2026-07-06**: собран реальный debug-APK (`com.vass.assistant`,
+> targetSdk 36/minSdk 24) на тулчейне, уже готовом из работы над eCMRHub —
+> `BUILD SUCCESSFUL in 4m 28s`. Файл — `mobile/android/app/build/outputs/apk/debug/app-debug.apk`
+> (имя без арх-суффикса в этой версии Gradle/AGP, не как ожидалось ниже).
+> Установка на физическое устройство — следующий шаг, руками.
+
 Применимо с начала Фазы 1 (когда появится `mobile/`). Адаптировано из опыта
 проекта eCMRHub (`D:\Repos\eCMRHub\src\mobile\docs\MOBILE_BUILD_GOTCHAS.md` и
 `WSL_BUILD_RECIPE.md`) — та же машина, тот же класс проблем (Windows + WSL2 +
@@ -163,6 +169,8 @@ Android-разработки; `adb.exe` можно взять из Android Studi
 | `:app:configureCMake*` падает `AccessDeniedException` после установки нового модуля | Codegen для модуля ещё не прогонялся | Запустить `generateCodegenArtifactsFromSchema` для конкретного модуля |
 | `assembleRelease` падает clang++ signal-11 (когда дойдём до release-сборок) | Компиляция arm64 упирается в лимит paging file на Windows | Для локального тестирования обходимся debug-сборкой; настоящий ARM release — через EAS cloud (недоступно для `--local` на Windows) |
 | `adb devices` не видит телефон | USB-отладка не включена, либо не подтверждён компьютер на телефоне, либо не тот `adb.exe` в PATH | Проверить "Отладка по USB" в настройках разработчика, переподключить кабель, подтвердить диалог на телефоне |
+| `wsl -d Ubuntu -- bash ~/script.sh` → `bash: C:Usersvkhol/script.sh: No such file or directory` | При вызове `wsl.exe` из **PowerShell** (не из самого WSL) `~` иногда разворачивается в Windows-профиль до того, как строка доходит до bash внутри WSL | Всегда используй абсолютный путь `/home/<user>/script.sh` вместо `~/script.sh`, когда запускаешь `wsl.exe` из PowerShell/Windows-стороны |
+| Инлайн `wsl -d Ubuntu -- bash -c 'export PATH=...'` падает с `syntax error near unexpected token '('` | PowerShell наследует родительский Windows PATH со скобками (`Program Files (x86)`) в переменную окружения, которая протекает в инлайн-команду | Пиши команду в `.sh`-файл (через Write-инструмент по пути `\\wsl$\Ubuntu\home\...`) и запускай `wsl -d Ubuntu -- bash /home/user/script.sh` вместо длинной инлайн `-c '...'` строки |
 
 Полный список из 20 граблей (Maestro/emulator-специфичные тоже) — в
 `D:\Repos\eCMRHub\src\mobile\docs\MOBILE_BUILD_GOTCHAS.md`, если понадобится
