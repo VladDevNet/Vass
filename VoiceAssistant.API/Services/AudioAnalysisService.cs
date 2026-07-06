@@ -107,6 +107,12 @@ public class AudioAnalysisService
     // the speaker sounds done with their thought (ready for a response) or is likely
     // still talking/pausing to think. Used to give a real conversational partner's
     // patience instead of cutting people off on a fixed short silence timeout.
+    //
+    // Known limitation: this check never sees companion-system.txt (it's a separate,
+    // lightweight call) so it can't extend extra patience for emotionally-loaded pauses
+    // the way the main persona prompt might imply. Its patience is topic-blind and comes
+    // entirely from the fixed timing in yolo.js (MAX_SILENCE_CEILING / RECHECK_INTERVAL),
+    // applied uniformly regardless of what's being said.
     public async Task<UtteranceCheckResult?> CheckUtteranceCompletionAsync(string audioPath, string? apiKey = null)
     {
         var key = string.IsNullOrWhiteSpace(apiKey) ? _apiKey : apiKey;
