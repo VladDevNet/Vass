@@ -283,6 +283,13 @@ public class ChatController : ControllerBase
         session.Messages.Add(new Message { Role = "user", Content = messageText, AudioFileName = req.AudioFileName });
         await _db.SaveChangesAsync();
 
+        // Check (in parallel, doesn't block the response) whether the user asked the
+        // assistant to remember a persistent behavior preference ("говори медленнее",
+        // "давай на ты", etc.) so future turns' system prompts reflect it. Awaited at
+        // the very end of this action — the client already moves on once it sees
+        // [DONE], so this adds no perceived latency.
+        var instructionUpdateTask = MaybeUpdateCustomInstructionsAsync(userId, messageText, settings?.CustomSystemPrompt, geminiKey, HttpContext.RequestAborted);
+
         // Build conversation history
         var messages = session.Messages.Select(m => new GeminiMessage(
             m.Role == "user" ? "user" : "assistant",
@@ -371,6 +378,7 @@ public class ChatController : ControllerBase
             // Client abandoned this turn (e.g. user kept talking) — stop without
             // saving a partial/incomplete assistant reply. The user's message stays saved.
             _logger.LogInformation("Chat stream cancelled by client for session {SessionId}", req.SessionId);
+            await AwaitInstructionUpdateAsync(instructionUpdateTask);
             return;
         }
         finally
@@ -387,6 +395,8 @@ public class ChatController : ControllerBase
         session.Messages.Add(new Message { Role = "assistant", Content = fullResponse.ToString() });
         user.LastActiveAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
+
+        await AwaitInstructionUpdateAsync(instructionUpdateTask);
 
         // Log stats to server logs
         _logger.LogInformation("VoiceAssistant Performance Stats - User: {UserEmail}, Session: {SessionId}, Convert: {ConvertMs}ms, Transcribe: {TranscribeMs}ms, SpeakerId: {SpeakerIdMs}ms, LLM (First Token): {LlmFirstMs}ms, LLM (Total): {LlmTotalMs}ms",
@@ -567,6 +577,77 @@ public class ChatController : ControllerBase
             return null;
         }
         return result;
+    }
+
+    private async Task AwaitInstructionUpdateAsync(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Custom-instruction update failed");
+        }
+    }
+
+    // Detects whether the user asked the assistant to remember a persistent behavior
+    // preference ("говори медленнее", "давай на ты", "не используй сложные слова")
+    // and, if so, merges it into UserSettings.CustomSystemPrompt so every future
+    // system prompt reflects it. No-ops for ordinary conversational messages.
+    private async Task MaybeUpdateCustomInstructionsAsync(string userId, string userMessage, string? existingInstructions, string? geminiKey, CancellationToken ct)
+    {
+        var prompt = $$"""
+            Текущие постоянные инструкции о поведении ассистента (могут быть пустыми):
+            ---
+            {{existingInstructions ?? "(пока нет)"}}
+            ---
+            Новое сообщение пользователя: "{{userMessage}}"
+
+            Если пользователь просит ЗАПОМНИТЬ что-то о том, как ассистент должен вести себя в будущих разговорах (например: "запомни, говори медленнее", "давай на ты", "не используй сложные слова", "больше не упоминай X") — выведи ПОЛНЫЙ обновлённый список инструкций (объедини старые с новой просьбой, убери противоречия и дубликаты), кратко, по-русски.
+            Если пользователь НЕ просит ничего подобного запомнить — выведи ровно NONE.
+            Ничего кроме итоговых инструкций или NONE не пиши.
+            """;
+
+        var messages = new List<GeminiMessage> { new("user", prompt) };
+        var sb = new System.Text.StringBuilder();
+        try
+        {
+            await foreach (var chunk in _gemini.StreamResponseAsync("", messages, model: "gemini-3.5-flash",
+                maxTokens: 200, apiKey: geminiKey, enableGrounding: false, cancellationToken: ct))
+            {
+                sb.Append(chunk);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Custom-instruction check failed");
+            return;
+        }
+
+        var result = sb.ToString().Trim().Trim('"');
+        if (string.IsNullOrEmpty(result) || result.Equals("NONE", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var settings = await _db.UserSettings.FirstOrDefaultAsync(s => s.UserId == userId);
+        if (settings == null)
+        {
+            settings = new Data.Entities.UserSettings { UserId = userId, CustomSystemPrompt = result };
+            _db.UserSettings.Add(settings);
+        }
+        else
+        {
+            settings.CustomSystemPrompt = result;
+            settings.UpdatedAt = DateTime.UtcNow;
+        }
+        await _db.SaveChangesAsync();
+        _logger.LogInformation("Updated custom instructions for user {UserId}: {Instructions}", userId, result);
     }
 
     private async Task<string?> ConvertToWavAsync(string webmPath)
