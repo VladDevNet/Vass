@@ -53,7 +53,7 @@ builder.Services.AddHttpClient();
 // Services
 builder.Services.AddSingleton<GeminiService>();
 builder.Services.AddSingleton<PiperTtsService>();
-builder.Services.AddSingleton<TutorService>();
+builder.Services.AddSingleton<CompanionPromptService>();
 builder.Services.AddSingleton<AudioAnalysisService>();
 builder.Services.AddSingleton<SpeakerIdService>();
 builder.Services.AddSingleton<SpeakerPendingStore>();
