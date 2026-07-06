@@ -127,6 +127,16 @@ public class GeminiService
                         {
                             chunkText = parts[0].GetProperty("text").GetString();
                         }
+
+                        // Diagnostic: confirm whether Google Search grounding actually fired for
+                        // this turn — real web search execution is much slower than plain generation.
+                        if (firstCandidate.TryGetProperty("groundingMetadata", out var grounding) &&
+                            grounding.TryGetProperty("webSearchQueries", out var queries) &&
+                            queries.ValueKind == JsonValueKind.Array)
+                        {
+                            var queryList = string.Join(", ", queries.EnumerateArray().Select(q => q.GetString()));
+                            _logger.LogInformation("Gemini used Google Search grounding, queries: [{Queries}]", queryList);
+                        }
                     }
                 }
                 catch (JsonException)
