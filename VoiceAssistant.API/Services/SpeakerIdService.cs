@@ -3,6 +3,8 @@ using System.Text.Json;
 
 namespace VoiceAssistant.API.Services;
 
+public record SpeakerEmbedding(float[] Vector, bool LowConfidence);
+
 public class SpeakerIdService
 {
     private readonly string _baseUrl;
@@ -16,7 +18,7 @@ public class SpeakerIdService
         _httpClientFactory = httpClientFactory;
     }
 
-    public async Task<float[]?> GetEmbeddingAsync(string wavPath)
+    public async Task<SpeakerEmbedding?> GetEmbeddingAsync(string wavPath)
     {
         using var http = _httpClientFactory.CreateClient();
         http.Timeout = TimeSpan.FromSeconds(20);
@@ -40,13 +42,14 @@ public class SpeakerIdService
             var json = await response.Content.ReadAsStringAsync();
             using var doc = JsonDocument.Parse(json);
             var arr = doc.RootElement.GetProperty("embedding");
-            var result = new float[arr.GetArrayLength()];
+            var vector = new float[arr.GetArrayLength()];
             var i = 0;
             foreach (var el in arr.EnumerateArray())
             {
-                result[i++] = el.GetSingle();
+                vector[i++] = el.GetSingle();
             }
-            return result;
+            var lowConfidence = doc.RootElement.TryGetProperty("low_confidence", out var lc) && lc.GetBoolean();
+            return new SpeakerEmbedding(vector, lowConfidence);
         }
         catch (Exception ex)
         {

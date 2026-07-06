@@ -8,9 +8,12 @@ public record SpeakerIdResult(string? KnownName, bool ShouldAskForName, bool Jus
 
 public class SpeakerRegistryService
 {
-    // Tuned against synthetic-voice test clips: same speaker ~0.82, different
-    // speakers ~0.16 cosine similarity — plenty of margin either side of 0.65.
-    private const float MatchThreshold = 0.65f;
+    // NOTE: real short conversational clips (phone mic, varying distance) score
+    // much lower on same-speaker similarity than clean synthetic voices did in
+    // initial testing (0.82) — observed ~0.18-0.28 even for the same person under
+    // imperfect conditions. This threshold is a rough starting point, not a
+    // confidently-calibrated value; expect to retune once we have more real data.
+    private const float MatchThreshold = 0.3f;
     private const int ConfirmCount = 3; // turns of consistent unknown voice before treating it as a real new speaker
 
     private readonly AppDbContext _db;
@@ -31,11 +34,20 @@ public class SpeakerRegistryService
 
     public async Task<SpeakerIdResult> IdentifyAsync(string wavPath, string transcript, string? geminiKey)
     {
-        var embedding = await _speakerId.GetEmbeddingAsync(wavPath);
-        if (embedding == null)
+        var result = await _speakerId.GetEmbeddingAsync(wavPath);
+        if (result == null)
         {
             return new SpeakerIdResult(null, false, false);
         }
+
+        if (result.LowConfidence)
+        {
+            // Too quiet/short/noisy to trust for identification — neither match nor
+            // let it corrupt whatever pending cluster we're building. Just skip it.
+            _logger.LogInformation("SpeakerRegistry: skipping low-confidence clip.");
+            return new SpeakerIdResult(null, false, false);
+        }
+        var embedding = result.Vector;
 
         var knownProfiles = await _db.SpeakerProfiles.ToListAsync();
         string? bestName = null;
@@ -57,14 +69,17 @@ public class SpeakerRegistryService
             return new SpeakerIdResult(bestName, false, false);
         }
 
-        // Not a known voice — is it the same unknown voice we've been tracking, or a different one?
+        // Not a known voice — is it the same unknown voice we've been tracking, or a
+        // different one? Compare against the best-matching individual pending sample
+        // (not the centroid) so one noisy prior sample doesn't drag the average down
+        // and wrongly reset a cluster that's actually the same person.
         var (pendingEmbeddings, _) = _pending.Snapshot();
         if (pendingEmbeddings.Count > 0)
         {
-            var clusterScore = SpeakerIdService.CosineSimilarity(embedding, Centroid(pendingEmbeddings));
-            if (clusterScore < MatchThreshold)
+            var bestClusterScore = pendingEmbeddings.Max(e => SpeakerIdService.CosineSimilarity(embedding, e));
+            if (bestClusterScore < MatchThreshold)
             {
-                _logger.LogInformation("SpeakerRegistry: new unknown voice differs from pending cluster, restarting.");
+                _logger.LogInformation("SpeakerRegistry: new unknown voice differs from pending cluster (best={Score:F3}), restarting.", bestClusterScore);
                 _pending.Reset();
             }
         }
