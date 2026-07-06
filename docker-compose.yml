@@ -9,8 +9,8 @@ services:
       - Gemini__ApiKey=${GEMINI_API_KEY}
       - Audio__Path=/app/audio
       - Jwt__Secret=${JWT_SECRET}
-      - Jwt__Issuer=PolishTutor
-      - Jwt__Audience=PolishTutor
+      - Jwt__Issuer=Vass
+      - Jwt__Audience=Vass
       - Piper__BaseUrl=http://tts:5001
       - SpeakerId__BaseUrl=http://speaker-id:5003
     volumes:
