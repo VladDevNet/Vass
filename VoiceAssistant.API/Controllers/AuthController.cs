@@ -1,10 +1,13 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using VoiceAssistant.API.Data;
 using VoiceAssistant.API.Data.Entities;
 
 namespace VoiceAssistant.API.Controllers;
@@ -14,11 +17,15 @@ namespace VoiceAssistant.API.Controllers;
 public class AuthController : ControllerBase
 {
     private readonly UserManager<User> _userManager;
+    private readonly AppDbContext _db;
     private readonly IConfiguration _config;
 
-    public AuthController(UserManager<User> userManager, IConfiguration config)
+    private static readonly TimeSpan DeviceLinkCodeLifetime = TimeSpan.FromMinutes(10);
+
+    public AuthController(UserManager<User> userManager, AppDbContext db, IConfiguration config)
     {
         _userManager = userManager;
+        _db = db;
         _config = config;
     }
 
@@ -48,6 +55,50 @@ public class AuthController : ControllerBase
         var user = await _userManager.FindByEmailAsync(req.Email);
         if (user == null || !await _userManager.CheckPasswordAsync(user, req.Password))
             return Unauthorized(new { error = "Invalid credentials" });
+
+        user.LastActiveAt = DateTime.UtcNow;
+        await _userManager.UpdateAsync(user);
+
+        return Ok(new { token = GenerateToken(user) });
+    }
+
+    // Elderly-friendly login: an already-logged-in device (e.g. a family
+    // member's phone) generates a short-lived code here, which a brand-new
+    // device can redeem for a real token via device-link/redeem below —
+    // without anyone typing an email/password on the new device.
+    [Authorize]
+    [HttpPost("device-link")]
+    public async Task<IActionResult> CreateDeviceLink()
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
+
+        string code;
+        do
+        {
+            code = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
+        } while (await _db.DeviceLinkCodes.AnyAsync(d => d.Code == code && !d.Used && d.ExpiresAt > DateTime.UtcNow));
+
+        var expiresAt = DateTime.UtcNow.Add(DeviceLinkCodeLifetime);
+        _db.DeviceLinkCodes.Add(new DeviceLinkCode { UserId = userId, Code = code, ExpiresAt = expiresAt });
+        await _db.SaveChangesAsync();
+
+        return Ok(new { code, expiresAt });
+    }
+
+    public record RedeemDeviceLinkRequest(string Code);
+
+    [HttpPost("device-link/redeem")]
+    public async Task<IActionResult> RedeemDeviceLink([FromBody] RedeemDeviceLinkRequest req)
+    {
+        var link = await _db.DeviceLinkCodes.FirstOrDefaultAsync(d => d.Code == req.Code);
+        if (link == null || link.Used || link.ExpiresAt <= DateTime.UtcNow)
+            return BadRequest(new { error = "Код недействителен или истёк" });
+
+        link.Used = true;
+        await _db.SaveChangesAsync();
+
+        var user = await _userManager.FindByIdAsync(link.UserId);
+        if (user == null) return BadRequest(new { error = "Код недействителен или истёк" });
 
         user.LastActiveAt = DateTime.UtcNow;
         await _userManager.UpdateAsync(user);
