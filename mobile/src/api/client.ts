@@ -81,6 +81,11 @@ export interface ChatSession {
   createdAt: string;
 }
 
+export interface DeviceLink {
+  code: string;
+  expiresAt: string;
+}
+
 export const api = {
   register: (email: string, password: string) =>
     request<AuthResponse>('/auth/register', {
@@ -97,4 +102,14 @@ export const api = {
   me: () => request<CurrentUser>('/auth/me'),
 
   getSessions: () => request<ChatSession[]>('/chat/sessions'),
+
+  // Elderly-friendly login: generated on an already-logged-in device,
+  // redeemed on a brand-new one — see VoiceAssistant.API/Controllers/AuthController.cs.
+  createDeviceLink: () => request<DeviceLink>('/auth/device-link', { method: 'POST' }),
+
+  redeemDeviceLink: (code: string) =>
+    request<AuthResponse>('/auth/device-link/redeem', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
 };

@@ -6,6 +6,7 @@ interface AuthContextValue {
   user: CurrentUser | null;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
+  loginWithDeviceCode: (code: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -41,13 +42,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(await api.me());
   }
 
+  async function loginWithDeviceCode(code: string) {
+    const { token } = await api.redeemDeviceLink(code);
+    await setToken(token);
+    setUser(await api.me());
+  }
+
   async function logout() {
     await setToken(null);
     setUser(null);
   }
 
   return (
-    <AuthContext.Provider value={{ isLoading, user, login, register, logout }}>
+    <AuthContext.Provider
+      value={{ isLoading, user, login, register, loginWithDeviceCode, logout }}
+    >
       {children}
     </AuthContext.Provider>
   );
