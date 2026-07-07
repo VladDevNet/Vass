@@ -9,8 +9,8 @@ import { ProfileScreen } from './ProfileScreen';
 import { ChatHistoryScreen } from './ChatHistoryScreen';
 
 const STATE_LABEL: Record<string, string> = {
-  idle: 'Нажмите и говорите',
-  recording: 'Слушаю… нажмите ещё раз, когда закончите',
+  idle: 'Слушаю вас…',
+  recording: 'Слышу вас…',
   thinking: 'Думаю…',
   speaking: 'Отвечаю…',
 };
@@ -30,7 +30,7 @@ export function HomeScreen() {
   const [linkError, setLinkError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const { state, transcript, reply, error, startRecording, stopAndRespond } = useVoiceChat(sessionId);
+  const { state, transcript, reply, error, forceFinalize } = useVoiceChat(sessionId);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,11 +60,6 @@ export function HomeScreen() {
     }
   }
 
-  function handlePress() {
-    if (state === 'idle') startRecording();
-    else if (state === 'recording') stopAndRespond();
-  }
-
   if (showSettings) {
     return <ProfileScreen mode="settings" onDone={() => setShowSettings(false)} />;
   }
@@ -81,10 +76,13 @@ export function HomeScreen() {
 
       {sessionError && <Text style={styles.error}>{sessionError}</Text>}
 
-      <Pressable onPress={handlePress} disabled={busy || !sessionId}>
+      <Pressable onPress={forceFinalize} disabled={busy || !sessionId}>
         <AvatarFace state={state} />
       </Pressable>
       <Text style={styles.stateLabel}>{STATE_LABEL[state]}</Text>
+      {(state === 'idle' || state === 'recording') && (
+        <Text style={styles.hint}>Говорите свободно — нажмите, если хотите ответить сразу</Text>
+      )}
 
       {!!transcript && (
         <View style={styles.bubble}>
@@ -159,6 +157,12 @@ const styles = StyleSheet.create({
   stateLabel: {
     fontSize: 15,
     color: '#666',
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  hint: {
+    fontSize: 12,
+    color: '#999',
     marginBottom: 24,
     textAlign: 'center',
   },
