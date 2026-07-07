@@ -1,6 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 import { fetch as expoFetch } from 'expo/fetch';
 import { File, Paths } from 'expo-file-system';
+import { Blob as ExpoBlob } from 'expo-blob';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://vass.it-consult.services';
 const TOKEN_KEY = 'vass_token';
@@ -117,16 +118,24 @@ export const api = {
 
   // Uploads a just-recorded clip (from expo-audio's recorder.uri) ahead of
   // sendMessage. Multipart, not JSON — bypasses request()'s Content-Type.
+  //
+  // expo/fetch's FormData does NOT accept React Native's classic
+  // {uri, name, type} file-object shape (that only works with the legacy
+  // RN fetch/XHR) — its convertFormDataAsync only handles strings, real
+  // Blobs, or objects with .bytes(). Read the recording into an actual
+  // Blob first so it matches what expo/fetch's multipart encoder expects.
   uploadAudio: async (uri: string): Promise<{ fileName: string }> => {
     const extension = uri.split('.').pop() ?? 'm4a';
+    const bytes = await new File(uri).bytes();
+    const blob = new ExpoBlob([bytes], { type: `audio/${extension}` });
+
     const form = new FormData();
-    // React Native's FormData accepts this {uri, name, type} file-object shape
-    // directly (not a Blob) — the RN networking layer streams the uri's bytes.
-    form.append('file', {
-      uri,
-      name: `recording.${extension}`,
-      type: `audio/${extension}`,
-    } as unknown as Blob);
+    // expo-blob's Blob is structurally incompatible with lib.dom's Blob type
+    // purely over an ArrayBuffer-vs-ArrayBufferLike generic in bytes()'s
+    // signature — not a real runtime difference. FormData.append() (and
+    // expo/fetch's own encoder, which is what actually reads this at
+    // runtime) only care that it duck-types as a Blob.
+    form.append('file', blob as unknown as Blob, `recording.${extension}`);
 
     const res = await expoFetch(`${API_URL}/api/v1/chat/upload-audio`, {
       method: 'POST',

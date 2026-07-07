@@ -30,6 +30,7 @@ export function useVoiceChat(sessionId: number | null) {
   }, []);
 
   const startRecording = useCallback(async () => {
+    if (state !== 'idle') return; // guards a double-tap racing the idle->recording transition
     setError(null);
     try {
       const permission = await requestRecordingPermissionsAsync();
@@ -44,7 +45,7 @@ export function useVoiceChat(sessionId: number | null) {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [recorder]);
+  }, [recorder, state]);
 
   const stopAndRespond = useCallback(async () => {
     if (!sessionId) {
@@ -84,6 +85,11 @@ export function useVoiceChat(sessionId: number | null) {
   return { state, transcript, reply, error, startRecording, stopAndRespond };
 }
 
+// Generous cap on how long a synthesized reply could plausibly run — a
+// safety net so a broken TTS file (bad decode, no didJustFinish event)
+// can't leave the UI stuck in 'speaking' forever with the mic disabled.
+const MAX_PLAYBACK_MS = 60_000;
+
 function playToCompletion(
   uri: string,
   playerRef: React.MutableRefObject<ReturnType<typeof createAudioPlayer> | null>
@@ -91,13 +97,18 @@ function playToCompletion(
   return new Promise((resolve) => {
     const player = createAudioPlayer(uri);
     playerRef.current = player;
+
+    const finish = () => {
+      clearTimeout(timeoutId);
+      subscription.remove();
+      player.release();
+      if (playerRef.current === player) playerRef.current = null;
+      resolve();
+    };
+
+    const timeoutId = setTimeout(finish, MAX_PLAYBACK_MS);
     const subscription = player.addListener('playbackStatusUpdate', (status) => {
-      if (status.didJustFinish) {
-        subscription.remove();
-        player.release();
-        playerRef.current = null;
-        resolve();
-      }
+      if (status.didJustFinish || status.error) finish();
     });
     player.play();
   });
