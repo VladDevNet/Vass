@@ -157,12 +157,12 @@ export interface DeviceLink {
 
 // Mirrors VoiceAssistant.API/Controllers/SettingsController.cs's
 // SettingsResponse exactly — PUT /settings unconditionally overwrites
-// displayName and customSystemPrompt with whatever's in the request body
-// (only the API-key fields have an explicit "already-masked, don't change"
-// guard), so updateDisplayName below must round-trip the full object rather
-// than send just the one field it cares about — otherwise a mobile-only
-// user update would silently wipe e.g. a customSystemPrompt set earlier via
-// the "запомни, говори медленнее" voice-command feature.
+// displayName/assistantName/customSystemPrompt with whatever's in the
+// request body (only the API-key fields have an explicit "already-masked,
+// don't change" guard), so updateNames below must round-trip the full
+// object rather than send just the fields it cares about — otherwise a
+// mobile-only update would silently wipe e.g. a customSystemPrompt set
+// earlier via the "запомни, говори медленнее" voice-command feature.
 export interface Settings {
   displayName: string | null;
   assistantName: string | null;
