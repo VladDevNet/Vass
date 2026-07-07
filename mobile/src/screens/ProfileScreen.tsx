@@ -23,8 +23,9 @@ interface ProfileScreenProps {
 }
 
 export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
-  const { displayName, refreshDisplayName } = useAuth();
+  const { displayName, assistantName, refreshProfile } = useAuth();
   const [name, setName] = useState(displayName ?? '');
+  const [assistantNameInput, setAssistantNameInput] = useState(assistantName ?? '');
   const [savingName, setSavingName] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
 
@@ -50,7 +51,7 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
     };
   }, []);
 
-  async function handleSaveName() {
+  async function handleSaveNames() {
     const trimmed = name.trim();
     if (!trimmed) {
       setNameError('Введите имя');
@@ -59,8 +60,8 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
     setNameError(null);
     setSavingName(true);
     try {
-      await api.updateDisplayName(trimmed);
-      await refreshDisplayName();
+      await api.updateNames(trimmed, assistantNameInput);
+      await refreshProfile();
       onDone();
     } catch (err) {
       setNameError(err instanceof Error ? err.message : String(err));
@@ -89,10 +90,20 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
         value={name}
         onChangeText={setName}
       />
+
+      <Text style={styles.label}>Как назвать ассистента?</Text>
+      <Text style={styles.hint}>Необязательно — можно оставить пустым</Text>
+      <TextInput
+        style={styles.input}
+        placeholder="Например, Ольга"
+        value={assistantNameInput}
+        onChangeText={setAssistantNameInput}
+      />
+
       {nameError && <Text style={styles.error}>{nameError}</Text>}
       <Pressable
         style={[styles.button, savingName && styles.buttonDisabled]}
-        onPress={handleSaveName}
+        onPress={handleSaveNames}
         disabled={savingName}
       >
         {savingName ? (
