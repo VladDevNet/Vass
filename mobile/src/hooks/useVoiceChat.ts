@@ -12,7 +12,23 @@ import { useVad } from './useVad';
 
 export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking';
 
-const RECORDING_OPTIONS = { ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: true };
+// android.audioSource defaults to MediaRecorder.AudioSource.MIC — raw,
+// unprocessed input (verified in expo-audio's own AudioRecorder.kt) — unlike
+// the web client's getUserMedia({ audio: { autoGainControl: true,
+// noiseSuppression: true, echoCancellation: true } }) (frontend/js/yolo.js's
+// acquireMicrophone). 'voice_communication' is the Android MediaRecorder
+// source Android itself documents as taking advantage of echo cancellation
+// and automatic gain control if available — the mobile equivalent of what
+// the web client already gets for free. Without it, quiet/typical
+// conversational speech sits much closer to the VAD threshold and takes the
+// smoothing filter longer to cross it, which is the most likely explanation
+// for real-device reports of an overly sensitive threshold and longer
+// speech-detection latency than the web version.
+const RECORDING_OPTIONS = {
+  ...RecordingPresets.HIGH_QUALITY,
+  isMeteringEnabled: true,
+  android: { ...RecordingPresets.HIGH_QUALITY.android, audioSource: 'voice_communication' as const },
+};
 
 // Placeholder fixed pause before auto-submitting — replaced by real
 // completeness-check timing (server already has /chat/check-utterance) in
