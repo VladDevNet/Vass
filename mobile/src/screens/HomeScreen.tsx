@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useKeepAwake } from 'expo-keep-awake';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../api/client';
 import { useVoiceChat } from '../hooks/useVoiceChat';
@@ -13,6 +14,12 @@ const STATE_LABEL: Record<string, string> = {
 };
 
 export function HomeScreen() {
+  // A slower-paced conversation with pauses between turns is normal here —
+  // the screen locking mid-conversation would be more disruptive than a
+  // phone that stays awake while this screen is open, so this covers the
+  // whole screen, not just the active recording/speaking states.
+  useKeepAwake();
+
   const { user, logout } = useAuth();
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
@@ -75,7 +82,7 @@ export function HomeScreen() {
       )}
       {!!reply && (
         <View style={[styles.bubble, styles.bubbleReply]}>
-          <Text style={styles.bubbleLabel}>Ольга:</Text>
+          <Text style={styles.bubbleLabel}>Ассистент:</Text>
           <Text style={styles.bubbleText}>{reply}</Text>
         </View>
       )}
