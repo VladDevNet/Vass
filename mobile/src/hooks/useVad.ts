@@ -7,7 +7,10 @@ const POLL_INTERVAL_MS = 50;
 // ~250ms of sustained sound before treating it as real speech (not a click
 // or door slam) — same debounce shape as the web client's proven VAD
 // (frontend/js/yolo.js's START_SPEECH_FRAMES, also 5 frames at a 50ms tick).
-const START_SPEECH_FRAMES = 5;
+// The caller can raise this (see UseVadOptions.startFrames) for a stricter
+// bar — e.g. barge-in, where yolo.js requires 10 frames (~500ms) instead of
+// 5 before treating sound during playback as a real interruption.
+const DEFAULT_START_SPEECH_FRAMES = 5;
 
 // Shorter debounce for speech RESUMING after a mid-utterance pause — yolo.js
 // uses a lighter 2-frame (100ms) bar here than the 5-frame initial-onset
@@ -30,6 +33,10 @@ export interface UseVadOptions {
   // (idle+recording = armed, thinking+speaking = not, until barge-in lands).
   active: boolean;
   thresholdDb?: number;
+  // How many consecutive loud frames before treating sound as real speech —
+  // see DEFAULT_START_SPEECH_FRAMES. Raised by the caller for a stricter,
+  // slower-to-trigger bar (barge-in during TTS playback).
+  startFrames?: number;
   // Fires once per armed period, on the initial speech onset.
   onSpeechStart: () => void;
   // Fires each time speech resumes after a mid-utterance pause (a shorter
@@ -58,6 +65,7 @@ export function useVad({
   recorder,
   active,
   thresholdDb = DEFAULT_THRESHOLD_DB,
+  startFrames = DEFAULT_START_SPEECH_FRAMES,
   onSpeechStart,
   onSpeechResume,
   onSilenceTick,
@@ -112,7 +120,7 @@ export function useVad({
         resumeFramesRef.current++;
 
         if (!hasSpokenRef.current) {
-          if (speechFramesRef.current >= START_SPEECH_FRAMES) {
+          if (speechFramesRef.current >= startFrames) {
             hasSpokenRef.current = true;
             isSilentRef.current = false;
             speechStartAtRef.current = now;
@@ -143,5 +151,5 @@ export function useVad({
     }, POLL_INTERVAL_MS);
 
     return () => clearInterval(interval);
-  }, [active, recorder, thresholdDb]);
+  }, [active, recorder, thresholdDb, startFrames]);
 }
