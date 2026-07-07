@@ -12,6 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl && 
 # mcr.microsoft.com/dotnet/aspnet already ships a non-root "app" user (uid 1654) — reuse it
 RUN mkdir -p /app/audio && chown -R app:app /app/audio
 
+# Copied while still root, so the app's own files stay root:root (read-only
+# to app, which is fine — it only ever needs to write to /app/audio).
 COPY --from=build /app .
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
