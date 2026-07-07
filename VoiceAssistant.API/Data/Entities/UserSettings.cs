@@ -7,6 +7,7 @@ public class UserSettings
     public User User { get; set; } = null!;
 
     public string? DisplayName { get; set; }
+    public string? AssistantName { get; set; }
     public string InterfaceLanguage { get; set; } = "uk";
     public string? OpenAiApiKey { get; set; }
     public string? AnthropicApiKey { get; set; }

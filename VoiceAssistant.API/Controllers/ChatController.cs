@@ -307,7 +307,7 @@ public class ChatController : ControllerBase
             m.Content
         )).ToList();
 
-        var systemPrompt = _tutor.GetSystemPrompt(settings?.CustomSystemPrompt, settings?.DisplayName);
+        var systemPrompt = _tutor.GetSystemPrompt(settings?.CustomSystemPrompt, settings?.DisplayName, settings?.AssistantName);
 
         if (speakerResult?.KnownName != null)
         {

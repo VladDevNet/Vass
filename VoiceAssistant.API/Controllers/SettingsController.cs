@@ -24,6 +24,7 @@ public class SettingsController : ControllerBase
 
     public record SettingsResponse(
         string? DisplayName,
+        string? AssistantName,
         string InterfaceLanguage,
         string? OpenAiApiKey,
         string? AnthropicApiKey,
@@ -33,6 +34,7 @@ public class SettingsController : ControllerBase
 
     public record SettingsUpdateRequest(
         string? DisplayName,
+        string? AssistantName,
         string? InterfaceLanguage,
         string? OpenAiApiKey,
         string? AnthropicApiKey,
@@ -48,6 +50,7 @@ public class SettingsController : ControllerBase
 
         return Ok(new SettingsResponse(
             settings?.DisplayName,
+            settings?.AssistantName,
             settings?.InterfaceLanguage ?? "uk",
             MaskKey(settings?.OpenAiApiKey),
             MaskKey(settings?.AnthropicApiKey),
@@ -60,6 +63,16 @@ public class SettingsController : ControllerBase
     [HttpPut]
     public async Task<IActionResult> Update([FromBody] SettingsUpdateRequest req)
     {
+        // DisplayName/AssistantName are HasMaxLength(100) at the DB level —
+        // without this check, exceeding it surfaces as a raw 500 from a
+        // Postgres string-truncation error instead of a clean validation
+        // response. Found by testing a 101-char value against an isolated
+        // build before merging, not by inspection alone.
+        if (req.DisplayName?.Length > 100)
+            return BadRequest(new { error = "Имя слишком длинное (максимум 100 символов)" });
+        if (req.AssistantName?.Length > 100)
+            return BadRequest(new { error = "Имя ассистента слишком длинное (максимум 100 символов)" });
+
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
         var settings = await _db.UserSettings.FirstOrDefaultAsync(s => s.UserId == userId);
 
@@ -70,6 +83,7 @@ public class SettingsController : ControllerBase
         }
 
         settings.DisplayName = req.DisplayName;
+        settings.AssistantName = req.AssistantName;
         if (req.InterfaceLanguage is not null)
             settings.InterfaceLanguage = req.InterfaceLanguage;
 
@@ -92,6 +106,7 @@ public class SettingsController : ControllerBase
 
         return Ok(new SettingsResponse(
             settings.DisplayName,
+            settings.AssistantName,
             settings.InterfaceLanguage,
             MaskKey(settings.OpenAiApiKey),
             MaskKey(settings.AnthropicApiKey),
