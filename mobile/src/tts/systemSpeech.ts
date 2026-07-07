@@ -1,4 +1,7 @@
 import * as Speech from 'expo-speech';
+import * as SecureStore from 'expo-secure-store';
+
+const VOICE_PREFERENCE_KEY = 'vass_voice_id';
 
 // Android's TextToSpeech.speak() hard-rejects (throws) text longer than this
 // — expo-speech doesn't chunk automatically. A warm, conversational reply
@@ -16,10 +19,59 @@ const MAX_SPEECH_MS = 60_000;
 // undefined = not looked up yet this session, null = no Russian voice found.
 let cachedRussianVoice: string | null | undefined;
 
+export async function listRussianVoices(): Promise<Speech.Voice[]> {
+  const voices = await Speech.getAvailableVoicesAsync();
+  return voices.filter((v) => v.language.toLowerCase().startsWith('ru'));
+}
+
+// The resolved voice actually in effect right now — an explicit preference
+// from the settings screen if one was ever set, otherwise the same
+// auto-picked default speakToCompletion() would fall back to. Exported so
+// the settings screen can highlight "what's currently active" even for
+// someone who never explicitly chose anything.
+export async function getResolvedVoiceId(): Promise<string | null> {
+  return getRussianVoice();
+}
+
+export async function setVoicePreference(identifier: string | null): Promise<void> {
+  // Update the in-memory cache immediately — otherwise a voice change made
+  // from settings mid-session wouldn't take effect until app restart, since
+  // getRussianVoice() below only re-reads storage when the cache is unset.
+  cachedRussianVoice = identifier;
+  try {
+    if (identifier) {
+      await SecureStore.setItemAsync(VOICE_PREFERENCE_KEY, identifier);
+    } else {
+      await SecureStore.deleteItemAsync(VOICE_PREFERENCE_KEY);
+    }
+  } catch {
+    // no-op on platforms without a working SecureStore (web preview only) —
+    // matches client.ts's setToken
+  }
+}
+
+// Interrupts whatever's currently playing (a previous preview, if the user
+// is tapping through several voices quickly) before starting the new one.
+export function previewVoice(identifier: string): void {
+  Speech.stop();
+  Speech.speak('Привет! Вот как звучит этот голос.', { language: 'ru-RU', voice: identifier });
+}
+
 async function getRussianVoice(): Promise<string | null> {
   if (cachedRussianVoice !== undefined) return cachedRussianVoice;
-  const voices = await Speech.getAvailableVoicesAsync();
-  const russian = voices.filter((v) => v.language.toLowerCase().startsWith('ru'));
+
+  let stored: string | null = null;
+  try {
+    stored = await SecureStore.getItemAsync(VOICE_PREFERENCE_KEY);
+  } catch {
+    // no-op — falls through to auto-pick, same as client.ts's loadStoredToken
+  }
+  if (stored) {
+    cachedRussianVoice = stored;
+    return stored;
+  }
+
+  const russian = await listRussianVoices();
   const best = russian.find((v) => v.quality === Speech.VoiceQuality.Enhanced) ?? russian[0];
   cachedRussianVoice = best?.identifier ?? null;
   return cachedRussianVoice;

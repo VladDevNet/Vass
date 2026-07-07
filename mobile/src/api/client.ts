@@ -39,6 +39,28 @@ export async function setToken(next: string | null): Promise<void> {
   }
 }
 
+const ONBOARDING_DISMISSED_KEY = 'vass_onboarding_dismissed';
+
+// Whether the user has ever gotten through (saved or skipped) the profile
+// setup screen — separate from whether displayName is actually set, since
+// skipping deliberately leaves it null. Without this, a user who skips
+// would see the setup screen again on every single app launch, forever.
+export async function isOnboardingDismissed(): Promise<boolean> {
+  try {
+    return (await SecureStore.getItemAsync(ONBOARDING_DISMISSED_KEY)) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export async function dismissOnboarding(): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(ONBOARDING_DISMISSED_KEY, '1');
+  } catch {
+    // no-op on platforms without a working SecureStore (web preview only)
+  }
+}
+
 class ApiError extends Error {}
 
 // A stalled request (dead wifi, unreachable server) would otherwise hang the
@@ -133,6 +155,24 @@ export interface DeviceLink {
   expiresAt: string;
 }
 
+// Mirrors VoiceAssistant.API/Controllers/SettingsController.cs's
+// SettingsResponse exactly — PUT /settings unconditionally overwrites
+// displayName and customSystemPrompt with whatever's in the request body
+// (only the API-key fields have an explicit "already-masked, don't change"
+// guard), so updateDisplayName below must round-trip the full object rather
+// than send just the one field it cares about — otherwise a mobile-only
+// user update would silently wipe e.g. a customSystemPrompt set earlier via
+// the "запомни, говори медленнее" voice-command feature.
+export interface Settings {
+  displayName: string | null;
+  interfaceLanguage: string;
+  openAiApiKey: string | null;
+  anthropicApiKey: string | null;
+  geminiApiKey: string | null;
+  customSystemPrompt: string | null;
+  fullTranslation: boolean;
+}
+
 export const api = {
   register: (email: string, password: string) =>
     request<AuthResponse>('/auth/register', {
@@ -159,6 +199,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ code }),
     }),
+
+  getSettings: () => request<Settings>('/settings'),
+
+  // See the Settings interface's comment — sends back everything currently
+  // in settings, not just the changed field, since the endpoint doesn't
+  // guard displayName/customSystemPrompt the way it guards API keys.
+  updateDisplayName: async (displayName: string): Promise<void> => {
+    const current = await request<Settings>('/settings');
+    await request<Settings>('/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ ...current, displayName }),
+    });
+  },
 
   // Uploads a just-recorded clip (from expo-audio's recorder.uri) ahead of
   // sendMessage. Multipart, not JSON — bypasses request()'s Content-Type.

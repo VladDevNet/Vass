@@ -1,13 +1,33 @@
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
+import { dismissOnboarding, isOnboardingDismissed } from './src/api/client';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
+import { ProfileScreen } from './src/screens/ProfileScreen';
 
 function Root() {
-  const { isLoading, user } = useAuth();
+  const { isLoading, user, displayName } = useAuth();
+  // null = not checked yet this session (only matters once a user exists —
+  // see the loading-gate below, which waits on this too so we don't flash
+  // onboarding for a split second before the dismissed flag loads).
+  const [onboardingDismissed, setOnboardingDismissed] = useState<boolean | null>(null);
 
-  if (isLoading) {
+  useEffect(() => {
+    if (user) isOnboardingDismissed().then(setOnboardingDismissed);
+  }, [user]);
+
+  async function handleOnboardingDone() {
+    // Persisted unconditionally, whether they saved a name or skipped —
+    // if they saved, displayName is now set anyway so this check never
+    // matters again; if they skipped, this is what stops it from
+    // re-prompting on every future launch.
+    await dismissOnboarding();
+    setOnboardingDismissed(true);
+  }
+
+  if (isLoading || (user && onboardingDismissed === null)) {
     return (
       <View style={styles.loading}>
         <ActivityIndicator size="large" />
@@ -15,7 +35,11 @@ function Root() {
     );
   }
 
-  return user ? <HomeScreen /> : <LoginScreen />;
+  if (!user) return <LoginScreen />;
+  if (!displayName && !onboardingDismissed) {
+    return <ProfileScreen mode="onboarding" onDone={handleOnboardingDone} />;
+  }
+  return <HomeScreen />;
 }
 
 export default function App() {
