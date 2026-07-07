@@ -1,5 +1,12 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import { api, getToken, loadStoredToken, setToken, type CurrentUser } from '../api/client';
+import {
+  api,
+  getToken,
+  loadStoredToken,
+  setToken,
+  setUnauthorizedHandler,
+  type CurrentUser,
+} from '../api/client';
 
 interface AuthContextValue {
   isLoading: boolean;
@@ -17,6 +24,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
 
   useEffect(() => {
+    // Any 401 anywhere (an expired/revoked token mid-session, not just on
+    // the calls made directly from this effect) should drop the app back to
+    // LoginScreen instead of leaving the user stuck on HomeScreen retrying
+    // a dead token — see client.ts's setUnauthorizedHandler.
+    setUnauthorizedHandler(() => setUser(null));
+
     (async () => {
       await loadStoredToken();
       if (getToken()) {
@@ -28,6 +41,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       setIsLoading(false);
     })();
+
+    return () => setUnauthorizedHandler(null);
   }, []);
 
   async function login(email: string, password: string) {
