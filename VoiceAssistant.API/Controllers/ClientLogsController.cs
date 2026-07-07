@@ -48,6 +48,16 @@ public class ClientLogsController : ControllerBase
 
         foreach (var entry in req.Entries.Take(MaxEntriesPerBatch))
         {
+            // RunId/Level/Category map to bounded columns (see AppDbContext's
+            // HasMaxLength) — an over-length value would otherwise reach
+            // SaveChangesAsync and 500 on Postgres's own truncation error,
+            // same bug class SettingsController guards DisplayName against.
+            // This endpoint takes any authenticated caller's input, not just
+            // the bundled app, so skip (not truncate — truncating a Level/
+            // Category into something else silently corrupts it) rather than
+            // trust every field is already within bounds.
+            if (entry.RunId.Length > 40 || entry.Level.Length > 10 || entry.Category.Length > 20) continue;
+
             _db.ClientLogEntries.Add(new ClientLogEntry
             {
                 UserId = userId,
