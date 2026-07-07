@@ -1,5 +1,6 @@
 import * as Speech from 'expo-speech';
 import * as SecureStore from 'expo-secure-store';
+import { log } from '../logging/remoteLogger';
 
 const VOICE_PREFERENCE_KEY = 'vass_voice_id';
 
@@ -202,7 +203,7 @@ function consumeExpectedStop(): boolean {
 // device. Rejecting instead lets speakToCompletion's existing catch below
 // re-throw, which triggers useVoiceChat's existing network-TTS fallback —
 // same recovery path as any other on-device TTS failure.
-function speakChunk(text: string, voice: string): Promise<void> {
+function speakChunk(text: string, voice: string, chunkIndex: number, totalChunks: number): Promise<void> {
   return new Promise((resolve, reject) => {
     Speech.speak(text, {
       language: 'ru-RU',
@@ -212,11 +213,21 @@ function speakChunk(text: string, voice: string): Promise<void> {
         if (consumeExpectedStop()) {
           resolve();
         } else {
-          console.warn('[TTS] onStopped without an expected stop — likely lost audio focus');
+          log('warn', 'tts', 'onStopped without an expected stop — likely lost audio focus', {
+            chunkIndex,
+            totalChunks,
+          });
           reject(new Error('Speech stopped unexpectedly'));
         }
       },
-      onError: (err) => reject(err),
+      onError: (err) => {
+        log('error', 'tts', 'chunk error', {
+          chunkIndex,
+          totalChunks,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        reject(err);
+      },
     });
   });
 }
@@ -234,20 +245,23 @@ export async function speakToCompletion(text: string): Promise<void> {
   const chunks = splitIntoChunks(clean, MAX_CHUNK_LENGTH);
   if (chunks.length === 0) return;
 
+  log('debug', 'tts', 'speaking reply', { voice, chunkCount: chunks.length, textLength: clean.length });
+
   let timedOut = false;
   // Stops (not just ignores) playback once the cap is hit — resolving
   // without calling stop() would let a long reply keep talking in the
   // background after the UI has already moved on to 'idle'.
   const timeoutId = setTimeout(() => {
     timedOut = true;
+    log('warn', 'tts', 'MAX_SPEECH_MS safety timeout hit');
     markExpectedStop();
     Speech.stop();
   }, MAX_SPEECH_MS);
 
   try {
-    for (const chunk of chunks) {
+    for (let i = 0; i < chunks.length; i++) {
       if (timedOut) break;
-      await speakChunk(chunk, voice);
+      await speakChunk(chunks[i], voice, i, chunks.length);
     }
   } catch (err) {
     // A mid-reply failure (bad chunk, engine error) — stop rather than
