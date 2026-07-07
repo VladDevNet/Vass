@@ -175,6 +175,25 @@ function consumeExpectedStop(): boolean {
   return was;
 }
 
+// Separate from expectedStop: marking a stop as "expected" only stops the
+// CURRENT chunk cleanly (its onStopped resolves instead of rejecting) — it
+// does nothing to stop speakToCompletion's for-loop from moving on to the
+// NEXT chunk of a multi-chunk reply, since that loop only breaks early on
+// its own local `timedOut` flag (see MAX_SPEECH_MS below). Barge-in needs
+// both: stop cleanly AND don't continue. Checked (and reset for the next
+// call) inside speakToCompletion itself, right alongside `timedOut`.
+let interruptRequested = false;
+
+// Public API — call to cut a reply short on purpose mid-playback (barge-in)
+// and prevent it from continuing to any remaining chunks. Distinct from
+// stopSpeaking() (unmount cleanup, where nothing continues afterward
+// regardless so the loop-breaking distinction doesn't matter).
+export function interruptSpeaking(): void {
+  interruptRequested = true;
+  markExpectedStop();
+  Speech.stop();
+}
+
 // Speaks one chunk and resolves once it's actually finished via onDone, or
 // rejects on onError. speak() itself is fire-and-forget on the JS side: on
 // Android it dispatches onto a native background thread (AppContext's own
@@ -247,6 +266,10 @@ export async function speakToCompletion(text: string): Promise<void> {
 
   log('debug', 'tts', 'speaking reply', { voice, chunkCount: chunks.length, textLength: clean.length });
 
+  // Fresh for this call — a barge-in from a PREVIOUS reply must not leak
+  // into cutting this new one off before it even starts.
+  interruptRequested = false;
+
   let timedOut = false;
   // Stops (not just ignores) playback once the cap is hit — resolving
   // without calling stop() would let a long reply keep talking in the
@@ -260,7 +283,7 @@ export async function speakToCompletion(text: string): Promise<void> {
 
   try {
     for (let i = 0; i < chunks.length; i++) {
-      if (timedOut) break;
+      if (timedOut || interruptRequested) break;
       await speakChunk(chunks[i], voice, i, chunks.length);
     }
   } catch (err) {

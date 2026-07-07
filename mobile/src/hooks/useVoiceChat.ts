@@ -7,8 +7,8 @@ import {
   useAudioRecorder,
 } from 'expo-audio';
 import { api, API_URL, sendMessage } from '../api/client';
-import { speakToCompletion, stopSpeaking } from '../tts/systemSpeech';
-import { useVad } from './useVad';
+import { interruptSpeaking, speakToCompletion, stopSpeaking } from '../tts/systemSpeech';
+import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
 
 export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking';
@@ -21,7 +21,9 @@ export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking';
 // source Android itself documents as taking advantage of echo cancellation
 // and automatic gain control if available. Real-device logs from the VAD
 // checkpoint confirm this works: speech reads -18 to -29dB smoothed, a
-// healthy margin above the -35dB threshold.
+// healthy margin above the -35dB threshold. Echo cancellation specifically
+// also matters for barge-in below — it's what should keep the recorder from
+// hearing Olga's own TTS output as if it were the user interrupting.
 const RECORDING_OPTIONS = {
   ...RecordingPresets.HIGH_QUALITY,
   isMeteringEnabled: true,
@@ -54,22 +56,40 @@ const BACKCHANNEL_FILLERS = ['back-1.wav', 'back-2.wav', 'back-3.wav', 'back-4.w
   (f) => `${API_URL}/audio/fillers/${f}`
 );
 
-// Third mobile voice-loop increment (docs/react-native/BACKLOG.md Phase 1):
-// real turn-taking via the existing /chat/check-utterance endpoint, on top
-// of the VAD foundation. Not a literal port of yolo.js's snapshot-based
-// design — expo-audio's AudioRecorder has no way to read a recording's
-// bytes without stopping it first (unlike Web MediaRecorder's incremental
-// chunk delivery, confirmed by reading AudioRecorder.kt directly: the only
-// way to get a valid, parseable file is stopRecording(), which fully
-// finalizes and releases the native recorder). So each completeness check
-// here stops the current segment, immediately re-arms a fresh one for the
-// continuation (useVad's own state persists across this, since
-// active/recorder don't change — see useVad.ts), and accumulates each
-// segment's transcription as TEXT rather than trying to stitch raw audio
-// together. This actually matches yolo.js's own submitKnownText more
-// closely than its snapshot mechanism does: once a completeness check has
-// transcribed anything, the reference implementation sends that text
-// directly too, with no separate audio upload for that turn.
+// Barge-in tuning — yolo.js's exact frame count (10, ~500ms — double the
+// normal 5-frame/250ms onset bar) so a stray sound during playback needs to
+// be clearly sustained speech, not a click, before cutting Olga off.
+// yolo.js raises its threshold by a 2.5x RMS multiplier during SPEAKING;
+// dBFS is already logarithmic, so the equivalent additive shift is
+// 20*log10(2.5) ≈ 8dB (not a literal ports of the multiplier itself, which
+// doesn't translate directly onto a log scale).
+const INTERRUPTION_FRAMES = 10;
+const INTERRUPTION_THRESHOLD_DB = DEFAULT_THRESHOLD_DB + 8;
+
+// Third and fourth mobile voice-loop increments (docs/react-native/BACKLOG.md
+// Phase 1): real turn-taking via the existing /chat/check-utterance endpoint,
+// and barge-in on top of it. Not a literal port of yolo.js's snapshot-based
+// design — expo-audio's AudioRecorder has no way to read a recording's bytes
+// without stopping it first (unlike Web MediaRecorder's incremental chunk
+// delivery, confirmed by reading AudioRecorder.kt directly: the only way to
+// get a valid file is stopRecording(), which fully finalizes and releases
+// the native recorder). So each completeness check here stops the current
+// segment, immediately re-arms a fresh one for the continuation (useVad's
+// own state persists across this, since active/recorder don't change — see
+// useVad.ts), and accumulates each segment's transcription as TEXT rather
+// than trying to stitch raw audio together. This actually matches yolo.js's
+// own submitKnownText more closely than its snapshot mechanism does: once a
+// completeness check has transcribed anything, the reference implementation
+// sends that text directly too, with no separate audio upload for that turn.
+//
+// Barge-in requires the mic to be live and VAD watching for the ENTIRE
+// 'speaking' duration, not just after — so the recorder now arms BEFORE TTS
+// starts (see finalizeWithText), not after. recorderLiveRef tracks whether
+// the native recorder is currently prepared+recording so armMic/
+// rearmRecorderOnly/stopRecorderIfLive can each be called unconditionally
+// wherever they're needed without worrying about double-arming (which
+// expo-audio throws AudioRecorderAlreadyPreparedException for — confirmed in
+// AudioRecorder.kt's prepareRecording) or double-stopping.
 export function useVoiceChat(sessionId: number | null) {
   const [state, setState] = useState<VoiceState>('idle');
   const [micArmed, setMicArmed] = useState(false);
@@ -80,6 +100,12 @@ export function useVoiceChat(sessionId: number | null) {
   const playerRef = useRef<ReturnType<typeof createAudioPlayer> | null>(null);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
+  // Mirrors `state` into a ref so useVad's stable onSpeechStart callback can
+  // read the CURRENT state (barge-in only applies during 'speaking') without
+  // needing to be recreated — and therefore without needing to be in
+  // useVad's effect dependency array — on every state change.
+  const stateRef = useRef(state);
+  stateRef.current = state;
   // Guards the various finalize/discard paths against overlapping — several
   // independent triggers (the silence ceiling, a completeness check saying
   // "complete", the manual override tap) can each try to finalize, so a
@@ -94,6 +120,16 @@ export function useVoiceChat(sessionId: number | null) {
   // prepareToRecordAsync()/record() on a recorder already released by
   // useReleasingSharedObject, or setState on an unmounted component.
   const mountedRef = useRef(true);
+  // Whether the native recorder is currently prepared+recording — see the
+  // file-level comment. Set by armMic/rearmRecorderOnly, cleared by
+  // stopRecorderIfLive.
+  const recorderLiveRef = useRef(false);
+  // Set on a confirmed barge-in, checked in finalizeWithText's finally block
+  // so it skips the normal end-of-turn armMic() — a barge-in already
+  // transitioned straight to 'recording' with its own turn-taking state
+  // freshly underway (see handleSpeechStart), and armMic() would incorrectly
+  // reset that out from under it.
+  const bargedInRef = useRef(false);
 
   // Turn-taking state — see triggerCompletenessCheck/finalizeWithText below.
   const pendingTextRef = useRef(''); // confirmed transcript accumulated across check cycles this turn
@@ -113,9 +149,45 @@ export function useVoiceChat(sessionId: number | null) {
     };
   }, []);
 
-  // (Re)arms the mic for a brand-new turn: resets turn-taking state and
-  // starts a fresh recording file so VAD can watch it from the moment
-  // "idle" begins — matches yolo.js starting a brand-new MediaRecorder in
+  // Re-arms the underlying native recorder — a no-op if it's already live
+  // (e.g. armed ahead of TTS playback for barge-in, then reached here again
+  // via the normal end-of-turn path) so callers never need to know whether
+  // someone else already armed it first.
+  const rearmRecorderOnly = useCallback(async () => {
+    if (!mountedRef.current || recorderLiveRef.current) return;
+    try {
+      await recorder.prepareToRecordAsync();
+      if (!mountedRef.current) return;
+      recorder.record();
+      recorderLiveRef.current = true;
+    } catch (err) {
+      if (!mountedRef.current) return;
+      log('error', 'mic', 'rearm failed', { error: err instanceof Error ? err.message : String(err) });
+      // Left un-recovered here on purpose — the next silence tick (or the
+      // hard ceiling) will find a dead recorder, fail its own check
+      // attempt, and finalize with whatever text has already been
+      // accumulated rather than getting stuck.
+    }
+  }, [recorder]);
+
+  // Stops the native recorder if it's currently live, returning its uri (or
+  // null if it wasn't live / stop failed) — a no-op-safe counterpart to
+  // rearmRecorderOnly so callers don't need to track native state themselves.
+  const stopRecorderIfLive = useCallback(async (): Promise<string | null> => {
+    if (!recorderLiveRef.current) return null;
+    recorderLiveRef.current = false;
+    try {
+      await recorder.stop();
+      return recorder.uri || null;
+    } catch (err) {
+      log('warn', 'mic', 'stop failed', { error: err instanceof Error ? err.message : String(err) });
+      return null;
+    }
+  }, [recorder]);
+
+  // (Re)arms for a brand-new turn: resets turn-taking state and starts a
+  // fresh recording file so VAD can watch it from the moment "idle" begins
+  // — matches yolo.js starting a brand-new MediaRecorder in
   // startUserListening() on every re-entry to IDLE, rather than only
   // starting to capture once speech is already detected.
   const armMic = useCallback(async () => {
@@ -124,42 +196,13 @@ export function useVoiceChat(sessionId: number | null) {
     nextCheckAtRef.current = CHECK_SILENCE_THRESHOLD_MS;
     checkInFlightRef.current = false;
     speechResumedSinceCheckRef.current = false;
-    try {
-      await recorder.prepareToRecordAsync();
-      if (!mountedRef.current) return; // unmounted while awaiting prepare
-      recorder.record();
-      setMicArmed(true);
-      setState('idle');
-      log('debug', 'mic', 'armed');
-    } catch (err) {
-      if (!mountedRef.current) return;
-      setMicArmed(false);
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
-      log('error', 'mic', 'arm failed', { error: message });
-    }
-  }, [recorder]);
-
-  // Re-arms the underlying native recorder for a continuation segment
-  // WITHOUT touching state/turn-taking accumulators — used mid-turn by
-  // triggerCompletenessCheck, where we're still in the same conversational
-  // turn, just starting a fresh file because expo-audio can't snapshot the
-  // current one without stopping it.
-  const rearmRecorderOnly = useCallback(async () => {
-    if (!mountedRef.current) return;
-    try {
-      await recorder.prepareToRecordAsync();
-      if (!mountedRef.current) return;
-      recorder.record();
-    } catch (err) {
-      if (!mountedRef.current) return;
-      log('error', 'mic', 'mid-turn rearm failed', { error: err instanceof Error ? err.message : String(err) });
-      // Left un-recovered here on purpose — the next silence tick (or the
-      // hard ceiling) will find a dead recorder, fail its own check
-      // attempt, and finalize with whatever text has already been
-      // accumulated rather than getting stuck.
-    }
-  }, [recorder]);
+    bargedInRef.current = false;
+    await rearmRecorderOnly();
+    if (!mountedRef.current || !recorderLiveRef.current) return;
+    setMicArmed(true);
+    setState('idle');
+    log('debug', 'mic', 'armed');
+  }, [rearmRecorderOnly]);
 
   // One-time setup: mic permission + audio mode, then arm for the first turn.
   useEffect(() => {
@@ -195,6 +238,15 @@ export function useVoiceChat(sessionId: number | null) {
     const sid = sessionIdRef.current;
     const text = pendingTextRef.current.trim();
     pendingTextRef.current = '';
+    // Reset unconditionally, not just on the success path below — this call
+    // itself can be the turn AFTER a barge-in (the interrupting utterance's
+    // own finalize). If it were only cleared inside the `fullReply.trim()`
+    // success branch and THIS call's sendMessage then throws or returns an
+    // empty reply, the stale `true` from the original interruption would
+    // make the finally block below skip armMic() for an entirely unrelated
+    // turn — state stuck at 'thinking' with no recovery, since the manual
+    // override is disabled while busy. Caught by independent review.
+    bargedInRef.current = false;
 
     if (!sid || !text) {
       finalizingRef.current = false;
@@ -212,11 +264,7 @@ export function useVoiceChat(sessionId: number | null) {
       // Whatever mid-turn continuation recording is currently running gets
       // discarded here — same as yolo.js's submitKnownText clearing
       // currentRecordingChunks with no further use of them.
-      try {
-        await recorder.stop();
-      } catch {
-        // already stopped/inactive — nothing to clean up
-      }
+      await stopRecorderIfLive();
 
       const fullReply = await sendMessage(
         { sessionId: sid, message: text },
@@ -225,13 +273,22 @@ export function useVoiceChat(sessionId: number | null) {
       log('info', 'turn', 'reply received', { sendMs: Date.now() - turnStartedAt, replyLength: fullReply.length });
 
       if (fullReply.trim()) {
+        // Arm BEFORE speaking, not after — barge-in needs VAD watching for
+        // the entire playback, not just once it's done. useVad's `active`
+        // below already includes 'speaking', so as soon as setState fires
+        // the tick loop starts watching this live recorder.
+        await rearmRecorderOnly();
         setState('speaking');
         // System TTS (expo-speech) is the primary path — instant, no network
-        // hop. Its failure modes are all recoverable in JS (missing Russian
-        // voice, native "text too long" rejection despite our own chunking,
-        // a transient engine error) so any of them falls back to the
-        // existing buffered server-Piper path rather than the reply going
-        // silent.
+        // hop. A barge-in interruption (interruptSpeaking(), see
+        // handleSpeechStart/forceFinalize below) makes speakToCompletion
+        // return normally, not throw — systemSpeech.ts's own
+        // interruptRequested flag breaks its chunk loop cleanly, so this
+        // catch never sees a barge-in at all, only genuine on-device TTS
+        // failures (missing Russian voice, native "text too long" rejection
+        // despite our own chunking, a transient engine error) — all of
+        // which still fall back to the existing buffered server-Piper path
+        // rather than the reply going silent.
         try {
           await speakToCompletion(fullReply);
         } catch (err) {
@@ -249,9 +306,15 @@ export function useVoiceChat(sessionId: number | null) {
       log('error', 'turn', 'finalize failed', { error: message, elapsedMs: Date.now() - turnStartedAt });
     } finally {
       finalizingRef.current = false;
-      await armMic();
+      // A confirmed barge-in already transitioned to 'recording' with the
+      // interrupting speech's own onset already detected (see
+      // handleSpeechStart) — armMic() here would incorrectly reset that
+      // in-progress turn's state (pendingText/nextCheckAt/etc.) out from
+      // under it. Only re-arm normally when this turn actually finished on
+      // its own.
+      if (!bargedInRef.current) await armMic();
     }
-  }, [recorder, armMic]);
+  }, [armMic, rearmRecorderOnly, stopRecorderIfLive]);
 
   // Plays a random "still listening" phrase — fire-and-forget, doesn't
   // block or need awaiting, matches yolo.js's playStaticClip. Only called
@@ -279,13 +342,7 @@ export function useVoiceChat(sessionId: number | null) {
     speechResumedSinceCheckRef.current = false;
 
     try {
-      let uri: string | null = null;
-      try {
-        await recorder.stop();
-        uri = recorder.uri;
-      } catch (err) {
-        log('warn', 'turn', 'stop for check failed', { error: err instanceof Error ? err.message : String(err) });
-      }
+      const uri = await stopRecorderIfLive();
       // Re-arm immediately so the mic keeps listening for a continuation
       // with minimal gap — this becomes the new "current" segment. Doesn't
       // await: no reason to delay the network check on the re-arm finishing.
@@ -322,7 +379,7 @@ export function useVoiceChat(sessionId: number | null) {
     } finally {
       checkInFlightRef.current = false;
     }
-  }, [recorder, rearmRecorderOnly, finalizeWithText, playBackchannelFiller]);
+  }, [rearmRecorderOnly, stopRecorderIfLive, finalizeWithText, playBackchannelFiller]);
 
   // Guards finalizeAtCeiling against re-entry — independent of finalizingRef
   // (owned by finalizeWithText's own lifecycle; pre-setting it here would
@@ -333,7 +390,7 @@ export function useVoiceChat(sessionId: number | null) {
   // still awaiting recorder.stop()/checkUtteranceComplete — from re-entering
   // (the ceiling condition stays true every tick past 7000ms), duplicating
   // both the network call and the accumulated text. Caught by independent
-  // review of this PR.
+  // review of the turn-taking PR.
   const ceilingFinalizeInFlightRef = useRef(false);
 
   // Hard-ceiling fallback: one last transcribe attempt on whatever's
@@ -353,25 +410,20 @@ export function useVoiceChat(sessionId: number | null) {
           pendingTextSoFar: pendingTextRef.current.length,
         });
 
-        try {
-          await recorder.stop();
-          const uri = recorder.uri;
-          if (uri) {
-            try {
-              const result = await api.checkUtteranceComplete(uri);
-              if (result.transcription.trim()) {
-                pendingTextRef.current = pendingTextRef.current
-                  ? `${pendingTextRef.current} ${result.transcription.trim()}`
-                  : result.transcription.trim();
-              }
-            } catch (err) {
-              log('warn', 'turn', 'final check at ceiling failed', {
-                error: err instanceof Error ? err.message : String(err),
-              });
+        const uri = await stopRecorderIfLive();
+        if (uri) {
+          try {
+            const result = await api.checkUtteranceComplete(uri);
+            if (result.transcription.trim()) {
+              pendingTextRef.current = pendingTextRef.current
+                ? `${pendingTextRef.current} ${result.transcription.trim()}`
+                : result.transcription.trim();
             }
+          } catch (err) {
+            log('warn', 'turn', 'final check at ceiling failed', {
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
-        } catch {
-          // already stopped/inactive — nothing to clean up
         }
 
         if (pendingTextRef.current.trim()) {
@@ -389,7 +441,7 @@ export function useVoiceChat(sessionId: number | null) {
         ceilingFinalizeInFlightRef.current = false;
       }
     },
-    [recorder, finalizeWithText, armMic]
+    [stopRecorderIfLive, finalizeWithText, armMic]
   );
 
   const handleSilenceTick = useCallback(
@@ -408,10 +460,31 @@ export function useVoiceChat(sessionId: number | null) {
     speechResumedSinceCheckRef.current = true;
   }, []);
 
+  // While 'speaking', a confirmed onset is a barge-in: stop Olga mid-word
+  // and hand the turn straight back to the user — mirrors yolo.js's
+  // triggerInterruption() going directly to LISTENING, not IDLE, since VAD
+  // already confirmed real sustained speech (10 frames at the boosted
+  // threshold, not just the normal 5) to get here at all. No network abort
+  // needed: by 'speaking', sendMessage() has already resolved — there's
+  // nothing left in flight except the TTS playback itself.
+  const handleSpeechStart = useCallback(() => {
+    if (stateRef.current === 'speaking') {
+      bargedInRef.current = true;
+      log('info', 'turn', 'barge-in: interrupted assistant');
+      interruptSpeaking();
+      setState('recording');
+    } else {
+      setState('recording');
+    }
+  }, []);
+
+  const isSpeaking = state === 'speaking';
   useVad({
     recorder,
-    active: micArmed && (state === 'idle' || state === 'recording'),
-    onSpeechStart: () => setState('recording'),
+    active: micArmed && (state === 'idle' || state === 'recording' || isSpeaking),
+    thresholdDb: isSpeaking ? INTERRUPTION_THRESHOLD_DB : undefined,
+    startFrames: isSpeaking ? INTERRUPTION_FRAMES : undefined,
+    onSpeechStart: handleSpeechStart,
     onSpeechResume: handleSpeechResume,
     onSilenceTick: handleSilenceTick,
   });
@@ -419,13 +492,20 @@ export function useVoiceChat(sessionId: number | null) {
   // Manual override: force-finalize whatever's been captured so far,
   // regardless of what VAD/turn-taking currently think — same "one more
   // check, then finalize regardless" shape as the hard ceiling, just
-  // triggered by a tap instead of 7 seconds of silence. A safety valve for
+  // triggered by a tap instead of 7 seconds of silence. Also doubles as a
+  // manual interruption while speaking, mirroring yolo.js's
+  // yolo-speak-now-btn ("Перебить" during SPEAKING) — a safety valve for
   // on-device VAD/turn-taking that hasn't been calibrated against a real
-  // microphone yet — mirrors yolo.js's force-submit affordance on its
-  // yolo-speak-now-btn, scoped down to what this increment covers (no
-  // barge-in tap yet — that's a later Phase 1 item).
+  // microphone yet.
   const forceFinalize = useCallback(() => {
-    if (state === 'idle' || state === 'recording') finalizeAtCeiling(0);
+    if (state === 'speaking') {
+      bargedInRef.current = true;
+      log('info', 'turn', 'barge-in: manual interruption tap');
+      interruptSpeaking();
+      setState('recording');
+    } else if (state === 'idle' || state === 'recording') {
+      finalizeAtCeiling(0);
+    }
   }, [state, finalizeAtCeiling]);
 
   return { state, transcript, reply, error, forceFinalize };
