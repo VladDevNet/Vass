@@ -163,9 +163,10 @@ Windows-стороны — единственная операция с одни
 кардинальное правило про `/mnt/d` тут не нарушается.
 
 ```bash
-# WSL: скопировать готовый APK туда, откуда достанет Windows (RELEASE, не debug)
+# WSL: скопировать готовый APK туда, откуда достанет Windows (RELEASE, не debug —
+# имя файла тоже не должно говорить "debug", это уже путало один раз)
 cp ~/vass/mobile/android/app/build/outputs/apk/release/app-release.apk \
-   /mnt/d/Repos/Vass/mobile-builds/vass-debug.apk
+   /mnt/d/Repos/Vass/mobile-builds/vass.apk
 ```
 
 ```powershell
@@ -196,6 +197,7 @@ Android-разработки; `adb.exe` можно взять из Android Studi
 | `adb devices` не видит телефон | USB-отладка не включена, либо не подтверждён компьютер на телефоне, либо не тот `adb.exe` в PATH | Проверить "Отладка по USB" в настройках разработчика, переподключить кабель, подтвердить диалог на телефоне |
 | `wsl -d Ubuntu -- bash ~/script.sh` → `bash: C:Usersvkhol/script.sh: No such file or directory` | При вызове `wsl.exe` из **PowerShell** (не из самого WSL) `~` иногда разворачивается в Windows-профиль до того, как строка доходит до bash внутри WSL | Всегда используй абсолютный путь `/home/<user>/script.sh` вместо `~/script.sh`, когда запускаешь `wsl.exe` из PowerShell/Windows-стороны |
 | Инлайн `wsl -d Ubuntu -- bash -c 'export PATH=...'` падает с `syntax error near unexpected token '('` | PowerShell наследует родительский Windows PATH со скобками (`Program Files (x86)`) в переменную окружения, которая протекает в инлайн-команду | Пиши команду в `.sh`-файл (через Write-инструмент по пути `\\wsl$\Ubuntu\home\...`) и запускай `wsl -d Ubuntu -- bash /home/user/script.sh` вместо длинной инлайн `-c '...'` строки |
+| `TypeError: configs.toReversed is not a function` на `createBundleReleaseJsAndAssets` | `nvm` подключается только в интерактивном шелле (через `.bashrc`); `wsl -d Ubuntu -- bash script.sh` — неинтерактивный, PATH откатывается на системный `/usr/bin/node` (Node 18, без `Array.prototype.toReversed`, нужен Node 20+) вместо нужного nvm-default (Node 22) | В начале скрипта явно: `export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; nvm use default` — не полагаться на то, что `node` уже правильный в PATH |
 
 Полный список из 20 граблей (Maestro/emulator-специфичные тоже) — в
 `D:\Repos\eCMRHub\src\mobile\docs\MOBILE_BUILD_GOTCHAS.md`, если понадобится
