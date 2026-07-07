@@ -238,6 +238,15 @@ export function useVoiceChat(sessionId: number | null) {
     const sid = sessionIdRef.current;
     const text = pendingTextRef.current.trim();
     pendingTextRef.current = '';
+    // Reset unconditionally, not just on the success path below — this call
+    // itself can be the turn AFTER a barge-in (the interrupting utterance's
+    // own finalize). If it were only cleared inside the `fullReply.trim()`
+    // success branch and THIS call's sendMessage then throws or returns an
+    // empty reply, the stale `true` from the original interruption would
+    // make the finally block below skip armMic() for an entirely unrelated
+    // turn — state stuck at 'thinking' with no recovery, since the manual
+    // override is disabled while busy. Caught by independent review.
+    bargedInRef.current = false;
 
     if (!sid || !text) {
       finalizingRef.current = false;
@@ -264,7 +273,6 @@ export function useVoiceChat(sessionId: number | null) {
       log('info', 'turn', 'reply received', { sendMs: Date.now() - turnStartedAt, replyLength: fullReply.length });
 
       if (fullReply.trim()) {
-        bargedInRef.current = false;
         // Arm BEFORE speaking, not after — barge-in needs VAD watching for
         // the entire playback, not just once it's done. useVad's `active`
         // below already includes 'speaking', so as soon as setState fires
