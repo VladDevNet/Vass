@@ -6,6 +6,7 @@ import { api } from '../api/client';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { AvatarFace } from '../components/AvatarFace';
 import { ProfileScreen } from './ProfileScreen';
+import { ChatHistoryScreen } from './ChatHistoryScreen';
 
 const STATE_LABEL: Record<string, string> = {
   idle: 'Нажмите и говорите',
@@ -28,6 +29,7 @@ export function HomeScreen() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const { state, transcript, reply, error, startRecording, stopAndRespond } = useVoiceChat(sessionId);
 
   useEffect(() => {
@@ -65,6 +67,10 @@ export function HomeScreen() {
 
   if (showSettings) {
     return <ProfileScreen mode="settings" onDone={() => setShowSettings(false)} />;
+  }
+
+  if (showHistory && sessionId) {
+    return <ChatHistoryScreen sessionId={sessionId} onDone={() => setShowHistory(false)} />;
   }
 
   const busy = state === 'thinking' || state === 'speaking';
@@ -112,6 +118,14 @@ export function HomeScreen() {
         </Pressable>
       )}
       {linkError && <Text style={styles.error}>{linkError}</Text>}
+
+      <Pressable
+        style={[styles.linkButton, (state !== 'idle' || !sessionId) && styles.buttonDisabled]}
+        onPress={() => setShowHistory(true)}
+        disabled={state !== 'idle' || !sessionId}
+      >
+        <Text style={styles.linkButtonText}>История</Text>
+      </Pressable>
 
       <Pressable
         style={[styles.linkButton, state !== 'idle' && styles.buttonDisabled]}
