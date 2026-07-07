@@ -12,12 +12,17 @@ public class CompanionPromptService
 
     public string GetDefaultSystemPromptText() => _systemPrompt;
 
-    public string GetSystemPrompt(string? customSystemPrompt = null, string? userName = null)
+    public string GetSystemPrompt(string? customSystemPrompt = null, string? userName = null, string? assistantName = null)
     {
         var now = DateTime.UtcNow;
         var ruCulture = System.Globalization.CultureInfo.GetCultureInfo("ru-RU");
         var dateStr = now.ToString("yyyy-MM-dd (dddd, d MMMM yyyy)", ruCulture);
         var template = $"Сегодняшняя дата: {dateStr}, время {now:HH:mm} (UTC). Используй эту дату как единственный источник истины о том, какое сегодня число — не полагайся на свои внутренние знания о текущей дате.\n\n{_systemPrompt}";
+
+        if (!string.IsNullOrWhiteSpace(assistantName))
+        {
+            template += $"\n\nТебя зовут {assistantName}. Если пользователь спросит, как тебя зовут, или упомянет тебя по имени, отзывайся на это имя.";
+        }
 
         if (!string.IsNullOrWhiteSpace(userName))
         {

@@ -45,6 +45,7 @@ public class AppDbContext : IdentityDbContext<User>
             e.HasIndex(s => s.UserId).IsUnique();
             e.Property(s => s.InterfaceLanguage).HasMaxLength(5).HasDefaultValue("uk");
             e.Property(s => s.DisplayName).HasMaxLength(100);
+            e.Property(s => s.AssistantName).HasMaxLength(100);
             e.Property(s => s.FullTranslation).HasDefaultValue(false);
         });
 
