@@ -98,6 +98,37 @@ async function getRussianVoice(): Promise<string | null> {
   return cachedRussianVoice;
 }
 
+// Direct port of frontend/js/voice.js's cleanTextForTts — the LLM reply is
+// meant to be spoken, not rendered, but nothing stops it from producing
+// markdown (**bold**, bullet lists, headings) or emoji. The system prompt
+// already bans emoji for the same reason ("они не озвучиваются и портят
+// речь" — CompanionPromptService's Prompts/companion-system.txt) but never
+// covered markdown; the web client has carried this defensive strip all
+// along, which is exactly why this only showed up as a mobile bug — Speech
+// on Android reads "**" and "#" literally instead of silently dropping them
+// the way a markdown renderer would.
+function stripMarkdownForSpeech(text: string): string {
+  return text
+    // \u{1F300}-\u{1F5FF} (Misc Symbols and Pictographs — 👍🎉🔥 etc.) added
+    // on top of the web version's ranges, which miss that block entirely.
+    .replace(
+      /[\u{1F300}-\u{1F6FF}\u{1F900}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F000}-\u{1F02F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu,
+      ''
+    )
+    .replace(/\[([^\]|]+)\|[^\]]*\]/g, '$1') // [word|translation] → word
+    .replace(/\*{1,3}/g, '') // *, **, ***
+    .replace(/^-{3,}$/gm, '') // --- horizontal rules
+    .replace(/^[\s]*[-•]\s+/gm, '') // bullet points
+    .replace(/^[\s]*\d+\.\s+/gm, '') // numbered lists
+    .replace(/#+\s*/g, '') // headings
+    .replace(/`{1,3}[^`]*`{1,3}/g, '') // inline code
+    .replace(/[✓✗✔✘☑☐→←↑↓►▶◀▼▲+]/g, '') // special symbols
+    .replace(/\n{2,}/g, '. ') // multiple newlines → pause
+    .replace(/\n/g, ' ') // single newlines → space
+    .replace(/\s{2,}/g, ' ') // collapse spaces
+    .trim();
+}
+
 function splitIntoChunks(text: string, maxLength: number): string[] {
   const sentences = text.match(/[^.!?…]+[.!?…]*\s*/g) ?? [text];
   const chunks: string[] = [];
@@ -121,23 +152,47 @@ function splitIntoChunks(text: string, maxLength: number): string[] {
   return chunks;
 }
 
-// Speaks one chunk and resolves once it's actually finished — via onDone
-// (spoke fully) or onStopped (cut short by our own Speech.stop(), see
-// below). speak() itself is fire-and-forget on the JS side: on Android it
-// dispatches onto a native background thread (AppContext's own
+// Speaks one chunk and resolves once it's actually finished via onDone, or
+// rejects on onError. speak() itself is fire-and-forget on the JS side: on
+// Android it dispatches onto a native background thread (AppContext's own
 // HandlerThread) without waiting for the utterance to actually reach the
 // native queue. Awaiting THIS promise before speaking the next chunk is
 // what keeps chunks strictly sequenced — speak() for chunk N+1 is never
 // even called until chunk N's native callback has actually fired, so
 // there's nothing left half-submitted for a stray Speech.stop() to race
 // against.
-function speakChunk(text: string, voice: string): Promise<void> {
+//
+// onStopped needs isExpectedStop rather than a blanket resolve(): nothing
+// in this file calls Speech.stop() while a chunk is actively playing except
+// the MAX_SPEECH_MS safety timeout below (there's no barge-in yet — see
+// BACKLOG.md — so a user can't trigger a legitimate mid-chunk stop today).
+// That means an onStopped NOT caused by that timeout can only be Android's
+// own TextToSpeech engine losing audio focus to something external (a
+// notification, another app, an OS-level event) — expo-speech's Android
+// bridge discards the `interrupted` flag Android's own
+// UtteranceProgressListener.onStop provides (see
+// node_modules/expo-speech/android/.../SpeechModule.kt's onStop), so this
+// is the only signal available to tell the two apart. Treating every
+// onStopped as success (the previous behavior) meant a lost-focus interrupt
+// silently ended the reply with no error and no fallback — the exact
+// "assistant just goes quiet mid-reply" symptom reported from a real
+// device. Rejecting instead lets speakToCompletion's existing catch below
+// re-throw, which triggers useVoiceChat's existing network-TTS fallback —
+// same recovery path as any other on-device TTS failure.
+function speakChunk(text: string, voice: string, isExpectedStop: () => boolean): Promise<void> {
   return new Promise((resolve, reject) => {
     Speech.speak(text, {
       language: 'ru-RU',
       voice,
       onDone: () => resolve(),
-      onStopped: () => resolve(),
+      onStopped: () => {
+        if (isExpectedStop()) {
+          resolve();
+        } else {
+          console.warn('[TTS] onStopped without an expected stop — likely lost audio focus');
+          reject(new Error('Speech stopped unexpectedly'));
+        }
+      },
       onError: (err) => reject(err),
     });
   });
@@ -150,13 +205,17 @@ export async function speakToCompletion(text: string): Promise<void> {
   const voice = await getRussianVoice();
   if (!voice) throw new Error('На устройстве нет русского голоса');
 
-  const chunks = splitIntoChunks(text, MAX_CHUNK_LENGTH);
+  const clean = stripMarkdownForSpeech(text);
+  if (!clean) return;
+
+  const chunks = splitIntoChunks(clean, MAX_CHUNK_LENGTH);
   if (chunks.length === 0) return;
 
   let timedOut = false;
   // Stops (not just ignores) playback once the cap is hit — resolving
   // without calling stop() would let a long reply keep talking in the
-  // background after the UI has already moved on to 'idle'.
+  // background after the UI has already moved on to 'idle'. Also doubles as
+  // speakChunk's "this stop was ours" signal — see its comment above.
   const timeoutId = setTimeout(() => {
     timedOut = true;
     Speech.stop();
@@ -165,7 +224,7 @@ export async function speakToCompletion(text: string): Promise<void> {
   try {
     for (const chunk of chunks) {
       if (timedOut) break;
-      await speakChunk(chunk, voice);
+      await speakChunk(chunk, voice, () => timedOut);
     }
   } catch (err) {
     // A mid-reply failure (bad chunk, engine error) — stop rather than
