@@ -1,10 +1,12 @@
 # Локальная сборка через WSL + установка на физическое устройство
 
-> **Проверено 2026-07-06**: собран реальный debug-APK (`com.vass.assistant`,
-> targetSdk 36/minSdk 24) на тулчейне, уже готовом из работы над eCMRHub —
-> `BUILD SUCCESSFUL in 4m 28s`. Файл — `mobile/android/app/build/outputs/apk/debug/app-debug.apk`
-> (имя без арх-суффикса в этой версии Gradle/AGP, не как ожидалось ниже).
-> Установка на физическое устройство — следующий шаг, руками.
+> **Проверено 2026-07-06/07**: собран реальный APK (`com.vass.assistant`,
+> targetSdk 36/minSdk 24) на тулчейне, уже готовом из работы над eCMRHub.
+> ⚠ Первая раздача была debug-сборкой — на реальном телефоне без Metro
+> получили красный экран `Unable to load script` (debug — это dev-client,
+> ему нужен живой Metro, JS-бандл не встроен). Пересобрали `assembleRelease`
+> — тот содержит бандл внутри, ставится и работает автономно. **Для любой
+> раздачи на тест — только release**, см. раздел 4.
 
 Применимо с начала Фазы 1 (когда появится `mobile/`). Адаптировано из опыта
 проекта eCMRHub (`D:\Repos\eCMRHub\src\mobile\docs\MOBILE_BUILD_GOTCHAS.md` и
@@ -105,23 +107,36 @@ cd ~/vass/mobile
 echo "sdk.dir=$HOME/Android/sdk" > android/local.properties
 ```
 
-## 4. Сборка debug-APK
+## 4. Debug vs release — какой APK ставить руками
 
-Debug, не release — быстрее, без ninja-гимнастики RelWithDebInfo, достаточно
-для ручного тестирования на своём телефоне:
+⚠ **Debug-APK — это dev-client, ему нужен живой Metro.** Он НЕ содержит JS
+внутри себя — при запуске он пытается достучаться до `localhost:8081` (по
+USB, через `adb reverse tcp:8081 tcp:8081`) или до Metro на той же Wi-Fi
+сети. Установленный сам по себе, без запущенного `npx expo start` рядом, он
+падает красным экраном `Unable to load script`. Это ровно то, что случилось
+при первой раздаче APK на реальном тесте — пришлось пересобирать.
+
+Для «поставь и просто пользуйся» (передать APK кому-то для теста без
+подключения к твоему Metro) — **всегда `assembleRelease`**, не `assembleDebug`.
+Debug имеет смысл только когда сам разработчик держит `npx expo start`
+запущенным рядом с телефоном на USB/Wi-Fi ради быстрой перезагрузки JS без
+пересборки — то есть практически никогда в этом проекте, пока нет второго
+человека, физически сидящего рядом с разработчиком.
 
 ```bash
 cd ~/vass/mobile/android
 EXPO_PUBLIC_API_URL="https://vass.it-consult.services" \
-  ./gradlew :app:assembleDebug -PreactNativeArchitectures=arm64-v8a --no-daemon --console=plain
-# → app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
+  ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon --console=plain
+# → app/build/outputs/apk/release/app-release.apk (JS-бандл уже внутри)
 ```
 
 `arm64-v8a`, а не `x86_64` — реальные телефоны почти всегда ARM (эмулятора у
 нас нет). `EXPO_PUBLIC_API_URL` указывает сразу на прод-бэкенд
 (`vass.it-consult.services`, HTTPS через Caddy) — никакой локальной API,
 никакого `10.0.2.2`, никакого cleartext-исключения: телефон общается с VPS
-так же, как веб-версия.
+так же, как веб-версия. Release по умолчанию подписывается debug-ключом
+(достаточно для ручной раздачи, не для стора) — Expo-шаблон настраивает это
+сам, отдельный шаг с ключами не нужен.
 
 Если меняли `EXPO_PUBLIC_API_URL` или другую `EXPO_PUBLIC_*` — она запечена в
 `index.android.bundle` на этапе сборки бандла; смена без очистки бандла
@@ -129,7 +144,7 @@ EXPO_PUBLIC_API_URL="https://vass.it-consult.services" \
 
 ```bash
 find android/app/build -name "index.android.bundle" -delete
-rm -rf android/app/build/generated/assets/createBundleDebugJsAndAssets
+rm -rf android/app/build/generated/assets/createBundleReleaseJsAndAssets
 ```
 
 Если добавляли нативный модуль (`npm install <lib-с-native-кодом>`) — сначала
@@ -148,15 +163,15 @@ Windows-стороны — единственная операция с одни
 кардинальное правило про `/mnt/d` тут не нарушается.
 
 ```bash
-# WSL: скопировать готовый APK туда, откуда достанет Windows
-cp ~/vass/mobile/android/app/build/outputs/apk/debug/app-arm64-v8a-debug.apk \
-   /mnt/d/Repos/Vass/mobile-builds/app-debug.apk
+# WSL: скопировать готовый APK туда, откуда достанет Windows (RELEASE, не debug)
+cp ~/vass/mobile/android/app/build/outputs/apk/release/app-release.apk \
+   /mnt/d/Repos/Vass/mobile-builds/vass-debug.apk
 ```
 
 ```powershell
 # Windows: включить USB-отладку на телефоне, разрешить компьютер при первом подключении
 adb devices                                  # должен показать устройство
-adb install -r D:\Repos\Vass\mobile-builds\app-debug.apk
+adb install -r D:\Repos\Vass\mobile-builds\vass-debug.apk
 adb logcat *:S ReactNativeJS:V ReactNative:V  # логи JS-рантайма при отладке
 ```
 
@@ -176,7 +191,8 @@ Android-разработки; `adb.exe` можно взять из Android Studi
 | `ninja: error: manifest 'build.ninja' still dirty after 100 tries` | Протухшие `.cxx`-кэши + антивирус | `rm -rf android/app/.cxx node_modules/react-native-reanimated/android/build` (и другие native-модули), пересобрать с `--max-workers=2` |
 | Пересобранный APK всё ещё стучится на старый URL | Закэшированный `index.android.bundle` | См. раздел 4 — удалить бандл перед пересборкой |
 | `:app:configureCMake*` падает `AccessDeniedException` после установки нового модуля | Codegen для модуля ещё не прогонялся | Запустить `generateCodegenArtifactsFromSchema` для конкретного модуля |
-| `assembleRelease` падает clang++ signal-11 (когда дойдём до release-сборок) | Компиляция arm64 упирается в лимит paging file на Windows | Для локального тестирования обходимся debug-сборкой; настоящий ARM release — через EAS cloud (недоступно для `--local` на Windows) |
+| Красный экран `Unable to load script` / `Make sure you're running Metro` на установленном APK | Поставили **debug**-сборку — это dev-client без встроенного JS-бандла, ему нужен живой `expo start` рядом (USB или та же Wi-Fi) | Собрать и раздавать **`assembleRelease`**, не `assembleDebug` — см. раздел 4. Debug — только когда сам разработчик держит Metro запущенным рядом с телефоном |
+| `assembleRelease` падает clang++ signal-11 (гипотетически, не воспроизведено на WSL) | На чистом Windows-Gradle компиляция arm64 упирается в лимит paging file — но WSL-сборки (этот документ) собирали `assembleRelease` без этой проблемы | Если всё же поймали — собрать debug для локальной проверки логики, но для раздачи на реальный тест всё равно нужен release (см. строку выше); альтернатива — EAS cloud |
 | `adb devices` не видит телефон | USB-отладка не включена, либо не подтверждён компьютер на телефоне, либо не тот `adb.exe` в PATH | Проверить "Отладка по USB" в настройках разработчика, переподключить кабель, подтвердить диалог на телефоне |
 | `wsl -d Ubuntu -- bash ~/script.sh` → `bash: C:Usersvkhol/script.sh: No such file or directory` | При вызове `wsl.exe` из **PowerShell** (не из самого WSL) `~` иногда разворачивается в Windows-профиль до того, как строка доходит до bash внутри WSL | Всегда используй абсолютный путь `/home/<user>/script.sh` вместо `~/script.sh`, когда запускаешь `wsl.exe` из PowerShell/Windows-стороны |
 | Инлайн `wsl -d Ubuntu -- bash -c 'export PATH=...'` падает с `syntax error near unexpected token '('` | PowerShell наследует родительский Windows PATH со скобками (`Program Files (x86)`) в переменную окружения, которая протекает в инлайн-команду | Пиши команду в `.sh`-файл (через Write-инструмент по пути `\\wsl$\Ubuntu\home\...`) и запускай `wsl -d Ubuntu -- bash /home/user/script.sh` вместо длинной инлайн `-c '...'` строки |
