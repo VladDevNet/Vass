@@ -1,4 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
+import { fetch as expoFetch } from 'expo/fetch';
+import { File, Paths } from 'expo-file-system';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://vass.it-consult.services';
 const TOKEN_KEY = 'vass_token';
@@ -112,4 +114,117 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ code }),
     }),
+
+  // Uploads a just-recorded clip (from expo-audio's recorder.uri) ahead of
+  // sendMessage. Multipart, not JSON — bypasses request()'s Content-Type.
+  uploadAudio: async (uri: string): Promise<{ fileName: string }> => {
+    const extension = uri.split('.').pop() ?? 'm4a';
+    const form = new FormData();
+    // React Native's FormData accepts this {uri, name, type} file-object shape
+    // directly (not a Blob) — the RN networking layer streams the uri's bytes.
+    form.append('file', {
+      uri,
+      name: `recording.${extension}`,
+      type: `audio/${extension}`,
+    } as unknown as Blob);
+
+    const res = await expoFetch(`${API_URL}/api/v1/chat/upload-audio`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      body: form,
+    });
+    if (!res.ok) throw new ApiError(`Upload failed: ${res.status}`);
+    return res.json();
+  },
+
+  // Synthesizes the full reply as one WAV clip (buffered, not the sentence-by-
+  // sentence PCM stream the web client uses — see docs/react-native/tts-and-avatar.md;
+  // that optimization matters less once TTS moves on-device in Phase 2).
+  // Returns a local file:// URI ready for createAudioPlayer().
+  synthesizeSpeech: async (text: string): Promise<string> => {
+    const res = await expoFetch(`${API_URL}/api/v1/chat/tts`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new ApiError(`TTS failed: ${res.status}`);
+
+    const file = new File(Paths.cache, `tts-${Date.now()}.wav`);
+    await file.write(await res.bytes());
+    return file.uri;
+  },
 };
+
+export interface SendMessageParams {
+  sessionId: number;
+  message: string;
+  audioFileName?: string;
+}
+
+export interface SendMessageCallbacks {
+  onTranscription?: (text: string) => void;
+  onChunk?: (text: string) => void;
+}
+
+// Streams POST /chat/send (SSE-style `data: {...}` lines) and resolves with
+// the full concatenated reply once `[DONE]` arrives. Mirrors the parsing in
+// frontend/js/api.js's streamChat — same wire format, same backend endpoint.
+// Needs expo/fetch specifically: it's the fetch implementation Expo documents
+// for real streaming response bodies (see docs.expo.dev/versions/unversioned/sdk/filesystem
+// "Downloading Files with expo/fetch" and the Streams API page).
+export async function sendMessage(
+  params: SendMessageParams,
+  callbacks: SendMessageCallbacks = {}
+): Promise<string> {
+  const res = await expoFetch(`${API_URL}/api/v1/chat/send`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(params),
+  });
+
+  if (!res.ok || !res.body) {
+    throw new ApiError(`Send failed: ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let fullText = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6).trim();
+      if (data === '[DONE]') return fullText;
+
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed.transcription) {
+          callbacks.onTranscription?.(parsed.transcription);
+        } else if (typeof parsed.text === 'string') {
+          fullText += parsed.text;
+          callbacks.onChunk?.(parsed.text);
+        }
+        // parsed.preamble / parsed.stats: not consumed yet in this first
+        // mobile voice-loop increment — see docs/react-native/BACKLOG.md Phase 1.
+      } catch {
+        // ignore malformed lines, matches the web client's behavior
+      }
+    }
+  }
+
+  return fullText;
+}
