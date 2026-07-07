@@ -28,7 +28,7 @@
       [
         "expo-audio",
         {
-          "microphonePermission": "Ольге нужен доступ к микрофону, чтобы слышать вас."
+          "microphonePermission": "Ассистенту нужен доступ к микрофону, чтобы слышать вас."
         }
       ],
       "expo-asset"

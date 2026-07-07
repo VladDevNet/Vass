@@ -7,6 +7,7 @@ import {
   useAudioRecorder,
 } from 'expo-audio';
 import { api, sendMessage } from '../api/client';
+import { speakToCompletion, stopSpeaking } from '../tts/systemSpeech';
 
 export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking';
 
@@ -26,6 +27,7 @@ export function useVoiceChat(sessionId: number | null) {
   useEffect(() => {
     return () => {
       playerRef.current?.release();
+      stopSpeaking();
     };
   }, []);
 
@@ -71,8 +73,18 @@ export function useVoiceChat(sessionId: number | null) {
 
       if (fullReply.trim()) {
         setState('speaking');
-        const audioUri = await api.synthesizeSpeech(fullReply);
-        await playToCompletion(audioUri, playerRef);
+        // System TTS (expo-speech) is the primary path — instant, no network
+        // hop. Its failure modes are all recoverable in JS (missing Russian
+        // voice, native "text too long" rejection despite our own chunking,
+        // a transient engine error) so any of them falls back to the
+        // existing buffered server-Piper path rather than the reply going
+        // silent.
+        try {
+          await speakToCompletion(fullReply);
+        } catch {
+          const audioUri = await api.synthesizeSpeech(fullReply);
+          await playToCompletion(audioUri, playerRef);
+        }
       }
 
       setState('idle');
