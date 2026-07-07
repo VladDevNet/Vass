@@ -119,31 +119,9 @@ public class AuthController : ControllerBase
             user.Email,
             user.NativeLang,
             user.Level,
-            user.DisplayName,
             user.CreatedAt,
             user.LastActiveAt
         });
-    }
-
-    public record UpdateProfileRequest(string DisplayName);
-
-    // Sets the name the assistant calls the user by — collected during the
-    // mobile onboarding screen (or later from settings), fed into
-    // CompanionPromptService.GetSystemPrompt via ChatController.Send.
-    [Authorize]
-    [HttpPut("me")]
-    public async Task<IActionResult> UpdateProfile([FromBody] UpdateProfileRequest req)
-    {
-        if (string.IsNullOrWhiteSpace(req.DisplayName))
-            return BadRequest(new { error = "Имя не может быть пустым" });
-
-        var user = await _userManager.FindByIdAsync(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-        if (user == null) return Unauthorized();
-
-        user.DisplayName = req.DisplayName.Trim();
-        await _userManager.UpdateAsync(user);
-
-        return NoContent();
     }
 
     private string GenerateToken(User user)
