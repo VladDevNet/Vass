@@ -150,6 +150,23 @@ export interface ChatSession {
   createdAt: string;
 }
 
+export interface ChatMessage {
+  role: string;
+  content: string;
+  createdAt: string;
+  audioFileName: string | null;
+}
+
+// Not `extends ChatSession` — GET /chat/sessions/{id} (unlike the list
+// endpoint) doesn't return the session's own createdAt, only each
+// message's (see ChatController.cs's GetSession).
+export interface SessionDetail {
+  id: number;
+  mode: string;
+  title: string;
+  messages: ChatMessage[];
+}
+
 export interface DeviceLink {
   code: string;
   expiresAt: string;
@@ -190,6 +207,8 @@ export const api = {
   me: () => request<CurrentUser>('/auth/me'),
 
   getSessions: () => request<ChatSession[]>('/chat/sessions'),
+
+  getSession: (id: number) => request<SessionDetail>(`/chat/sessions/${id}`),
 
   // Elderly-friendly login: generated on an already-logged-in device,
   // redeemed on a brand-new one — see VoiceAssistant.API/Controllers/AuthController.cs.
