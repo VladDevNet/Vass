@@ -129,6 +129,18 @@ export const api = {
     const bytes = await new File(uri).bytes();
     const blob = new ExpoBlob([bytes], { type: `audio/${extension}` });
 
+    // expo's convertFormData.ts derives the multipart filename from
+    // `part.name` (a property read directly off the appended value), NOT
+    // from form.append()'s 3rd argument the web FormData spec uses — see
+    // node_modules/expo/src/winter/fetch/convertFormData.ts,
+    // getFormDataPartHeaders(). A plain Blob has no .name, so without this
+    // the part goes out as `Content-Disposition: form-data; name="file"`
+    // with no `filename=` — ASP.NET Core's [ApiController] then can't bind
+    // it as IFormFile at all and auto-400s before the action method (and
+    // its logging) ever runs. This is exactly the "Upload failed: 400"
+    // with nothing in the server logs seen on a real device.
+    Object.defineProperty(blob, 'name', { value: `recording.${extension}`, configurable: true });
+
     const form = new FormData();
     // expo-blob's Blob is structurally incompatible with lib.dom's Blob type
     // purely over an ArrayBuffer-vs-ArrayBufferLike generic in bytes()'s
