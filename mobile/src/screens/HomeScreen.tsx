@@ -3,6 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../api/client';
 import { useVoiceChat } from '../hooks/useVoiceChat';
+import { AvatarFace } from '../components/AvatarFace';
 
 const STATE_LABEL: Record<string, string> = {
   idle: 'Нажмите и говорите',
@@ -61,16 +62,8 @@ export function HomeScreen() {
 
       {sessionError && <Text style={styles.error}>{sessionError}</Text>}
 
-      <Pressable
-        style={[styles.voiceButton, state === 'recording' && styles.voiceButtonActive, busy && styles.voiceButtonBusy]}
-        onPress={handlePress}
-        disabled={busy || !sessionId}
-      >
-        <Text style={styles.voiceButtonText}>
-          {state === 'idle' && '🎙️'}
-          {state === 'recording' && '⏹️'}
-          {busy && '…'}
-        </Text>
+      <Pressable onPress={handlePress} disabled={busy || !sessionId}>
+        <AvatarFace state={state} />
       </Pressable>
       <Text style={styles.stateLabel}>{STATE_LABEL[state]}</Text>
 
@@ -127,24 +120,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginBottom: 24,
     textAlign: 'center',
-  },
-  voiceButton: {
-    width: 140,
-    height: 140,
-    borderRadius: 70,
-    backgroundColor: '#4a6fa5',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  voiceButtonActive: {
-    backgroundColor: '#c0392b',
-  },
-  voiceButtonBusy: {
-    backgroundColor: '#9aa5b1',
-  },
-  voiceButtonText: {
-    fontSize: 48,
   },
   stateLabel: {
     fontSize: 15,
