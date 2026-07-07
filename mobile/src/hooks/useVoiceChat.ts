@@ -53,9 +53,18 @@ export function useVoiceChat(sessionId: number | null) {
   // can now trigger a finalize, so a race between the two needs an explicit
   // lock rather than relying on one gated button.
   const finalizingRef = useRef(false);
+  // Unlike the mount effect below (which guards its own single run with a
+  // local `cancelled` flag), armMic() is called from three different places
+  // — including a bare setTimeout in discardAndRearm with no cleanup — so it
+  // needs its own unmount guard rather than relying on each caller to
+  // remember one. Without this, a pending re-arm can call
+  // prepareToRecordAsync()/record() on a recorder already released by
+  // useReleasingSharedObject, or setState on an unmounted component.
+  const mountedRef = useRef(true);
 
   useEffect(() => {
     return () => {
+      mountedRef.current = false;
       playerRef.current?.release();
       stopSpeaking();
     };
@@ -67,12 +76,15 @@ export function useVoiceChat(sessionId: number | null) {
   // IDLE, rather than only starting to capture once speech is already
   // detected.
   const armMic = useCallback(async () => {
+    if (!mountedRef.current) return;
     try {
       await recorder.prepareToRecordAsync();
+      if (!mountedRef.current) return; // unmounted while awaiting prepare
       recorder.record();
       setMicArmed(true);
       setState('idle');
     } catch (err) {
+      if (!mountedRef.current) return;
       setMicArmed(false);
       setError(err instanceof Error ? err.message : String(err));
     }
