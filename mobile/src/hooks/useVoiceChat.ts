@@ -436,6 +436,16 @@ export function useVoiceChat(sessionId: number | null) {
     } finally {
       activeSendAbortControllerRef.current = null;
       finalizingRef.current = false;
+      // Unconditional, not just on the catch path above: a shadow commit
+      // can land after this turn's sendMessage already resolved
+      // successfully (the abort() it fires is then a no-op on an
+      // already-settled request) — in that case the catch block above
+      // never runs and never reads/clears this ref. Left alone, a stale
+      // URI from THIS turn would get picked up by some unrelated LATER
+      // turn's catch block (e.g. a plain network error), sending that
+      // turn's reply against old, irrelevant audio. Found by independent
+      // review of the shadow-capture PR.
+      shadowContinuationUriRef.current = null;
       // A confirmed barge-in already transitioned to 'recording' with the
       // interrupting speech's own onset already detected (see
       // handleSpeechStart) — armMic() here would incorrectly reset that
