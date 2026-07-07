@@ -69,6 +69,7 @@ export async function setVoicePreference(identifier: string | null): Promise<voi
 // Interrupts whatever's currently playing (a previous preview, if the user
 // is tapping through several voices quickly) before starting the new one.
 export function previewVoice(identifier: string): void {
+  markExpectedStop();
   Speech.stop();
   Speech.speak('Привет! Вот как звучит этот голос.', { language: 'ru-RU', voice: identifier });
 }
@@ -152,6 +153,27 @@ function splitIntoChunks(text: string, maxLength: number): string[] {
   return chunks;
 }
 
+// Set right before ANY call to Speech.stop() that this file (or an external
+// caller via stopSpeaking()) initiates on purpose, and consumed by the very
+// next onStopped — see speakChunk's comment for why onStopped needs this at
+// all. Module-level rather than per-call because stopSpeaking() is a public
+// API called from outside this file (useVoiceChat.ts's unmount cleanup)
+// with no visibility into whichever speakChunk promise happens to be in
+// flight at the time.
+let expectedStop = false;
+
+function markExpectedStop(): void {
+  expectedStop = true;
+}
+
+// Read-and-clear so a later, genuinely unexpected onStopped isn't
+// mistakenly waved through by a flag some earlier stop left set.
+function consumeExpectedStop(): boolean {
+  const was = expectedStop;
+  expectedStop = false;
+  return was;
+}
+
 // Speaks one chunk and resolves once it's actually finished via onDone, or
 // rejects on onError. speak() itself is fire-and-forget on the JS side: on
 // Android it dispatches onto a native background thread (AppContext's own
@@ -162,15 +184,16 @@ function splitIntoChunks(text: string, maxLength: number): string[] {
 // there's nothing left half-submitted for a stray Speech.stop() to race
 // against.
 //
-// onStopped needs isExpectedStop rather than a blanket resolve(): nothing
-// in this file calls Speech.stop() while a chunk is actively playing except
-// the MAX_SPEECH_MS safety timeout below (there's no barge-in yet — see
-// BACKLOG.md — so a user can't trigger a legitimate mid-chunk stop today).
-// That means an onStopped NOT caused by that timeout can only be Android's
-// own TextToSpeech engine losing audio focus to something external (a
-// notification, another app, an OS-level event) — expo-speech's Android
-// bridge discards the `interrupted` flag Android's own
-// UtteranceProgressListener.onStop provides (see
+// onStopped needs consumeExpectedStop() rather than a blanket resolve():
+// every Speech.stop() call this app can currently make is marked via
+// markExpectedStop() first (the MAX_SPEECH_MS safety timeout below, and
+// stopSpeaking()'s external callers like useVoiceChat's unmount cleanup) —
+// there's no barge-in yet (see BACKLOG.md), so nothing else legitimately
+// stops a chunk mid-playback. That means an onStopped with the flag NOT set
+// can only be Android's own TextToSpeech engine losing audio focus to
+// something external (a notification, another app, an OS-level event) —
+// expo-speech's Android bridge discards the `interrupted` flag Android's
+// own UtteranceProgressListener.onStop provides (see
 // node_modules/expo-speech/android/.../SpeechModule.kt's onStop), so this
 // is the only signal available to tell the two apart. Treating every
 // onStopped as success (the previous behavior) meant a lost-focus interrupt
@@ -179,14 +202,14 @@ function splitIntoChunks(text: string, maxLength: number): string[] {
 // device. Rejecting instead lets speakToCompletion's existing catch below
 // re-throw, which triggers useVoiceChat's existing network-TTS fallback —
 // same recovery path as any other on-device TTS failure.
-function speakChunk(text: string, voice: string, isExpectedStop: () => boolean): Promise<void> {
+function speakChunk(text: string, voice: string): Promise<void> {
   return new Promise((resolve, reject) => {
     Speech.speak(text, {
       language: 'ru-RU',
       voice,
       onDone: () => resolve(),
       onStopped: () => {
-        if (isExpectedStop()) {
+        if (consumeExpectedStop()) {
           resolve();
         } else {
           console.warn('[TTS] onStopped without an expected stop — likely lost audio focus');
@@ -214,22 +237,25 @@ export async function speakToCompletion(text: string): Promise<void> {
   let timedOut = false;
   // Stops (not just ignores) playback once the cap is hit — resolving
   // without calling stop() would let a long reply keep talking in the
-  // background after the UI has already moved on to 'idle'. Also doubles as
-  // speakChunk's "this stop was ours" signal — see its comment above.
+  // background after the UI has already moved on to 'idle'.
   const timeoutId = setTimeout(() => {
     timedOut = true;
+    markExpectedStop();
     Speech.stop();
   }, MAX_SPEECH_MS);
 
   try {
     for (const chunk of chunks) {
       if (timedOut) break;
-      await speakChunk(chunk, voice, () => timedOut);
+      await speakChunk(chunk, voice);
     }
   } catch (err) {
     // A mid-reply failure (bad chunk, engine error) — stop rather than
     // leave a partial utterance hanging, since the caller is about to
-    // start the network-fallback playback right after this rejects.
+    // start the network-fallback playback right after this rejects. Not
+    // marked as an expected stop: we're already mid-rejection here (either
+    // this chunk's own onError, or a previous chunk's unexpected onStopped)
+    // so there's no pending onStopped left for the flag to matter to.
     Speech.stop();
     throw err;
   } finally {
@@ -237,6 +263,11 @@ export async function speakToCompletion(text: string): Promise<void> {
   }
 }
 
+// Public API — called from outside this file whenever something else needs
+// to cut speech short (currently just useVoiceChat's unmount cleanup).
+// Marks the stop as expected first so speakChunk's onStopped handler
+// doesn't mistake this for a lost-focus interruption — see its comment.
 export function stopSpeaking(): void {
+  markExpectedStop();
   Speech.stop();
 }
