@@ -1,36 +1,94 @@
-import { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../api/client';
+import { useVoiceChat } from '../hooks/useVoiceChat';
 
-// Placeholder for Phase 1 skeleton — the real voice screen (VAD, turn-taking,
-// on-device TTS) lands in later BACKLOG.md phases. This just proves auth +
-// API wiring works end to end on-device.
+const STATE_LABEL: Record<string, string> = {
+  idle: 'Нажмите и говорите',
+  recording: 'Слушаю… нажмите ещё раз, когда закончите',
+  thinking: 'Думаю…',
+  speaking: 'Отвечаю…',
+};
+
 export function HomeScreen() {
   const { user, logout } = useAuth();
+  const [sessionId, setSessionId] = useState<number | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [deviceCode, setDeviceCode] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const { state, transcript, reply, error, startRecording, stopAndRespond } = useVoiceChat(sessionId);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getSessions()
+      .then((sessions) => {
+        if (!cancelled && sessions.length > 0) setSessionId(sessions[0].id);
+      })
+      .catch((err) => {
+        if (!cancelled) setSessionError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleShowDeviceCode() {
-    setError(null);
+    setLinkError(null);
     setIsGenerating(true);
     try {
       const { code } = await api.createDeviceLink();
       setDeviceCode(code);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setLinkError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsGenerating(false);
     }
   }
 
+  function handlePress() {
+    if (state === 'idle') startRecording();
+    else if (state === 'recording') stopAndRespond();
+  }
+
+  const busy = state === 'thinking' || state === 'speaking';
+
   return (
-    <View style={styles.container}>
+    <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.greeting}>Привет, {user?.email}</Text>
-      <Text style={styles.hint}>
-        Голосовой экран появится в следующих этапах — см. docs/react-native/BACKLOG.md
-      </Text>
+
+      {sessionError && <Text style={styles.error}>{sessionError}</Text>}
+
+      <Pressable
+        style={[styles.voiceButton, state === 'recording' && styles.voiceButtonActive, busy && styles.voiceButtonBusy]}
+        onPress={handlePress}
+        disabled={busy || !sessionId}
+      >
+        <Text style={styles.voiceButtonText}>
+          {state === 'idle' && '🎙️'}
+          {state === 'recording' && '⏹️'}
+          {busy && '…'}
+        </Text>
+      </Pressable>
+      <Text style={styles.stateLabel}>{STATE_LABEL[state]}</Text>
+
+      {!!transcript && (
+        <View style={styles.bubble}>
+          <Text style={styles.bubbleLabel}>Вы:</Text>
+          <Text style={styles.bubbleText}>{transcript}</Text>
+        </View>
+      )}
+      {!!reply && (
+        <View style={[styles.bubble, styles.bubbleReply]}>
+          <Text style={styles.bubbleLabel}>Ольга:</Text>
+          <Text style={styles.bubbleText}>{reply}</Text>
+        </View>
+      )}
+      {error && <Text style={styles.error}>{error}</Text>}
+
+      <View style={styles.divider} />
 
       {deviceCode ? (
         <View style={styles.codeBox}>
@@ -41,44 +99,84 @@ export function HomeScreen() {
           </Text>
         </View>
       ) : (
-        <Pressable
-          style={styles.linkButton}
-          onPress={handleShowDeviceCode}
-          disabled={isGenerating}
-        >
+        <Pressable style={styles.linkButton} onPress={handleShowDeviceCode} disabled={isGenerating}>
           <Text style={styles.linkButtonText}>
             {isGenerating ? 'Создаю код…' : 'Показать код для нового устройства'}
           </Text>
         </Pressable>
       )}
-      {error && <Text style={styles.error}>{error}</Text>}
+      {linkError && <Text style={styles.error}>{linkError}</Text>}
 
       <Pressable style={styles.logoutButton} onPress={logout}>
         <Text style={styles.logoutText}>Выйти</Text>
       </Pressable>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
-    justifyContent: 'center',
+    flexGrow: 1,
     alignItems: 'center',
     padding: 24,
+    paddingTop: 48,
     backgroundColor: '#fff',
   },
   greeting: {
-    fontSize: 22,
+    fontSize: 18,
     fontWeight: '600',
-    marginBottom: 12,
+    marginBottom: 24,
     textAlign: 'center',
   },
-  hint: {
-    fontSize: 14,
+  voiceButton: {
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    backgroundColor: '#4a6fa5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  voiceButtonActive: {
+    backgroundColor: '#c0392b',
+  },
+  voiceButtonBusy: {
+    backgroundColor: '#9aa5b1',
+  },
+  voiceButtonText: {
+    fontSize: 48,
+  },
+  stateLabel: {
+    fontSize: 15,
     color: '#666',
+    marginBottom: 24,
     textAlign: 'center',
-    marginBottom: 32,
+  },
+  bubble: {
+    alignSelf: 'stretch',
+    backgroundColor: '#f0f4fa',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+  },
+  bubbleReply: {
+    backgroundColor: '#eef7ee',
+  },
+  bubbleLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#666',
+    marginBottom: 4,
+  },
+  bubbleText: {
+    fontSize: 16,
+    lineHeight: 22,
+  },
+  divider: {
+    alignSelf: 'stretch',
+    height: 1,
+    backgroundColor: '#eee',
+    marginVertical: 24,
   },
   linkButton: {
     borderWidth: 1,
