@@ -45,7 +45,7 @@ export function LoginScreen() {
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <Text style={styles.title}>Ольга</Text>
+      <Text style={styles.title}>AI Voice Assistant</Text>
       <Text style={styles.subtitle}>
         {mode === 'register' && 'Создать аккаунт'}
         {mode === 'login' && 'Вход'}
@@ -133,7 +133,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   title: {
-    fontSize: 36,
+    fontSize: 26,
     fontWeight: '700',
     textAlign: 'center',
     marginBottom: 4,
