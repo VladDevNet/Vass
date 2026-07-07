@@ -11,7 +11,13 @@ import {
 import type { Voice } from 'expo-speech';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../api/client';
-import { getResolvedVoiceId, listRussianVoices, previewVoice, setVoicePreference } from '../tts/systemSpeech';
+import {
+  getResolvedVoiceId,
+  isLikelyLocalVoice,
+  listRussianVoices,
+  previewVoice,
+  setVoicePreference,
+} from '../tts/systemSpeech';
 
 interface ProfileScreenProps {
   mode: 'onboarding' | 'settings';
@@ -76,6 +82,18 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
     previewVoice(voice.identifier);
   }
 
+  // Android's Google TTS engine doesn't give voices a human name (raw
+  // identifiers look like "ru-ru-x-rud-network" — see systemSpeech.ts's
+  // isLikelyLocalVoice comment) and exposes no reliable gender info either,
+  // so listening is the only way to tell voices apart — hence plain
+  // ordinal labels below instead of anything invented. Prefer local voices
+  // (the whole point of this feature is avoiding a network round-trip);
+  // only fall back to showing network-dependent ones if a device genuinely
+  // has no local Russian voice, so the picker is never empty.
+  const localVoices = voices?.filter((v) => isLikelyLocalVoice(v.identifier)) ?? [];
+  const displayVoices = voices === undefined ? undefined : localVoices.length > 0 ? localVoices : voices;
+  const showingNetworkVoices = displayVoices?.some((v) => !isLikelyLocalVoice(v.identifier)) ?? false;
+
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>{mode === 'onboarding' ? 'Давайте познакомимся' : 'Настройки'}</Text>
@@ -116,21 +134,30 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
       <View style={styles.divider} />
 
       <Text style={styles.label}>Голос ассистента</Text>
-      <Text style={styles.hint}>Нажмите на голос, чтобы его послушать и выбрать</Text>
+      <Text style={styles.hint}>
+        У голосов нет названий — нажмите, чтобы послушать и выбрать (так понятно, мужской он или женский)
+      </Text>
+      {showingNetworkVoices && (
+        <Text style={styles.hint}>🌐 — этому голосу нужен интернет, остальные работают без сети</Text>
+      )}
       {voicesError && <Text style={styles.error}>{voicesError}</Text>}
       {voices === undefined && !voicesError && <ActivityIndicator style={styles.voicesLoading} />}
       {voices?.length === 0 && (
         <Text style={styles.hint}>На устройстве не найдено русских голосов.</Text>
       )}
-      {voices?.map((voice) => {
+      {displayVoices?.map((voice, index) => {
         const selected = voice.identifier === selectedVoiceId;
+        const needsNetwork = !isLikelyLocalVoice(voice.identifier);
         return (
           <Pressable
             key={voice.identifier}
             style={[styles.voiceRow, selected && styles.voiceRowSelected]}
             onPress={() => handleSelectVoice(voice)}
           >
-            <Text style={[styles.voiceName, selected && styles.voiceNameSelected]}>{voice.name}</Text>
+            <Text style={[styles.voiceName, selected && styles.voiceNameSelected]}>
+              Голос {index + 1}
+              {needsNetwork ? ' 🌐' : ''}
+            </Text>
             {selected && <Text style={styles.voiceCheck}>✓</Text>}
           </Pressable>
         );

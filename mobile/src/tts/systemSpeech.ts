@@ -24,6 +24,22 @@ export async function listRussianVoices(): Promise<Speech.Voice[]> {
   return voices.filter((v) => v.language.toLowerCase().startsWith('ru'));
 }
 
+// Google's Android TTS engine names voices with a `-local`/`-network`
+// suffix — the ONLY signal exposed via JS for whether synthesizing with a
+// given voice needs a network round-trip. Not a documented public
+// contract (expo-speech's Android bridge doesn't surface Android's own
+// Voice.isNetworkConnectionRequired(); see
+// node_modules/expo-speech/android/.../SpeechModule.kt's getVoices(),
+// which aliases Voice.getName() as both `identifier` and `name` — that's
+// also why raw identifiers look like "ru-ru-x-rud-network" instead of a
+// human name, a real gap in the library, not something fixable from here).
+// Empirically consistent enough to act on, and the only way to avoid
+// silently defaulting to a voice that defeats the entire point of this
+// feature — synthesis without a network hop.
+export function isLikelyLocalVoice(identifier: string): boolean {
+  return !identifier.endsWith('-network');
+}
+
 // The resolved voice actually in effect right now — an explicit preference
 // from the settings screen if one was ever set, otherwise the same
 // auto-picked default speakToCompletion() would fall back to. Exported so
@@ -72,7 +88,12 @@ async function getRussianVoice(): Promise<string | null> {
   }
 
   const russian = await listRussianVoices();
-  const best = russian.find((v) => v.quality === Speech.VoiceQuality.Enhanced) ?? russian[0];
+  const local = russian.filter((v) => isLikelyLocalVoice(v.identifier));
+  // Prefer local voices for the auto-picked default — falls back to the
+  // full list only if the device genuinely has no local Russian voice at
+  // all, rather than leaving the default unset.
+  const pool = local.length > 0 ? local : russian;
+  const best = pool.find((v) => v.quality === Speech.VoiceQuality.Enhanced) ?? pool[0];
   cachedRussianVoice = best?.identifier ?? null;
   return cachedRussianVoice;
 }
