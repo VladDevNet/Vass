@@ -113,7 +113,11 @@ export function HomeScreen() {
       )}
       {linkError && <Text style={styles.error}>{linkError}</Text>}
 
-      <Pressable style={styles.linkButton} onPress={() => setShowSettings(true)}>
+      <Pressable
+        style={[styles.linkButton, state !== 'idle' && styles.buttonDisabled]}
+        onPress={() => setShowSettings(true)}
+        disabled={state !== 'idle'}
+      >
         <Text style={styles.linkButtonText}>Настройки</Text>
       </Pressable>
 
@@ -182,6 +186,9 @@ const styles = StyleSheet.create({
     color: '#4a6fa5',
     fontSize: 15,
     fontWeight: '600',
+  },
+  buttonDisabled: {
+    opacity: 0.5,
   },
   codeBox: {
     alignItems: 'center',

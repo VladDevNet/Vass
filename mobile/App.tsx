@@ -15,7 +15,19 @@ function Root() {
   const [onboardingDismissed, setOnboardingDismissed] = useState<boolean | null>(null);
 
   useEffect(() => {
-    if (user) isOnboardingDismissed().then(setOnboardingDismissed);
+    // Reset synchronously on logout — SecureStore's dismissed flag is one
+    // device-wide key, not scoped per-account (this app explicitly supports
+    // a shared device switching between family members via device-link
+    // login). Without this, a stale `true` from the PREVIOUS user survives
+    // until this effect's async check resolves for the NEW one, so the
+    // loading gate below (which only waits while dismissed === null) skips
+    // straight past it — a brand-new user who's never seen onboarding could
+    // land on HomeScreen instead, for at least one render.
+    if (!user) {
+      setOnboardingDismissed(null);
+      return;
+    }
+    isOnboardingDismissed().then(setOnboardingDismissed);
   }, [user]);
 
   async function handleOnboardingDone() {
