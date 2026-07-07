@@ -9,6 +9,7 @@ import {
 import { api, sendMessage } from '../api/client';
 import { speakToCompletion, stopSpeaking } from '../tts/systemSpeech';
 import { useVad } from './useVad';
+import { log } from '../logging/remoteLogger';
 
 export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking';
 
@@ -99,10 +100,13 @@ export function useVoiceChat(sessionId: number | null) {
       recorder.record();
       setMicArmed(true);
       setState('idle');
+      log('debug', 'mic', 'armed');
     } catch (err) {
       if (!mountedRef.current) return;
       setMicArmed(false);
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      log('error', 'mic', 'arm failed', { error: message });
     }
   }, [recorder]);
 
@@ -116,6 +120,7 @@ export function useVoiceChat(sessionId: number | null) {
         const permission = await requestRecordingPermissionsAsync();
         if (!permission.granted) {
           setError('Нет доступа к микрофону');
+          log('error', 'mic', 'permission denied');
           return;
         }
         await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true, interruptionMode: 'doNotMix' });
@@ -142,12 +147,18 @@ export function useVoiceChat(sessionId: number | null) {
     setState('thinking');
     setTranscript('');
     setReply('');
+    const turnStartedAt = Date.now();
+    log('info', 'turn', 'finalize start');
     try {
       await recorder.stop();
       const uri = recorder.uri;
       if (!uri) throw new Error('Запись не найдена');
 
+      const uploadStartedAt = Date.now();
       const { fileName } = await api.uploadAudio(uri);
+      const uploadMs = Date.now() - uploadStartedAt;
+
+      const sendStartedAt = Date.now();
       const fullReply = await sendMessage(
         { sessionId: sid, message: '', audioFileName: fileName },
         {
@@ -155,6 +166,8 @@ export function useVoiceChat(sessionId: number | null) {
           onChunk: (chunk) => setReply((prev) => prev + chunk),
         }
       );
+      const sendMs = Date.now() - sendStartedAt;
+      log('info', 'turn', 'reply received', { uploadMs, sendMs, replyLength: fullReply.length });
 
       if (fullReply.trim()) {
         setState('speaking');
@@ -166,13 +179,19 @@ export function useVoiceChat(sessionId: number | null) {
         // silent.
         try {
           await speakToCompletion(fullReply);
-        } catch {
+        } catch (err) {
+          log('warn', 'tts', 'on-device speech failed, falling back to network TTS', {
+            error: err instanceof Error ? err.message : String(err),
+          });
           const audioUri = await api.synthesizeSpeech(fullReply);
           await playToCompletion(audioUri, playerRef);
         }
       }
+      log('info', 'turn', 'finalize done', { totalMs: Date.now() - turnStartedAt });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      log('error', 'turn', 'finalize failed', { error: message, elapsedMs: Date.now() - turnStartedAt });
     } finally {
       finalizingRef.current = false;
       await armMic();
@@ -196,6 +215,7 @@ export function useVoiceChat(sessionId: number | null) {
   const handleSilenceTimeout = useCallback(
     (activeSpeechMs: number) => {
       if (activeSpeechMs < MIN_SPEECH_MS) {
+        log('info', 'turn', 'discarding as noise', { activeSpeechMs, minSpeechMs: MIN_SPEECH_MS });
         discardAndRearm();
       } else {
         finalizeTurn();

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { AudioRecorder } from 'expo-audio';
+import { log } from '../logging/remoteLogger';
 
 const POLL_INTERVAL_MS = 50;
 
@@ -86,6 +87,11 @@ export function useVad({
             hasSpokenRef.current = true;
             speechStartAtRef.current = Date.now();
             lastSpeechAtRef.current = Date.now();
+            log('info', 'vad', 'speech detected', {
+              smoothedDb: Math.round(smoothedRef.current * 10) / 10,
+              thresholdDb,
+              rawMetering: metering,
+            });
             onSpeechStartRef.current();
           }
         } else {
@@ -96,7 +102,9 @@ export function useVad({
         if (hasSpokenRef.current && !timedOutRef.current) {
           if (Date.now() - lastSpeechAtRef.current >= silenceMs) {
             timedOutRef.current = true;
-            onSilenceTimeoutRef.current(lastSpeechAtRef.current - speechStartAtRef.current);
+            const activeSpeechMs = lastSpeechAtRef.current - speechStartAtRef.current;
+            log('info', 'vad', 'silence timeout', { activeSpeechMs, silenceMs });
+            onSilenceTimeoutRef.current(activeSpeechMs);
           }
         }
       }
