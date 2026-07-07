@@ -426,10 +426,18 @@ public class ChatController : ControllerBase
     public async Task<IActionResult> UploadAudio(IFormFile file)
     {
         if (file.Length == 0 || file.Length > MaxAudioSize)
+        {
+            _logger.LogWarning("upload-audio rejected: Length={Length}, ContentType={ContentType}, FileName={FileName}",
+                file.Length, file.ContentType, file.FileName);
             return BadRequest(new { error = "File must be between 1 byte and 5MB" });
+        }
 
         if (!file.ContentType.StartsWith("audio/"))
+        {
+            _logger.LogWarning("upload-audio rejected: unexpected ContentType={ContentType}, Length={Length}, FileName={FileName}",
+                file.ContentType, file.Length, file.FileName);
             return BadRequest(new { error = "Only audio files are allowed" });
+        }
 
         Directory.CreateDirectory(_audioPath);
         var fileName = $"{Guid.NewGuid()}.webm";
