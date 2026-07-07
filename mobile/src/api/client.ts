@@ -165,6 +165,7 @@ export interface DeviceLink {
 // the "запомни, говори медленнее" voice-command feature.
 export interface Settings {
   displayName: string | null;
+  assistantName: string | null;
   interfaceLanguage: string;
   openAiApiKey: string | null;
   anthropicApiKey: string | null;
@@ -203,13 +204,15 @@ export const api = {
   getSettings: () => request<Settings>('/settings'),
 
   // See the Settings interface's comment — sends back everything currently
-  // in settings, not just the changed field, since the endpoint doesn't
-  // guard displayName/customSystemPrompt the way it guards API keys.
-  updateDisplayName: async (displayName: string): Promise<void> => {
+  // in settings, not just the changed fields, since the endpoint doesn't
+  // guard displayName/assistantName/customSystemPrompt the way it guards
+  // API keys. Both names save together (one screen, one button) so this is
+  // a single round-trip rather than two.
+  updateNames: async (displayName: string, assistantName: string): Promise<void> => {
     const current = await request<Settings>('/settings');
     await request<Settings>('/settings', {
       method: 'PUT',
-      body: JSON.stringify({ ...current, displayName }),
+      body: JSON.stringify({ ...current, displayName, assistantName: assistantName.trim() || null }),
     });
   },
 

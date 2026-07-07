@@ -11,13 +11,15 @@ import {
 interface AuthContextValue {
   isLoading: boolean;
   user: CurrentUser | null;
-  // Lives on UserSettings, not CurrentUser (see client.ts's Settings
-  // interface) — the name the assistant calls the user by, set during
-  // onboarding or later from the settings screen. null means "genuinely
-  // not set yet" (drives the onboarding prompt), not "not loaded" —
-  // isLoading covers that distinction.
+  // Both live on UserSettings, not CurrentUser (see client.ts's Settings
+  // interface). displayName: what the assistant calls the user — null
+  // means "genuinely not set yet" (drives the onboarding prompt), not "not
+  // loaded" (isLoading covers that). assistantName: what the assistant
+  // calls itself — optional, null just means "no name given, use the
+  // generic label" (see HomeScreen's reply bubble).
   displayName: string | null;
-  refreshDisplayName: () => Promise<void>;
+  assistantName: string | null;
+  refreshProfile: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   loginWithDeviceCode: (code: string) => Promise<void>;
@@ -30,11 +32,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [displayName, setDisplayName] = useState<string | null>(null);
+  const [assistantName, setAssistantName] = useState<string | null>(null);
 
-  async function refreshDisplayName() {
+  async function refreshProfile() {
     try {
       const settings = await api.getSettings();
       setDisplayName(settings.displayName);
+      setAssistantName(settings.assistantName);
     } catch {
       // Best-effort — worst case the onboarding prompt just asks again
       // next time, same as if the name were genuinely never set.
@@ -43,7 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function loadUser() {
     setUser(await api.me());
-    await refreshDisplayName();
+    await refreshProfile();
   }
 
   useEffect(() => {
@@ -54,6 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUnauthorizedHandler(() => {
       setUser(null);
       setDisplayName(null);
+      setAssistantName(null);
     });
 
     (async () => {
@@ -93,11 +98,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await setToken(null);
     setUser(null);
     setDisplayName(null);
+    setAssistantName(null);
   }
 
   return (
     <AuthContext.Provider
-      value={{ isLoading, user, displayName, refreshDisplayName, login, register, loginWithDeviceCode, logout }}
+      value={{
+        isLoading,
+        user,
+        displayName,
+        assistantName,
+        refreshProfile,
+        login,
+        register,
+        loginWithDeviceCode,
+        logout,
+      }}
     >
       {children}
     </AuthContext.Provider>

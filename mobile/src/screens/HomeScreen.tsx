@@ -21,7 +21,7 @@ export function HomeScreen() {
   // whole screen, not just the active recording/speaking states.
   useKeepAwake();
 
-  const { user, displayName, logout } = useAuth();
+  const { user, displayName, assistantName, logout } = useAuth();
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [deviceCode, setDeviceCode] = useState<string | null>(null);
@@ -88,7 +88,7 @@ export function HomeScreen() {
       )}
       {!!reply && (
         <View style={[styles.bubble, styles.bubbleReply]}>
-          <Text style={styles.bubbleLabel}>Ассистент:</Text>
+          <Text style={styles.bubbleLabel}>{assistantName ?? 'Ассистент'}:</Text>
           <Text style={styles.bubbleText}>{reply}</Text>
         </View>
       )}
