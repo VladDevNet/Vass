@@ -324,50 +324,70 @@ export function useVoiceChat(sessionId: number | null) {
     }
   }, [recorder, rearmRecorderOnly, finalizeWithText, playBackchannelFiller]);
 
+  // Guards finalizeAtCeiling against re-entry — independent of finalizingRef
+  // (owned by finalizeWithText's own lifecycle; pre-setting it here would
+  // make finalizeWithText's own guard check reject the call finalizeAtCeiling
+  // makes into it below) and independent of checkInFlightRef (a different
+  // concern — triggerCompletenessCheck's periodic rechecks). Without this,
+  // nothing stops a second VAD tick 50ms later — while the first call is
+  // still awaiting recorder.stop()/checkUtteranceComplete — from re-entering
+  // (the ceiling condition stays true every tick past 7000ms), duplicating
+  // both the network call and the accumulated text. Caught by independent
+  // review of this PR.
+  const ceilingFinalizeInFlightRef = useRef(false);
+
   // Hard-ceiling fallback: one last transcribe attempt on whatever's
   // currently in flight (so the final segment isn't silently dropped just
   // because the ceiling landed between recheck cycles), then finalize
   // regardless of what that check judges.
   const finalizeAtCeiling = useCallback(
     async (activeSpeechMs: number) => {
-      if (finalizingRef.current || checkInFlightRef.current) return;
-      log('warn', 'turn', 'silence ceiling reached', {
-        activeSpeechMs,
-        pendingTextSoFar: pendingTextRef.current.length,
-      });
-
-      try {
-        await recorder.stop();
-        const uri = recorder.uri;
-        if (uri) {
-          try {
-            const result = await api.checkUtteranceComplete(uri);
-            if (result.transcription.trim()) {
-              pendingTextRef.current = pendingTextRef.current
-                ? `${pendingTextRef.current} ${result.transcription.trim()}`
-                : result.transcription.trim();
-            }
-          } catch (err) {
-            log('warn', 'turn', 'final check at ceiling failed', {
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        }
-      } catch {
-        // already stopped/inactive — nothing to clean up
-      }
-
-      if (pendingTextRef.current.trim()) {
-        await finalizeWithText();
+      if (finalizingRef.current || checkInFlightRef.current || ceilingFinalizeInFlightRef.current) {
+        log('debug', 'turn', 'finalizeAtCeiling skipped — already in flight');
         return;
       }
+      ceilingFinalizeInFlightRef.current = true;
+      try {
+        log('warn', 'turn', 'silence ceiling reached', {
+          activeSpeechMs,
+          pendingTextSoFar: pendingTextRef.current.length,
+        });
 
-      log('info', 'turn', activeSpeechMs < MIN_SPEECH_MS ? 'discarding as noise at ceiling' : 'discarding — no transcribable text', {
-        activeSpeechMs,
-      });
-      pendingTextRef.current = '';
-      nextCheckAtRef.current = CHECK_SILENCE_THRESHOLD_MS;
-      setTimeout(() => armMic(), DISCARD_COOLDOWN_MS);
+        try {
+          await recorder.stop();
+          const uri = recorder.uri;
+          if (uri) {
+            try {
+              const result = await api.checkUtteranceComplete(uri);
+              if (result.transcription.trim()) {
+                pendingTextRef.current = pendingTextRef.current
+                  ? `${pendingTextRef.current} ${result.transcription.trim()}`
+                  : result.transcription.trim();
+              }
+            } catch (err) {
+              log('warn', 'turn', 'final check at ceiling failed', {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+        } catch {
+          // already stopped/inactive — nothing to clean up
+        }
+
+        if (pendingTextRef.current.trim()) {
+          await finalizeWithText();
+          return;
+        }
+
+        log('info', 'turn', activeSpeechMs < MIN_SPEECH_MS ? 'discarding as noise at ceiling' : 'discarding — no transcribable text', {
+          activeSpeechMs,
+        });
+        pendingTextRef.current = '';
+        nextCheckAtRef.current = CHECK_SILENCE_THRESHOLD_MS;
+        setTimeout(() => armMic(), DISCARD_COOLDOWN_MS);
+      } finally {
+        ceilingFinalizeInFlightRef.current = false;
+      }
     },
     [recorder, finalizeWithText, armMic]
   );
