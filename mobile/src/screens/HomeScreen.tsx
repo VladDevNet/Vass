@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { api } from '../api/client';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { AvatarFace } from '../components/AvatarFace';
+import { ProfileScreen } from './ProfileScreen';
 
 const STATE_LABEL: Record<string, string> = {
   idle: 'Нажмите и говорите',
@@ -20,12 +21,13 @@ export function HomeScreen() {
   // whole screen, not just the active recording/speaking states.
   useKeepAwake();
 
-  const { user, logout } = useAuth();
+  const { user, displayName, logout } = useAuth();
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [deviceCode, setDeviceCode] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
   const { state, transcript, reply, error, startRecording, stopAndRespond } = useVoiceChat(sessionId);
 
   useEffect(() => {
@@ -61,11 +63,15 @@ export function HomeScreen() {
     else if (state === 'recording') stopAndRespond();
   }
 
+  if (showSettings) {
+    return <ProfileScreen mode="settings" onDone={() => setShowSettings(false)} />;
+  }
+
   const busy = state === 'thinking' || state === 'speaking';
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.greeting}>Привет, {user?.email}</Text>
+      <Text style={styles.greeting}>Привет, {displayName ?? user?.email}</Text>
 
       {sessionError && <Text style={styles.error}>{sessionError}</Text>}
 
@@ -106,6 +112,14 @@ export function HomeScreen() {
         </Pressable>
       )}
       {linkError && <Text style={styles.error}>{linkError}</Text>}
+
+      <Pressable
+        style={[styles.linkButton, state !== 'idle' && styles.buttonDisabled]}
+        onPress={() => setShowSettings(true)}
+        disabled={state !== 'idle'}
+      >
+        <Text style={styles.linkButtonText}>Настройки</Text>
+      </Pressable>
 
       <Pressable style={styles.logoutButton} onPress={logout}>
         <Text style={styles.logoutText}>Выйти</Text>
@@ -172,6 +186,9 @@ const styles = StyleSheet.create({
     color: '#4a6fa5',
     fontSize: 15,
     fontWeight: '600',
+  },
+  buttonDisabled: {
+    opacity: 0.5,
   },
   codeBox: {
     alignItems: 'center',
