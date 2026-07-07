@@ -13,6 +13,7 @@ public class AppDbContext : IdentityDbContext<User>
     public DbSet<UserSettings> UserSettings => Set<UserSettings>();
     public DbSet<SpeakerProfile> SpeakerProfiles => Set<SpeakerProfile>();
     public DbSet<DeviceLinkCode> DeviceLinkCodes => Set<DeviceLinkCode>();
+    public DbSet<ClientLogEntry> ClientLogEntries => Set<ClientLogEntry>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -60,6 +61,20 @@ public class AppDbContext : IdentityDbContext<User>
                 .HasForeignKey(d => d.UserId).OnDelete(DeleteBehavior.Cascade);
             e.Property(d => d.Code).HasMaxLength(6);
             e.HasIndex(d => d.Code).IsUnique();
+        });
+
+        builder.Entity<ClientLogEntry>(e =>
+        {
+            e.HasOne(l => l.User).WithMany()
+                .HasForeignKey(l => l.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(l => l.RunId).HasMaxLength(40);
+            e.Property(l => l.Level).HasMaxLength(10);
+            e.Property(l => l.Category).HasMaxLength(20);
+            // Query pattern is always "this user's most recent entries,
+            // optionally one run" — matches how the mobile client tags and
+            // how a debugging session would actually be reviewed.
+            e.HasIndex(l => new { l.UserId, l.ClientTimestamp });
+            e.HasIndex(l => l.RunId);
         });
     }
 }
