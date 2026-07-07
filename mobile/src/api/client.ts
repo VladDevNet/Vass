@@ -70,12 +70,22 @@ class ApiError extends Error {}
 // UI forever — every fetch below is capped and turns a timeout into a clear
 // ApiError instead of leaving the caller waiting indefinitely. Checking
 // controller.signal.aborted (rather than the caught error's type/name) works
-// regardless of how a given fetch implementation labels its abort error,
-// since nothing but our own setTimeout ever calls this controller's abort().
-function timeoutSignal(ms: number): { signal: AbortSignal; cancel: () => void } {
+// regardless of how a given fetch implementation labels its abort error.
+// Exposes `abort` (not just the timeout-triggered path) for sendMessage
+// below, which also needs to cancel on purpose (shadow-capture committing
+// a continuation mid-response) — every other caller only ever has its own
+// setTimeout call this.
+function timeoutSignal(ms: number): { signal: AbortSignal; cancel: () => void; abort: () => void } {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
-  return { signal: controller.signal, cancel: () => clearTimeout(timer) };
+  return {
+    signal: controller.signal,
+    cancel: () => clearTimeout(timer),
+    abort: () => {
+      clearTimeout(timer);
+      controller.abort();
+    },
+  };
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -392,12 +402,20 @@ export interface SendMessageCallbacks {
 // "Downloading Files with expo/fetch" and the Streams API page).
 export async function sendMessage(
   params: SendMessageParams,
-  callbacks: SendMessageCallbacks = {}
+  callbacks: SendMessageCallbacks = {},
+  // Lets a caller cancel mid-stream on purpose — shadow-capture (see
+  // useVoiceChat.ts's commitShadowContinuation) aborts an in-flight
+  // response once it confirms the user kept talking, so the fuller,
+  // combined utterance can be sent as a fresh request instead of answering
+  // the incomplete first half.
+  externalSignal?: AbortSignal
 ): Promise<string> {
   // One timeout spans the initial connection AND the full read loop below —
   // cancel() only runs once the reply is fully streamed (or the attempt has
   // failed), not right after the fetch call resolves.
-  const { signal, cancel } = timeoutSignal(SEND_MESSAGE_TIMEOUT_MS);
+  const { signal, cancel, abort } = timeoutSignal(SEND_MESSAGE_TIMEOUT_MS);
+  const onExternalAbort = () => abort();
+  externalSignal?.addEventListener('abort', onExternalAbort);
   try {
     let res: Awaited<ReturnType<typeof expoFetch>>;
     try {
@@ -466,5 +484,6 @@ export async function sendMessage(
     return fullText;
   } finally {
     cancel();
+    externalSignal?.removeEventListener('abort', onExternalAbort);
   }
 }
