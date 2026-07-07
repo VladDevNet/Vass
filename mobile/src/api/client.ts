@@ -41,6 +41,41 @@ export async function setToken(next: string | null): Promise<void> {
 
 class ApiError extends Error {}
 
+// A stalled request (dead wifi, unreachable server) would otherwise hang the
+// UI forever — every fetch below is capped and turns a timeout into a clear
+// ApiError instead of leaving the caller waiting indefinitely. Checking
+// controller.signal.aborted (rather than the caught error's type/name) works
+// regardless of how a given fetch implementation labels its abort error,
+// since nothing but our own setTimeout ever calls this controller's abort().
+function timeoutSignal(ms: number): { signal: AbortSignal; cancel: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return { signal: controller.signal, cancel: () => clearTimeout(timer) };
+}
+
+const DEFAULT_TIMEOUT_MS = 15_000;
+const UPLOAD_TIMEOUT_MS = 30_000;
+const TTS_TIMEOUT_MS = 30_000;
+// The SSE reply streams for as long as the model takes to finish, not a fixed
+// round-trip — matches useVoiceChat's MAX_PLAYBACK_MS precedent for "generous
+// cap so the UI can't get stuck forever" rather than a tight request timeout.
+const SEND_MESSAGE_TIMEOUT_MS = 60_000;
+
+// Any 401 means the token is dead (expired/revoked). AuthContext registers a
+// handler here on mount so it can drop back to the login screen — without
+// this, an expired token mid-session left the user stuck on HomeScreen
+// hitting "Unauthorized" on every action with no way back except force-quit.
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler;
+}
+
+async function handleUnauthorized(): Promise<void> {
+  await setToken(null);
+  onUnauthorized?.();
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -48,10 +83,19 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   };
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const res = await fetch(`${API_URL}/api/v1${path}`, { ...options, headers });
+  const { signal, cancel } = timeoutSignal(DEFAULT_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/api/v1${path}`, { ...options, headers, signal });
+  } catch (err) {
+    if (signal.aborted) throw new ApiError('Превышено время ожидания ответа сервера');
+    throw err;
+  } finally {
+    cancel();
+  }
 
   if (res.status === 401) {
-    await setToken(null);
+    await handleUnauthorized();
     throw new ApiError('Unauthorized');
   }
 
@@ -149,11 +193,25 @@ export const api = {
     // runtime) only care that it duck-types as a Blob.
     form.append('file', blob as unknown as Blob, `recording.${extension}`);
 
-    const res = await expoFetch(`${API_URL}/api/v1/chat/upload-audio`, {
-      method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      body: form,
-    });
+    const { signal, cancel } = timeoutSignal(UPLOAD_TIMEOUT_MS);
+    let res: Awaited<ReturnType<typeof expoFetch>>;
+    try {
+      res = await expoFetch(`${API_URL}/api/v1/chat/upload-audio`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: form,
+        signal,
+      });
+    } catch (err) {
+      if (signal.aborted) throw new ApiError('Превышено время ожидания загрузки');
+      throw err;
+    } finally {
+      cancel();
+    }
+    if (res.status === 401) {
+      await handleUnauthorized();
+      throw new ApiError('Unauthorized');
+    }
     if (!res.ok) throw new ApiError(`Upload failed: ${res.status}`);
     return res.json();
   },
@@ -163,14 +221,28 @@ export const api = {
   // that optimization matters less once TTS moves on-device in Phase 2).
   // Returns a local file:// URI ready for createAudioPlayer().
   synthesizeSpeech: async (text: string): Promise<string> => {
-    const res = await expoFetch(`${API_URL}/api/v1/chat/tts`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ text }),
-    });
+    const { signal, cancel } = timeoutSignal(TTS_TIMEOUT_MS);
+    let res: Awaited<ReturnType<typeof expoFetch>>;
+    try {
+      res = await expoFetch(`${API_URL}/api/v1/chat/tts`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ text }),
+        signal,
+      });
+    } catch (err) {
+      if (signal.aborted) throw new ApiError('Превышено время ожидания синтеза речи');
+      throw err;
+    } finally {
+      cancel();
+    }
+    if (res.status === 401) {
+      await handleUnauthorized();
+      throw new ApiError('Unauthorized');
+    }
     if (!res.ok) throw new ApiError(`TTS failed: ${res.status}`);
 
     const file = new File(Paths.cache, `tts-${Date.now()}.wav`);
@@ -200,52 +272,77 @@ export async function sendMessage(
   params: SendMessageParams,
   callbacks: SendMessageCallbacks = {}
 ): Promise<string> {
-  const res = await expoFetch(`${API_URL}/api/v1/chat/send`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(params),
-  });
+  // One timeout spans the initial connection AND the full read loop below —
+  // cancel() only runs once the reply is fully streamed (or the attempt has
+  // failed), not right after the fetch call resolves.
+  const { signal, cancel } = timeoutSignal(SEND_MESSAGE_TIMEOUT_MS);
+  try {
+    let res: Awaited<ReturnType<typeof expoFetch>>;
+    try {
+      res = await expoFetch(`${API_URL}/api/v1/chat/send`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(params),
+        signal,
+      });
+    } catch (err) {
+      if (signal.aborted) throw new ApiError('Превышено время ожидания ответа');
+      throw err;
+    }
 
-  if (!res.ok || !res.body) {
-    throw new ApiError(`Send failed: ${res.status}`);
-  }
+    if (res.status === 401) {
+      await handleUnauthorized();
+      throw new ApiError('Unauthorized');
+    }
+    if (!res.ok || !res.body) {
+      throw new ApiError(`Send failed: ${res.status}`);
+    }
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let fullText = '';
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullText = '';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      const data = line.slice(6).trim();
-      if (data === '[DONE]') return fullText;
-
+    while (true) {
+      let done: boolean, value: Uint8Array | undefined;
       try {
-        const parsed = JSON.parse(data);
-        if (parsed.transcription) {
-          callbacks.onTranscription?.(parsed.transcription);
-        } else if (typeof parsed.text === 'string') {
-          fullText += parsed.text;
-          callbacks.onChunk?.(parsed.text);
+        ({ done, value } = await reader.read());
+      } catch (err) {
+        if (signal.aborted) throw new ApiError('Превышено время ожидания ответа');
+        throw err;
+      }
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') return fullText;
+
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.transcription) {
+            callbacks.onTranscription?.(parsed.transcription);
+          } else if (typeof parsed.text === 'string') {
+            fullText += parsed.text;
+            callbacks.onChunk?.(parsed.text);
+          }
+          // parsed.preamble / parsed.stats: not consumed yet in this first
+          // mobile voice-loop increment — see docs/react-native/BACKLOG.md Phase 1.
+        } catch {
+          // ignore malformed lines, matches the web client's behavior
         }
-        // parsed.preamble / parsed.stats: not consumed yet in this first
-        // mobile voice-loop increment — see docs/react-native/BACKLOG.md Phase 1.
-      } catch {
-        // ignore malformed lines, matches the web client's behavior
       }
     }
-  }
 
-  return fullText;
+    return fullText;
+  } finally {
+    cancel();
+  }
 }
