@@ -3,7 +3,10 @@ import { fetch as expoFetch } from 'expo/fetch';
 import { File, Paths } from 'expo-file-system';
 import { Blob as ExpoBlob } from 'expo-blob';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://vass.it-consult.services';
+// Exported so other modules that need the same base URL (e.g. useVoiceChat's
+// backchannel filler clips, served as plain static files by nginx, not
+// through this file's request() wrapper) don't duplicate the fallback.
+export const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://vass.it-consult.services';
 const TOKEN_KEY = 'vass_token';
 
 let token: string | null = null;
@@ -78,6 +81,11 @@ function timeoutSignal(ms: number): { signal: AbortSignal; cancel: () => void } 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const UPLOAD_TIMEOUT_MS = 30_000;
 const TTS_TIMEOUT_MS = 30_000;
+// Short — this gates real-time turn-taking responsiveness (a hung check
+// shouldn't stall the conversation for as long as a full audio upload
+// reasonably might). check-utterance is a short snippet + one fast Gemini
+// side-call server-side, not the full reply.
+const CHECK_UTTERANCE_TIMEOUT_MS = 10_000;
 // The SSE reply streams for as long as the model takes to finish, not a fixed
 // round-trip — matches useVoiceChat's MAX_PLAYBACK_MS precedent for "generous
 // cap so the UI can't get stuck forever" rather than a tight request timeout.
@@ -288,6 +296,45 @@ export const api = {
       throw new ApiError('Unauthorized');
     }
     if (!res.ok) throw new ApiError(`Upload failed: ${res.status}`);
+    return res.json();
+  },
+
+  // Real turn-taking (docs/react-native/BACKLOG.md Phase 1): transcribes a
+  // just-finalized recording segment and judges whether the speaker sounds
+  // done or is likely still thinking — POST /chat/check-utterance, already
+  // used by the web client (frontend/js/api.js's checkUtteranceComplete) and
+  // needing no backend changes. Same Blob-multipart pattern as uploadAudio,
+  // but the field name here is `audio` (IFormFile audio in ChatController),
+  // not `file`.
+  checkUtteranceComplete: async (uri: string): Promise<{ transcription: string; complete: boolean }> => {
+    const extension = uri.split('.').pop() ?? 'm4a';
+    const bytes = await new File(uri).bytes();
+    const blob = new ExpoBlob([bytes], { type: `audio/${extension}` });
+    Object.defineProperty(blob, 'name', { value: `snapshot.${extension}`, configurable: true });
+
+    const form = new FormData();
+    form.append('audio', blob as unknown as Blob, `snapshot.${extension}`);
+
+    const { signal, cancel } = timeoutSignal(CHECK_UTTERANCE_TIMEOUT_MS);
+    let res: Awaited<ReturnType<typeof expoFetch>>;
+    try {
+      res = await expoFetch(`${API_URL}/api/v1/chat/check-utterance`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: form,
+        signal,
+      });
+    } catch (err) {
+      if (signal.aborted) throw new ApiError('Превышено время ожидания проверки');
+      throw err;
+    } finally {
+      cancel();
+    }
+    if (res.status === 401) {
+      await handleUnauthorized();
+      throw new ApiError('Unauthorized');
+    }
+    if (!res.ok) throw new ApiError(`Check failed: ${res.status}`);
     return res.json();
   },
 
