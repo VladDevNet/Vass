@@ -188,7 +188,8 @@ function consumeExpectedStop(): boolean {
 // CURRENT chunk cleanly (its onStopped resolves instead of rejecting) — it
 // does nothing to stop speakToCompletion's for-loop from moving on to the
 // NEXT chunk of a multi-chunk reply, since that loop only breaks early on
-// its own local `timedOut` flag (see MAX_SPEECH_MS below). Barge-in needs
+// its own local `timedOut` flag (see the per-chunk safety timeout in
+// speakToCompletion below). Barge-in needs
 // both: stop cleanly AND don't continue. Checked (and reset for the next
 // call) inside speakToCompletion itself, right alongside `timedOut`.
 let interruptRequested = false;
@@ -215,10 +216,10 @@ export function interruptSpeaking(): void {
 //
 // onStopped needs consumeExpectedStop() rather than a blanket resolve():
 // every Speech.stop() call this app can currently make is marked via
-// markExpectedStop() first (the MAX_SPEECH_MS safety timeout below, and
-// stopSpeaking()'s external callers like useVoiceChat's unmount cleanup) —
-// there's no barge-in yet (see BACKLOG.md), so nothing else legitimately
-// stops a chunk mid-playback. That means an onStopped with the flag NOT set
+// markExpectedStop() first (the per-chunk safety timeout below,
+// interruptSpeaking()'s barge-in, and stopSpeaking()'s external callers like
+// useVoiceChat's unmount cleanup) — nothing else legitimately stops a chunk
+// mid-playback. That means an onStopped with the flag NOT set
 // can only be Android's own TextToSpeech engine losing audio focus to
 // something external (a notification, another app, an OS-level event) —
 // expo-speech's Android bridge discards the `interrupted` flag Android's
