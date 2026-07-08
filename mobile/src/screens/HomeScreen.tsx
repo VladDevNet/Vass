@@ -68,7 +68,14 @@ export function HomeScreen() {
     return <ChatHistoryScreen sessionId={sessionId} onDone={() => setShowHistory(false)} />;
   }
 
-  const busy = state === 'thinking' || state === 'speaking';
+  // 'speaking' is deliberately NOT included here — useVoiceChat's
+  // forceFinalize already has a correct, dedicated branch for a tap during
+  // 'speaking' (manual barge-in: interrupts Olga and hands the turn back),
+  // logged distinctly from voice-triggered barge-in. Disabling the button
+  // for 'speaking' made that branch permanently unreachable from the UI —
+  // 'thinking' alone is the only state with genuinely nothing to do yet
+  // (no reply exists to interrupt or send).
+  const busy = state === 'thinking';
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -83,6 +90,7 @@ export function HomeScreen() {
       {(state === 'idle' || state === 'recording') && (
         <Text style={styles.hint}>Говорите свободно — нажмите, если хотите ответить сразу</Text>
       )}
+      {state === 'speaking' && <Text style={styles.hint}>Нажмите, чтобы перебить</Text>}
 
       {!!transcript && (
         <View style={styles.bubble}>
