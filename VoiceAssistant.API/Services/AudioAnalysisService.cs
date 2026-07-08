@@ -39,6 +39,7 @@ public class AudioAnalysisService
         "СТРОГО в формате JSON",
         "текстом транскрипции",
         "слово-паразит в конце вроде", // CheckUtteranceCompletionAsync's longest, most substantive sentence — the one review flagged as most likely to be what Gemini actually latches onto during an echo
+        "не придумывай правдоподобный текст", // added when the anti-hallucination instruction (see temperature comment below) was added to both prompts — independent review of that same change caught this file's own warning above going unheeded
     ];
 
     private static bool LooksLikePromptLeak(string? text) =>
@@ -93,6 +94,7 @@ public class AudioAnalysisService
                                 Это аудиозапись речи пользователя, говорящего на русском или украинском языке.
                                 Сделай точную транскрипцию того, что пользователь сказал в записи. Убери посторонние вздохи, шумы или щелчки, оставив чистый текст.
                                 Ответь ТОЛЬКО текстом транскрипции, без кавычек и пояснений. Если запись пустая, тихая или не содержит речи, верни пустую строку.
+                                Если не уверен, что именно было сказано — НЕ придумывай правдоподобный текст. Лучше вернуть пустую строку, чем угадать неверно.
                                 """
                         }
                     }
@@ -101,7 +103,29 @@ public class AudioAnalysisService
             generationConfig = new
             {
                 maxOutputTokens = 256,
-                thinkingConfig = new { thinkingBudget = 0 }
+                thinkingConfig = new { thinkingBudget = 0 },
+                // Faithful transcription needs the model to reproduce what it
+                // actually heard, not creatively complete an ambiguous/quiet
+                // clip into a plausible-sounding sentence — the default
+                // temperature is tuned for conversational generation, not
+                // extraction. Confirmed in production: on unclear audio,
+                // Gemini fabricated a coherent-but-entirely-invented request
+                // ("Алло, Сбер, включи музыку...") that the user never said —
+                // not a prompt-leak (a different, already-handled failure
+                // mode), a genuine ASR-style hallucination. Low temperature
+                // reduces (does not eliminate) this: it makes the model favor
+                // its single most-probable read of the audio consistently,
+                // rather than sampling toward a fluent alternative when
+                // uncertain. Known tradeoff (raised by independent review,
+                // worth recording rather than glossing over): temperature=0
+                // is greedy argmax decoding — if fabrication IS the model's
+                // top-probability read for some recurring noise pattern (a
+                // washing machine, a TV), 0.0 makes that exact wrong output
+                // deterministic and repeatable instead of an occasional
+                // sampling-driven miss. The upside of that same determinism:
+                // any such case becomes reproducible from the saved audio,
+                // unlike a one-off hallucination under nonzero temperature.
+                temperature = 0.0
             }
         };
 
@@ -201,6 +225,8 @@ public class AudioAnalysisService
                                 Ответь СТРОГО в формате JSON без markdown:
                                 {"transcription": "текст", "complete": true или false}
                                 Если записи не слышно/тишина, верни {"transcription": "", "complete": false}.
+                                Если не уверен, что именно было сказано — НЕ придумывай правдоподобный текст.
+                                Лучше вернуть пустую transcription, чем угадать неверно.
                                 """
                         }
                     }
@@ -209,7 +235,10 @@ public class AudioAnalysisService
             generationConfig = new
             {
                 maxOutputTokens = 300,
-                thinkingConfig = new { thinkingBudget = 0 }
+                thinkingConfig = new { thinkingBudget = 0 },
+                // See TranscribeAsync's identical setting for why — same
+                // fabrication risk applies here, confirmed in production.
+                temperature = 0.0
             }
         };
 
