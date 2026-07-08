@@ -45,6 +45,72 @@ public class AudioAnalysisService
     private static bool LooksLikePromptLeak(string? text) =>
         !string.IsNullOrEmpty(text) && PromptLeakMarkers.Any(m => text.Contains(m, StringComparison.OrdinalIgnoreCase));
 
+    // Best-effort salvage when Gemini's response got cut off mid-generation
+    // (hit maxOutputTokens before the JSON object could close) — rather than
+    // discarding a real, if incomplete, transcription, pull out whatever text
+    // WAS written to the "transcription" field. Deliberately narrow: this is
+    // NOT a general JSON-repair routine, just enough hand-rolled scanning to
+    // find the field's opening quote and walk to either its closing quote
+    // (present) or the end of the string (truncated mid-value, the expected
+    // case here) while respecting backslash-escapes so an escaped quote
+    // inside the transcription doesn't end the scan early.
+    private static string? TryExtractPartialTranscription(string content)
+    {
+        const string marker = "\"transcription\"";
+        var markerIndex = content.IndexOf(marker, StringComparison.Ordinal);
+        if (markerIndex < 0) return null;
+
+        var colonIndex = content.IndexOf(':', markerIndex + marker.Length);
+        if (colonIndex < 0) return null;
+
+        var quoteStart = content.IndexOf('"', colonIndex + 1);
+        if (quoteStart < 0) return null;
+
+        var i = quoteStart + 1;
+        while (i < content.Length && content[i] != '"')
+        {
+            if (content[i] == '\\') i++; // skip the escaped character too
+            i++;
+        }
+
+        var raw = content[(quoteStart + 1)..Math.Min(i, content.Length)];
+        return UnescapeJsonString(raw).Trim();
+    }
+
+    // Single-pass unescape — chained global .Replace() calls (the original
+    // version of this) are unsound for JSON: after a \\ → \ replace runs,
+    // a genuine \n newline-escape becomes indistinguishable from a literal
+    // backslash-then-letter-n that happened to appear in the text (\\n in
+    // the raw JSON), so a later \n → " " replace would wrongly eat the
+    // literal "n" too. Found by independent review. Scanning once and
+    // consuming each escape pair together avoids the whole class of
+    // ordering bugs.
+    private static string UnescapeJsonString(string raw)
+    {
+        var sb = new System.Text.StringBuilder(raw.Length);
+        for (var i = 0; i < raw.Length; i++)
+        {
+            if (raw[i] == '\\' && i + 1 < raw.Length)
+            {
+                i++;
+                sb.Append(raw[i] switch
+                {
+                    '"' => '"',
+                    '\\' => '\\',
+                    'n' => ' ',
+                    'r' => ' ',
+                    't' => ' ',
+                    var other => other, // unrecognized escape — keep the character, drop the backslash
+                });
+            }
+            else
+            {
+                sb.Append(raw[i]);
+            }
+        }
+        return sb.ToString();
+    }
+
     public AudioAnalysisService(IConfiguration config, ILogger<AudioAnalysisService> logger, IHttpClientFactory httpClientFactory)
     {
         _apiKey = config["Gemini:ApiKey"]!;
@@ -102,7 +168,17 @@ public class AudioAnalysisService
             },
             generationConfig = new
             {
-                maxOutputTokens = 256,
+                // Was 256 — confirmed too small in production for anything
+                // beyond a short phrase: on a long, pause-free monologue the
+                // sibling CheckUtteranceCompletionAsync call (same audio
+                // segment, near-identical budget) truncated Gemini's JSON
+                // response mid-transcription. This method returns plain text
+                // rather than JSON, so the same failure here wouldn't throw
+                // a parse error — it would just silently hand back a
+                // truncated transcript with no error at all, an even harder
+                // failure mode to notice than the JSON one. Raised well
+                // past any realistic single-segment transcript length.
+                maxOutputTokens = 2048,
                 thinkingConfig = new { thinkingBudget = 0 },
                 // Faithful transcription needs the model to reproduce what it
                 // actually heard, not creatively complete an ambiguous/quiet
@@ -234,7 +310,23 @@ public class AudioAnalysisService
             },
             generationConfig = new
             {
-                maxOutputTokens = 300,
+                // Root-caused live from a real device test: user reported a
+                // long, detailed monologue (a full workout description)
+                // vanishing down to a short leftover fragment. Server logs
+                // showed why — "No JSON found in completion-check response"
+                // with a Raw payload containing a perfectly real, in-progress
+                // transcription of their actual speech, cut off mid-word
+                // with no closing quote or brace. maxOutputTokens=300 was
+                // nowhere near enough once the transcription value itself
+                // (not just the small JSON wrapper around it) got long — a
+                // continuous monologue with no pause over
+                // CHECK_SILENCE_THRESHOLD_MS never triggers an earlier
+                // check, so the ENTIRE segment (96s of speech in the
+                // reported incident) rides on one call fitting in budget.
+                // See TryExtractPartialTranscription below for the
+                // complementary defense-in-depth for whatever still
+                // exceeds even this.
+                maxOutputTokens = 2048,
                 thinkingConfig = new { thinkingBudget = 0 },
                 // See TranscribeAsync's identical setting for why — same
                 // fabrication risk applies here, confirmed in production.
@@ -278,6 +370,34 @@ public class AudioAnalysisService
             var jsonEnd = clean.LastIndexOf('}');
             if (jsonStart < 0 || jsonEnd < 0)
             {
+                // Response got cut off before the JSON closed — almost
+                // certainly maxOutputTokens hit mid-transcription (see the
+                // comment on maxOutputTokens above), not silence/no-speech.
+                // Salvage whatever transcription text WAS generated rather
+                // than discarding a real, if incomplete, utterance —
+                // Complete is deliberately false here since the model never
+                // reached its own judgment on that, so the caller correctly
+                // keeps waiting for more / eventually hits the hard ceiling
+                // instead of prematurely treating a cut-off fragment as
+                // "done."
+                var partial = TryExtractPartialTranscription(clean);
+                // Checked against the WHOLE response (clean), not just the
+                // narrowly-extracted partial — independent review found a
+                // real gap: the prompt's own JSON example
+                // ({"transcription": "текст", ...}) means "transcription"
+                // can appear before any real leaked instructional text, so
+                // IndexOf's first match could grab the placeholder word
+                // "текст" — which alone matches none of PromptLeakMarkers —
+                // while the REST of clean plainly contains a leak. clean is
+                // a superset of partial, so this check is strictly more
+                // thorough, not just different.
+                if (!string.IsNullOrWhiteSpace(partial) && !LooksLikePromptLeak(clean))
+                {
+                    _logger.LogWarning(
+                        "Completion-check response truncated before JSON closed — salvaged {Length}-char partial transcription. Raw: {Content}",
+                        partial.Length, content);
+                    return new UtteranceCheckResult { Transcription = partial, Complete = false };
+                }
                 _logger.LogWarning("No JSON found in completion-check response: {Content}", content);
                 return null;
             }
