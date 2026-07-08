@@ -231,9 +231,21 @@ public class ChatController : ControllerBase
         long transcribeMs = 0;
         long speakerIdMs = 0;
         SpeakerIdResult? speakerResult = null;
+        // Tracks "did we enter the audio-transcription branch at all" —
+        // deliberately NOT the same as "transcription != null" (see the
+        // no_speech gate below). TranscribeAsync (AudioAnalysisService.cs)
+        // returns null for EVERY failure mode along this path — missing API
+        // key, a non-2xx Gemini response, a thrown exception, AND the
+        // prompt-leak guard — not just for the one case (Gemini literally
+        // complying with "return an empty string for silence") that yields
+        // "". A gate on transcription != null would silently miss the
+        // prompt-leak case specifically, which is the exact scenario a real
+        // production 400 was traced back to.
+        var attemptedTranscription = false;
 
         if (string.IsNullOrWhiteSpace(messageText) && !string.IsNullOrEmpty(req.AudioFileName))
         {
+            attemptedTranscription = true;
             var filePath = Path.Combine(_audioPath, req.AudioFileName);
             if (!System.IO.File.Exists(filePath)) { Response.StatusCode = 400; return; }
 
@@ -243,7 +255,13 @@ public class ChatController : ControllerBase
             sw.Stop();
             convertMs = sw.ElapsedMilliseconds;
 
-            if (wavPath == null) { _logger.LogWarning("ffmpeg conversion failed for {File}", filePath); Response.StatusCode = 400; return; }
+            if (wavPath == null)
+            {
+                _logger.LogWarning("ffmpeg conversion failed for {File}", filePath);
+                Response.StatusCode = 400;
+                await Response.WriteAsJsonAsync(new { error = "no_speech" });
+                return;
+            }
 
             sw.Restart();
             transcription = await _audioAnalysis.TranscribeAsync(wavPath, geminiKey);
@@ -266,7 +284,32 @@ public class ChatController : ControllerBase
             // }
         }
 
-        if (string.IsNullOrWhiteSpace(messageText)) { Response.StatusCode = 400; return; }
+        if (string.IsNullOrWhiteSpace(messageText))
+        {
+            Response.StatusCode = 400;
+            if (attemptedTranscription)
+            {
+                // Audio was captured and transcription was attempted, but
+                // nothing usable came back — genuine silence/noise, a
+                // missing API key, a failed Gemini call, or
+                // AudioAnalysisService's own anti-leak/anti-hallucination
+                // guards (PR #43/#46) neutralizing a bad read — ALL of
+                // TranscribeAsync's failure paths return null, not just the
+                // "Gemini literally complied with 'return empty string for
+                // silence'" case, so this gate gets confused with
+                // transcription != null (a real bug caught by review before
+                // this shipped: that gate silently missed the prompt-leak
+                // case specifically — the exact scenario a production 400
+                // was traced back to). Whatever the underlying reason, it's
+                // a normal, expected outcome in a live conversation, not a
+                // real error — distinct from a malformed request (this flag
+                // stays false if the audio-transcription branch above was
+                // never entered at all, e.g. neither message nor audio
+                // provided).
+                await Response.WriteAsJsonAsync(new { error = "no_speech" });
+            }
+            return;
+        }
 
         // Save user message
         session.Messages.Add(new Message { Role = "user", Content = messageText, AudioFileName = req.AudioFileName });

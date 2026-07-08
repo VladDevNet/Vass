@@ -426,6 +426,25 @@ export async function sendMessage(params: SendMessageParams, callbacks: SendMess
       await handleUnauthorized();
       throw new ApiError('Unauthorized');
     }
+    if (res.status === 400) {
+      // ChatController.cs distinguishes "nothing intelligible was said"
+      // (genuine silence/noise, or the backend's own anti-leak/
+      // anti-hallucination guards neutralizing a bad transcription — a
+      // normal, expected outcome in a live conversation) from a genuinely
+      // malformed request via this body shape. Resolving with '' instead
+      // of throwing lets speakReplyAndWrapUp's existing
+      // `if (fullReply.trim())` guard handle it exactly like any other
+      // no-op turn — silent re-arm, no error banner for what amounts to
+      // "didn't quite catch that."
+      let noSpeech = false;
+      try {
+        const body = await res.json();
+        noSpeech = body?.error === 'no_speech';
+      } catch {
+        // not JSON (or already consumed) — fall through to the generic error
+      }
+      if (noSpeech) return '';
+    }
     if (!res.ok || !res.body) {
       throw new ApiError(`Send failed: ${res.status}`);
     }
