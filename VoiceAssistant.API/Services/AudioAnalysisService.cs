@@ -45,6 +45,38 @@ public class AudioAnalysisService
     private static bool LooksLikePromptLeak(string? text) =>
         !string.IsNullOrEmpty(text) && PromptLeakMarkers.Any(m => text.Contains(m, StringComparison.OrdinalIgnoreCase));
 
+    // Best-effort salvage when Gemini's response got cut off mid-generation
+    // (hit maxOutputTokens before the JSON object could close) — rather than
+    // discarding a real, if incomplete, transcription, pull out whatever text
+    // WAS written to the "transcription" field. Deliberately narrow: this is
+    // NOT a general JSON-repair routine, just enough hand-rolled scanning to
+    // find the field's opening quote and walk to either its closing quote
+    // (present) or the end of the string (truncated mid-value, the expected
+    // case here) while respecting backslash-escapes so an escaped quote
+    // inside the transcription doesn't end the scan early.
+    private static string? TryExtractPartialTranscription(string content)
+    {
+        const string marker = "\"transcription\"";
+        var markerIndex = content.IndexOf(marker, StringComparison.Ordinal);
+        if (markerIndex < 0) return null;
+
+        var colonIndex = content.IndexOf(':', markerIndex + marker.Length);
+        if (colonIndex < 0) return null;
+
+        var quoteStart = content.IndexOf('"', colonIndex + 1);
+        if (quoteStart < 0) return null;
+
+        var i = quoteStart + 1;
+        while (i < content.Length && content[i] != '"')
+        {
+            if (content[i] == '\\') i++; // skip the escaped character too
+            i++;
+        }
+
+        var raw = content[(quoteStart + 1)..Math.Min(i, content.Length)];
+        return raw.Replace("\\\"", "\"").Replace("\\\\", "\\").Replace("\\n", " ").Trim();
+    }
+
     public AudioAnalysisService(IConfiguration config, ILogger<AudioAnalysisService> logger, IHttpClientFactory httpClientFactory)
     {
         _apiKey = config["Gemini:ApiKey"]!;
@@ -102,7 +134,17 @@ public class AudioAnalysisService
             },
             generationConfig = new
             {
-                maxOutputTokens = 256,
+                // Was 256 — confirmed too small in production for anything
+                // beyond a short phrase: on a long, pause-free monologue the
+                // sibling CheckUtteranceCompletionAsync call (same audio
+                // segment, near-identical budget) truncated Gemini's JSON
+                // response mid-transcription. This method returns plain text
+                // rather than JSON, so the same failure here wouldn't throw
+                // a parse error — it would just silently hand back a
+                // truncated transcript with no error at all, an even harder
+                // failure mode to notice than the JSON one. Raised well
+                // past any realistic single-segment transcript length.
+                maxOutputTokens = 2048,
                 thinkingConfig = new { thinkingBudget = 0 },
                 // Faithful transcription needs the model to reproduce what it
                 // actually heard, not creatively complete an ambiguous/quiet
@@ -234,7 +276,23 @@ public class AudioAnalysisService
             },
             generationConfig = new
             {
-                maxOutputTokens = 300,
+                // Root-caused live from a real device test: user reported a
+                // long, detailed monologue (a full workout description)
+                // vanishing down to a short leftover fragment. Server logs
+                // showed why — "No JSON found in completion-check response"
+                // with a Raw payload containing a perfectly real, in-progress
+                // transcription of their actual speech, cut off mid-word
+                // with no closing quote or brace. maxOutputTokens=300 was
+                // nowhere near enough once the transcription value itself
+                // (not just the small JSON wrapper around it) got long — a
+                // continuous monologue with no pause over
+                // CHECK_SILENCE_THRESHOLD_MS never triggers an earlier
+                // check, so the ENTIRE segment (96s of speech in the
+                // reported incident) rides on one call fitting in budget.
+                // See TryExtractPartialTranscription below for the
+                // complementary defense-in-depth for whatever still
+                // exceeds even this.
+                maxOutputTokens = 2048,
                 thinkingConfig = new { thinkingBudget = 0 },
                 // See TranscribeAsync's identical setting for why — same
                 // fabrication risk applies here, confirmed in production.
@@ -278,6 +336,24 @@ public class AudioAnalysisService
             var jsonEnd = clean.LastIndexOf('}');
             if (jsonStart < 0 || jsonEnd < 0)
             {
+                // Response got cut off before the JSON closed — almost
+                // certainly maxOutputTokens hit mid-transcription (see the
+                // comment on maxOutputTokens above), not silence/no-speech.
+                // Salvage whatever transcription text WAS generated rather
+                // than discarding a real, if incomplete, utterance —
+                // Complete is deliberately false here since the model never
+                // reached its own judgment on that, so the caller correctly
+                // keeps waiting for more / eventually hits the hard ceiling
+                // instead of prematurely treating a cut-off fragment as
+                // "done."
+                var partial = TryExtractPartialTranscription(clean);
+                if (!string.IsNullOrWhiteSpace(partial) && !LooksLikePromptLeak(partial))
+                {
+                    _logger.LogWarning(
+                        "Completion-check response truncated before JSON closed — salvaged {Length}-char partial transcription. Raw: {Content}",
+                        partial.Length, content);
+                    return new UtteranceCheckResult { Transcription = partial, Complete = false };
+                }
                 _logger.LogWarning("No JSON found in completion-check response: {Content}", content);
                 return null;
             }
