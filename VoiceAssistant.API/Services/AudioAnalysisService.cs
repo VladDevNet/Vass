@@ -25,14 +25,20 @@ public class AudioAnalysisService
     // production, leaving the rest of each prompt (especially
     // TranscribeAsync's tail, which has no other fallback gate the way
     // CheckUtteranceCompletionAsync's JSON-brace check does) free to leak
-    // undetected if Gemini echoes a different fragment next time.
+    // undetected if Gemini echoes a different fragment next time. Not
+    // exhaustive down to every sentence — that's a losing long-term game
+    // against silent drift whenever the prompt text is next edited; the
+    // real fix for that is Gemini's responseSchema/systemInstruction
+    // (tracked as a follow-up, not done here). This covers what a second
+    // review round flagged as the highest-value remaining gaps.
     private static readonly string[] PromptLeakMarkers =
     [
         "аудиозапись речи пользователя",
-        "точную транскрипцию того, что было сказано",
+        "разговаривающего с голосовым ассистентом",
+        "транскрипцию того, что", // shared stem — matches both prompts' "make an accurate transcription of what [was said/the user said]" sentence
         "СТРОГО в формате JSON",
         "текстом транскрипции",
-        "разговаривающего с голосовым ассистентом",
+        "слово-паразит в конце вроде", // CheckUtteranceCompletionAsync's longest, most substantive sentence — the one review flagged as most likely to be what Gemini actually latches onto during an echo
     ];
 
     private static bool LooksLikePromptLeak(string? text) =>
