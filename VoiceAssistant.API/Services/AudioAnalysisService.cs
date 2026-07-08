@@ -9,6 +9,41 @@ public class AudioAnalysisService
     private readonly IHttpClientFactory _httpClientFactory;
     private const string Model = "gemini-2.5-flash";
 
+    // On quiet/unclear audio, Gemini occasionally echoes fragments of its OWN
+    // instruction prompt back as if it were "the transcription" instead of
+    // following the "return empty on silence" instruction — a real,
+    // confirmed-in-production failure mode (seen twice: once via
+    // TranscribeAsync, once via CheckUtteranceCompletionAsync, each time the
+    // leaked text matched a prompt phrase verbatim and then got spoken back
+    // to the user or round-tripped through the main chat model). These
+    // phrases are meta-instructions about transcription/JSON formatting that
+    // a real person would essentially never say out loud to a voice
+    // assistant, so matching on them is a safe, low-false-positive guard.
+    // Deliberately one marker per DISTINCT sentence of each prompt (not just
+    // the opening line) — independent review of this fix found the initial
+    // set only covered the exact two sentences that had already leaked in
+    // production, leaving the rest of each prompt (especially
+    // TranscribeAsync's tail, which has no other fallback gate the way
+    // CheckUtteranceCompletionAsync's JSON-brace check does) free to leak
+    // undetected if Gemini echoes a different fragment next time. Not
+    // exhaustive down to every sentence — that's a losing long-term game
+    // against silent drift whenever the prompt text is next edited; the
+    // real fix for that is Gemini's responseSchema/systemInstruction
+    // (tracked as a follow-up, not done here). This covers what a second
+    // review round flagged as the highest-value remaining gaps.
+    private static readonly string[] PromptLeakMarkers =
+    [
+        "аудиозапись речи пользователя",
+        "разговаривающего с голосовым ассистентом",
+        "транскрипцию того, что", // shared stem — matches both prompts' "make an accurate transcription of what [was said/the user said]" sentence
+        "СТРОГО в формате JSON",
+        "текстом транскрипции",
+        "слово-паразит в конце вроде", // CheckUtteranceCompletionAsync's longest, most substantive sentence — the one review flagged as most likely to be what Gemini actually latches onto during an echo
+    ];
+
+    private static bool LooksLikePromptLeak(string? text) =>
+        !string.IsNullOrEmpty(text) && PromptLeakMarkers.Any(m => text.Contains(m, StringComparison.OrdinalIgnoreCase));
+
     public AudioAnalysisService(IConfiguration config, ILogger<AudioAnalysisService> logger, IHttpClientFactory httpClientFactory)
     {
         _apiKey = config["Gemini:ApiKey"]!;
@@ -94,7 +129,14 @@ public class AudioAnalysisService
                 .Where(p => p.TryGetProperty("text", out _))
                 .Select(p => p.GetProperty("text").GetString() ?? ""));
 
-            return content.Trim().Trim('"');
+            var transcription = content.Trim().Trim('"');
+            if (LooksLikePromptLeak(transcription))
+            {
+                _logger.LogWarning("Gemini echoed its own prompt instead of transcribing — treating as no speech. Raw: {Content}", content);
+                return null;
+            }
+
+            return transcription;
         }
         catch (Exception ex)
         {
@@ -212,10 +254,18 @@ public class AudioAnalysisService
             }
 
             var resultJson = clean[jsonStart..(jsonEnd + 1)];
-            return JsonSerializer.Deserialize<UtteranceCheckResult>(resultJson, new JsonSerializerOptions
+            var result = JsonSerializer.Deserialize<UtteranceCheckResult>(resultJson, new JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true
             });
+
+            if (result != null && LooksLikePromptLeak(result.Transcription))
+            {
+                _logger.LogWarning("Gemini echoed its own prompt instead of transcribing — treating as no speech. Raw: {Content}", content);
+                return new UtteranceCheckResult { Transcription = "", Complete = false };
+            }
+
+            return result;
         }
         catch (Exception ex)
         {
