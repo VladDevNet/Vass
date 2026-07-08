@@ -6,8 +6,8 @@ import {
   setAudioModeAsync,
   useAudioRecorder,
 } from 'expo-audio';
-import { api, API_URL, sendMessage } from '../api/client';
-import { interruptSpeaking, speakToCompletion, stopSpeaking } from '../tts/systemSpeech';
+import { api, sendMessage } from '../api/client';
+import { interruptSpeaking, speakBackchannel, speakToCompletion, stopSpeaking } from '../tts/systemSpeech';
 import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
 
@@ -49,13 +49,6 @@ const MIN_SPEECH_MS = 450;
 // identical 750ms cooldown in the same spot.
 const DISCARD_COOLDOWN_MS = 750;
 
-// Pre-synthesized "still listening" phrases — same files the web client
-// plays (frontend/audio/fillers/, served as plain static files by nginx,
-// no auth needed). Reassures the speaker Olga is still listening during a
-// real thinking pause, without ending their turn.
-const BACKCHANNEL_FILLERS = ['back-1.wav', 'back-2.wav', 'back-3.wav', 'back-4.wav', 'back-5.wav'].map(
-  (f) => `${API_URL}/audio/fillers/${f}`
-);
 
 // Barge-in tuning — yolo.js's exact frame count (10, ~500ms — double the
 // normal 5-frame/250ms onset bar) so a stray sound during playback needs to
@@ -471,16 +464,14 @@ export function useVoiceChat(sessionId: number | null) {
   // Plays a random "still listening" phrase — fire-and-forget, doesn't
   // block or need awaiting, matches yolo.js's playStaticClip. Only called
   // when the speaker is confirmed still mid-pause (not stale — see caller).
+  // Spoken via the same on-device TTS voice as real replies (systemSpeech's
+  // speakBackchannel) rather than the five pre-recorded WAV files this used
+  // to play — those were a fixed voice from whenever they were recorded,
+  // mismatched against whatever voice the user has actually selected. Real-
+  // device feedback described the mismatch as sounding "like some kind of
+  // horror movie."
   const playBackchannelFiller = useCallback(() => {
-    const url = BACKCHANNEL_FILLERS[Math.floor(Math.random() * BACKCHANNEL_FILLERS.length)];
-    const player = createAudioPlayer(url);
-    const subscription = player.addListener('playbackStatusUpdate', (status) => {
-      if (status.didJustFinish || status.error) {
-        subscription.remove();
-        player.release();
-      }
-    });
-    player.play();
+    speakBackchannel();
   }, []);
 
   // Snapshots the in-progress utterance (by necessity: stops the current

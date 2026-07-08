@@ -261,6 +261,70 @@ function speakChunk(text: string, voice: string, chunkIndex: number, totalChunks
   });
 }
 
+// Short, warm acknowledgment phrases ("still listening") played during a
+// pause while turn-taking decides whether the speaker is done — mirrors
+// yolo.js's BACKCHANNEL_FILLERS, matches companion-system.txt's "тёплый
+// голосовой собеседник" tone ("не подгоняй собеседника... терпение важнее
+// скорости ответа" — avoided anything that could read as rushing/curt on
+// flat TTS intonation, e.g. a repeated "Да, да." or an interrogative-
+// sounding "Так-так.").
+const BACKCHANNEL_PHRASES = ['Угу.', 'Ага.', 'Так.', 'М-м, слушаю.', 'Понимаю.'];
+
+// Speaks one short phrase, resolving on ANY stop — done, engine-initiated,
+// or explicitly stopped — never rejecting. Deliberately separate from
+// speakChunk above despite the near-identical Speech.speak() call:
+// speakChunk's onStopped consumes the module-level expectedStop flag, which
+// works ONLY because at most one speakChunk call has ever been in flight at
+// a time — true for speakToCompletion's own strictly-sequenced loop, but
+// NOT once a backchannel filler can be queued (Android's TextToSpeech
+// defaults to QUEUE_ADD, confirmed in expo-speech's own SpeechModule.kt)
+// alongside a real reply that starts moments later. If a barge-in's
+// Speech.stop() then stops BOTH utterances in one native call, only ONE of
+// their onStopped handlers can actually consume the shared flag — the
+// other would wrongly see it already cleared and reject as "unexpected,"
+// sending a real, cleanly-interrupted reply into the network-TTS fallback
+// path instead of just stopping. A filler doesn't need that fallback
+// machinery at all — it's a non-critical nicety — so it simply never
+// participates in expectedStop tracking. Found by independent review.
+function speakBackchannelPhrase(text: string, voice: string): Promise<void> {
+  return new Promise((resolve) => {
+    Speech.speak(text, {
+      language: 'ru-RU',
+      voice,
+      onDone: () => resolve(),
+      onStopped: () => resolve(),
+      onError: (err) => {
+        log('debug', 'tts', 'backchannel chunk error (non-critical)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        resolve();
+      },
+    });
+  });
+}
+
+// Fire-and-forget: the turn-taking loop calling this needs to keep listening
+// immediately, not wait for the filler to finish playing. Spoken with the
+// same resolved voice as real replies (getRussianVoice) — this used to be
+// five pre-recorded WAV files (frontend/audio/fillers/back-*.wav, ported
+// as-is from the web client) that didn't match whichever voice the user
+// actually has selected, an inconsistency real-device feedback described as
+// sounding "like some kind of horror movie."
+export function speakBackchannel(): void {
+  void (async () => {
+    try {
+      const voice = await getRussianVoice();
+      if (!voice) return; // no Russian voice on this device — silently skip, same as the WAV version's implicit behavior
+      const phrase = BACKCHANNEL_PHRASES[Math.floor(Math.random() * BACKCHANNEL_PHRASES.length)];
+      await speakBackchannelPhrase(phrase, voice);
+    } catch (err) {
+      log('debug', 'tts', 'backchannel filler failed (non-critical)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  })();
+}
+
 // Mirrors api.synthesizeSpeech's role in useVoiceChat.stopAndRespond, but
 // speaks directly instead of returning a file URI to play — expo-speech has
 // no file/bytes output, only start/done/error callbacks.
