@@ -63,11 +63,22 @@ const INTERRUPTION_THRESHOLD_DB = DEFAULT_THRESHOLD_DB + 8;
 const SHADOW_SILENCE_TIMEOUT_MS = 1000;
 
 // Sanity floor for commitShadowContinuation — see shadowArmedAtRef's own
-// comment for the production 400 this closes. A genuine continuation needs
-// at least a speech-onset debounce (~250ms) plus SHADOW_SILENCE_TIMEOUT_MS
-// (1000ms) of trailing silence to ever reach a commit — over 1.2s minimum.
-// 500ms leaves wide margin below that real floor while safely rejecting a
-// stale retrigger firing within ~160-200ms of a re-arm.
+// comment for the production 400 this closes. A genuine continuation's real
+// floor is closer to ~2s than a round number: useVad's exponential
+// smoothing starts every reset at -160dB, so against continuous speech it
+// takes ~8 ticks (~400ms) just to cross DEFAULT_THRESHOLD_DB, THEN 5 more
+// ticks (~250ms) of onset debounce before hasSpoken flips — hasSpoken
+// itself doesn't fire until ~600ms in. commitShadowContinuation is only
+// ever called once activeSpeechMs has ALSO cleared MIN_SPEECH_MS (450ms),
+// and only after SHADOW_SILENCE_TIMEOUT_MS (1000ms) of trailing silence on
+// top of that — 600+450+1000 ≈ 2050ms minimum (independently re-derived
+// and confirmed during PR #51's review). 500ms leaves wide margin below
+// that real floor while safely rejecting the stale retrigger that
+// motivated this constant, confirmed in production logs as firing ~25ms
+// after a re-arm (armedForMs, measured at the exact point this constant
+// gates — not to be confused with the ~160ms gap seen between THAT
+// decision and sendSegment's own later log line, which is separately
+// explained by the native recorder-stop round trip in between).
 const MIN_SHADOW_ARM_MS = 500;
 
 // Sixth mobile voice-loop increment: optimistic turn-taking, replacing the
@@ -182,13 +193,16 @@ export function useVoiceChat(sessionId: number | null) {
   // reviewer-flagged race in shadowGeneration's resetKey — bounded to at
   // most one extra spurious retrigger per re-arm, not a full loop, but not
   // eliminated) fired a commit using activeSpeechMs CARRIED OVER from the
-  // previous continuation, ~160ms after the recorder had just been
-  // re-armed. The resulting recording was a WebM with valid container
-  // framing but zero actual audio samples — ffmpeg has nothing to convert,
-  // the backend correctly 400s, and that surfaced as a visible error.
-  // activeSpeechMs itself can't catch this (it's the stale value CAUSING
-  // the false trigger), so this checks real elapsed time since arm
-  // instead — a dimension the stale VAD tick has no way to fake.
+  // previous continuation, ~25ms after the recorder had just been re-armed
+  // (production ClientLogEntries: "armed" then "confirmed continuation"
+  // 25ms later with an IDENTICAL activeSpeechMs to the prior commit — the
+  // tell that it was stale, not fresh). The resulting recording was a WebM
+  // with valid container framing but zero actual audio samples — ffmpeg
+  // has nothing to convert, the backend correctly 400s, and that surfaced
+  // as a visible error. activeSpeechMs itself can't catch this (it's the
+  // stale value CAUSING the false trigger), so this checks real elapsed
+  // time since arm instead — a dimension the stale VAD tick has no way to
+  // fake.
   const shadowArmedAtRef = useRef(0);
   // Set on a confirmed barge-in, checked in sendSegment's finally block so
   // it skips the normal end-of-turn armMic() — a barge-in already
