@@ -243,7 +243,13 @@ public class ChatController : ControllerBase
             sw.Stop();
             convertMs = sw.ElapsedMilliseconds;
 
-            if (wavPath == null) { _logger.LogWarning("ffmpeg conversion failed for {File}", filePath); Response.StatusCode = 400; return; }
+            if (wavPath == null)
+            {
+                _logger.LogWarning("ffmpeg conversion failed for {File}", filePath);
+                Response.StatusCode = 400;
+                await Response.WriteAsJsonAsync(new { error = "no_speech" });
+                return;
+            }
 
             sw.Restart();
             transcription = await _audioAnalysis.TranscribeAsync(wavPath, geminiKey);
@@ -266,7 +272,24 @@ public class ChatController : ControllerBase
             // }
         }
 
-        if (string.IsNullOrWhiteSpace(messageText)) { Response.StatusCode = 400; return; }
+        if (string.IsNullOrWhiteSpace(messageText))
+        {
+            Response.StatusCode = 400;
+            if (transcription != null)
+            {
+                // Audio was captured and transcription was attempted, but
+                // nothing usable came back — genuine silence/noise, or
+                // AudioAnalysisService's own anti-leak/anti-hallucination
+                // guards (PR #43/#46) neutralized a bad read into an empty
+                // string. A normal, expected outcome in a live
+                // conversation, not a real error — distinct from a
+                // malformed request (transcription would still be null here
+                // if the audio-transcription branch above was never
+                // entered at all, e.g. neither message nor audio provided).
+                await Response.WriteAsJsonAsync(new { error = "no_speech" });
+            }
+            return;
+        }
 
         // Save user message
         session.Messages.Add(new Message { Role = "user", Content = messageText, AudioFileName = req.AudioFileName });
