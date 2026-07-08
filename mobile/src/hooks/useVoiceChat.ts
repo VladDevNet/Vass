@@ -7,7 +7,8 @@ import {
   useAudioRecorder,
 } from 'expo-audio';
 import { api, sendMessage } from '../api/client';
-import { interruptSpeaking, speakBackchannel, speakToCompletion, stopSpeaking } from '../tts/systemSpeech';
+import { createStreamingSpeech, interruptSpeaking, speakBackchannel, stopSpeaking } from '../tts/systemSpeech';
+import type { StreamingSpeech } from '../tts/systemSpeech';
 import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
 
@@ -122,14 +123,48 @@ const MIN_SHADOW_ARM_MS = 500;
 // history), so each segment is still its own separate native recording,
 // same as before.
 //
+// Streaming TTS (the follow-up explicitly deferred when this redesign
+// first shipped) is now also in: sendSegment no longer waits for a reply
+// to finish streaming ENTIRELY before speaking a word of it. Complete
+// sentences are extracted from the growing SSE buffer as they arrive
+// (extractCompleteSentences below) and fed to systemSpeech.ts's
+// createStreamingSpeech, which speaks each one as soon as it's ready while
+// later sentences are still being generated. Real production replies ran
+// 2-15s+ to fully generate — that whole window used to be dead air after
+// the backchannel filler ran out; now only the time to the FIRST sentence
+// is on the critical path.
+//
 // Barge-in requires the mic to be live and VAD watching for the ENTIRE
-// 'speaking' duration, not just after — so the recorder arms BEFORE TTS
-// starts (see speakReplyAndWrapUp), not after. recorderLiveRef tracks
-// whether the native recorder is currently prepared+recording so armMic/
+// 'speaking' duration, not just after — so the recorder arms BEFORE the
+// first sentence is spoken (see sendSegment's handleChunk/
+// onBeforeFirstSpeech), not after. recorderLiveRef tracks whether the
+// native recorder is currently prepared+recording so armMic/
 // rearmRecorderOnly/stopRecorderIfLive can each be called unconditionally
 // wherever they're needed without worrying about double-arming (which
 // expo-audio throws AudioRecorderAlreadyPreparedException for — confirmed in
 // AudioRecorder.kt's prepareRecording) or double-stopping.
+
+// Extracts as many COMPLETE sentences as currently exist at the front of a
+// streaming reply buffer, returning them plus whatever incomplete tail
+// remains (held back until a later chunk completes it, or force-flushed
+// once the stream itself ends — see sendSegment). Same "some non-
+// terminator text then 1+ terminator(s)" heuristic systemSpeech.ts's own
+// splitIntoChunks already uses for the non-streaming case (imperfect for
+// things like "3.14" or "т.е." — an accepted, pre-existing limitation, not
+// a new one introduced here).
+function extractCompleteSentences(buffer: string): { sentences: string[]; rest: string } {
+  const sentences: string[] = [];
+  const re = /[^.!?…]*[.!?…]+\s*/g;
+  let consumed = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(buffer)) !== null) {
+    const sentence = match[0].trim();
+    if (sentence) sentences.push(sentence);
+    consumed = re.lastIndex;
+  }
+  return { sentences, rest: buffer.slice(consumed) };
+}
+
 export function useVoiceChat(sessionId: number | null) {
   const [state, setState] = useState<VoiceState>('idle');
   const [micArmed, setMicArmed] = useState(false);
@@ -428,43 +463,6 @@ export function useVoiceChat(sessionId: number | null) {
     };
   }, [sessionId, armMic]);
 
-  // Shared tail: given a reply just received, speaks it and wraps up. Kept
-  // separate so every caller stays in sync on the barge-in-aware TTS
-  // handling.
-  const speakReplyAndWrapUp = useCallback(
-    async (fullReply: string, turnStartedAt: number) => {
-      if (fullReply.trim()) {
-        // Arm BEFORE speaking, not after — barge-in needs VAD watching for
-        // the entire playback, not just once it's done. useVad's `active`
-        // below already includes 'speaking', so as soon as setState fires
-        // the tick loop starts watching this live recorder.
-        await rearmRecorderOnly();
-        setState('speaking');
-        // System TTS (expo-speech) is the primary path — instant, no network
-        // hop. A barge-in interruption (interruptSpeaking(), see
-        // handleSpeechStart/forceFinalize below) makes speakToCompletion
-        // return normally, not throw — systemSpeech.ts's own
-        // interruptRequested flag breaks its chunk loop cleanly, so this
-        // catch never sees a barge-in at all, only genuine on-device TTS
-        // failures (missing Russian voice, native "text too long" rejection
-        // despite our own chunking, a transient engine error) — all of
-        // which still fall back to the existing buffered server-Piper path
-        // rather than the reply going silent.
-        try {
-          await speakToCompletion(fullReply);
-        } catch (err) {
-          log('warn', 'tts', 'on-device speech failed, falling back to network TTS', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-          const audioUri = await api.synthesizeSpeech(fullReply);
-          await playToCompletion(audioUri, playerRef);
-        }
-      }
-      log('info', 'turn', 'finalize done', { totalMs: Date.now() - turnStartedAt });
-    },
-    [rearmRecorderOnly]
-  );
-
   // The core of this design (see the file-level comment). `fromShadow`
   // distinguishes the very first segment of a turn (captured by the main
   // recorder, triggered by handleSilenceTick) from a continuation segment
@@ -534,6 +532,62 @@ export function useVoiceChat(sessionId: number | null) {
 
       const turnStartedAt = Date.now();
       log('info', 'turn', 'segment send start', { fromShadow });
+
+      // Sentences are spoken as the reply streams in, not after the whole
+      // thing arrives — see createStreamingSpeech's own comment. Scoped to
+      // THIS attempt: only ever created lazily on the first real chunk (see
+      // handleChunk), so an empty/no_speech reply (see PR #54) never starts
+      // one at all, and a fresh instance is created per attempt, never
+      // reused across segments. A plain mutable holder rather than a `let`
+      // — TS narrows a `let` union to `never` at read sites outside the
+      // closure that reassigns it, since it can't prove whether that
+      // closure ran by then; a property access doesn't have that problem.
+      const streamingHolder: { current: StreamingSpeech | null } = { current: null };
+      let sentenceBuffer = '';
+
+      const handleChunk = (chunk: string) => {
+        if (myGeneration !== segmentGenerationRef.current || bargedInRef.current) {
+          // Two distinct reasons to stop here, same response to both:
+          // (1) a THIRD segment superseded this one while its SSE stream is
+          // still delivering chunks (narrow but real: the window between a
+          // sentence being queued and setState('speaking') actually
+          // committing — see onBeforeFirstSpeech below — briefly overlaps
+          // with 'thinking', during which shadow-capture can still fire).
+          // (2) a barge-in interrupted THIS reply mid-stream — streaming
+          // TTS means 'speaking' (and therefore a barge-in) can now start
+          // well before sendMessage()'s network call finishes, unlike the
+          // old design handleSpeechStart's own comment used to describe;
+          // bargedInRef is checked directly (not just via the generation
+          // counter) because barge-in alone doesn't bump
+          // segmentGenerationRef — only the interrupting utterance's OWN
+          // later segment does — so without this, remaining chunks would
+          // keep growing the visible reply bubble for a reply nobody's
+          // listening to anymore. Idempotent to call repeatedly, since
+          // every remaining chunk reaches here for the rest of the stream.
+          streamingHolder.current?.abort();
+          return;
+        }
+        setReply((prev) => prev + chunk);
+
+        if (!streamingHolder.current) {
+          streamingHolder.current = createStreamingSpeech(async () => {
+            // Arm BEFORE speaking, not after — barge-in needs VAD watching
+            // for the entire playback, not just once it's done. Awaited
+            // here (not fired-and-forgotten from handleChunk, which can't
+            // itself be async — SendMessageCallbacks.onChunk isn't) so the
+            // FIRST utterance never starts before the mic is actually live
+            // to catch an interruption.
+            await rearmRecorderOnly();
+            if (myGeneration === segmentGenerationRef.current) setState('speaking');
+          });
+        }
+
+        sentenceBuffer += chunk;
+        const { sentences, rest } = extractCompleteSentences(sentenceBuffer);
+        sentenceBuffer = rest;
+        for (const sentence of sentences) streamingHolder.current.push(sentence);
+      };
+
       try {
         let fullReply: string;
 
@@ -575,9 +629,7 @@ export function useVoiceChat(sessionId: number | null) {
             return;
           }
           fullReply = await sendMessage({ sessionId: sid, message: combinedText }, {
-            onChunk: (chunk) => {
-              if (myGeneration === segmentGenerationRef.current) setReply((prev) => prev + chunk);
-            },
+            onChunk: handleChunk,
           });
         } else {
           const { fileName } = await api.uploadAudio(uri);
@@ -589,9 +641,7 @@ export function useVoiceChat(sessionId: number | null) {
                 pendingSegmentsRef.current.set(myGeneration, text.trim());
                 if (myGeneration === segmentGenerationRef.current) setTranscript(pendingText());
               },
-              onChunk: (chunk) => {
-                if (myGeneration === segmentGenerationRef.current) setReply((prev) => prev + chunk);
-              },
+              onChunk: handleChunk,
             }
           );
         }
@@ -602,15 +652,48 @@ export function useVoiceChat(sessionId: number | null) {
           // pendingSegmentsRef above regardless of generation, so nothing
           // recognized is lost, only this now-incomplete-in-hindsight reply
           // itself), or the whole TURN has since ended — either way, this
-          // reply must never be spoken.
+          // reply must never be spoken. Also abort any streaming speech
+          // handleChunk already started for it — its own supersede check
+          // would catch this on the NEXT chunk, but this was the LAST one
+          // (sendMessage already resolved), so nothing will trigger that
+          // check again on its own.
           log('info', 'turn', 'discarding superseded or stale-turn reply', { replyLength: fullReply.length });
+          streamingHolder.current?.abort();
           return;
         }
 
         log('info', 'turn', 'reply received', { sendMs: Date.now() - turnStartedAt, replyLength: fullReply.length });
         pendingSegmentsRef.current.clear();
-        await speakReplyAndWrapUp(fullReply, turnStartedAt);
+
+        if (streamingHolder.current) {
+          // Flush whatever's left in the buffer even if it never reached
+          // terminating punctuation — nothing more is coming now, so this
+          // IS the final piece regardless of how it ends.
+          if (sentenceBuffer.trim()) streamingHolder.current.push(sentenceBuffer);
+          try {
+            await streamingHolder.current.finish();
+          } catch (err) {
+            log('warn', 'tts', 'on-device speech failed, falling back to network TTS', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+            // Falls back for the FULL reply, not just whatever's left
+            // unspoken — accepts a small chance of repeating a sentence or
+            // two already heard, in exchange for not having to track
+            // exactly how much got through before the failure. On-device
+            // TTS failing mid-reply is already a rare path (missing voice,
+            // a transient engine error); trading a little precision for
+            // simplicity here is a proportionate call, not a shortcut.
+            const audioUri = await api.synthesizeSpeech(fullReply);
+            await playToCompletion(audioUri, playerRef);
+          }
+        }
+        log('info', 'turn', 'finalize done', { totalMs: Date.now() - turnStartedAt });
       } catch (err) {
+        // Unconditional, even for a superseded/stale-turn segment below —
+        // a stray chunk that already made it into handleChunk before the
+        // network call itself failed may have started a streaming instance
+        // that would otherwise be left dangling in the background.
+        streamingHolder.current?.abort();
         if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) {
           // Also superseded (or the whole turn already ended) — a failure
           // on a discarded attempt isn't a real error from the user's
@@ -636,7 +719,7 @@ export function useVoiceChat(sessionId: number | null) {
         }
       }
     },
-    [armMic, stopRecorderIfLive, stopShadowRecorderIfLive, armShadowRecorder, speakReplyAndWrapUp, pendingText]
+    [armMic, stopRecorderIfLive, stopShadowRecorderIfLive, armShadowRecorder, rearmRecorderOnly, pendingText]
   );
 
   // Confirmed as real, sustained continuation speech (not yet committed —
@@ -745,9 +828,14 @@ export function useVoiceChat(sessionId: number | null) {
   // triggerInterruption() going directly to LISTENING, not IDLE, since VAD
   // already confirmed real sustained speech (10 frames at the boosted
   // threshold, not just the normal 5) to get here at all. No network abort
-  // needed: by 'speaking', sendMessage() has already resolved — there's
-  // nothing left in flight except the TTS playback itself. Unchanged from
-  // PR #39 — this design deliberately leaves barge-in-during-speaking alone.
+  // needed — deliberately unchanged from PR #39's original barge-in design
+  // — but NOT because sendMessage() is guaranteed done by now: streaming
+  // TTS (see sendSegment's handleChunk) can enter 'speaking' well before
+  // the SSE stream finishes, so the network call may well still be running
+  // here. Left running anyway, same philosophy as a superseded segment
+  // elsewhere in this file — bargedInRef (checked directly in handleChunk,
+  // not just inferred from the generation counter) stops it from having
+  // any further visible effect once it does resolve.
   const handleSpeechStart = useCallback(() => {
     if (stateRef.current === 'speaking') {
       bargedInRef.current = true;
