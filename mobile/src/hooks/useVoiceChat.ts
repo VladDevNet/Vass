@@ -30,25 +30,22 @@ const RECORDING_OPTIONS = {
   android: { ...RecordingPresets.HIGH_QUALITY.android, audioSource: 'voice_communication' as const },
 };
 
-// Real turn-taking timings — yolo.js's exact values (frontend/js/yolo.js:52-54).
+// The ONLY silence gate left in this design — yolo.js's original value
+// (frontend/js/yolo.js:52), kept even though the completeness-check it used
+// to gate is gone (see the file-level comment below for why).
 const CHECK_SILENCE_THRESHOLD_MS = 1200;
-const RECHECK_INTERVAL_MS = 1800;
-const MAX_SILENCE_CEILING_MS = 7000;
 
-// Below this much active speech with no transcribable text ever produced,
-// treat it as a cough/knock/click rather than a real utterance check-utterance
-// just failed on — same bar as yolo.js's submitSpeech(). Only gates the
-// ceiling fallback now (see finalizeAtCeiling): the normal check-based path
-// doesn't need a local filter, Gemini's own completeness judgment (or simply
-// producing no transcription) handles short/meaningless sounds. Also reused
-// by shadow-capture below — yolo.js uses the identical 450ms bar there too.
+// Below this much active speech, treat a pause as a cough/knock/click, not a
+// real utterance — matches yolo.js's submitSpeech() bar. Gates every segment
+// (first AND continuations) before it's sent: without a completeness-check
+// step to silently absorb noise server-side, a cough would otherwise go
+// straight to the main model and come back as a spoken non-sequitur.
 const MIN_SPEECH_MS = 450;
 
 // Pause after discarding a too-short sound before re-arming, so continuous
 // background noise can't retrigger in a tight loop — mirrors yolo.js's
 // identical 750ms cooldown in the same spot.
 const DISCARD_COOLDOWN_MS = 750;
-
 
 // Barge-in tuning — yolo.js's exact frame count (10, ~500ms — double the
 // normal 5-frame/250ms onset bar) so a stray sound during playback needs to
@@ -60,46 +57,56 @@ const DISCARD_COOLDOWN_MS = 750;
 const INTERRUPTION_FRAMES = 10;
 const INTERRUPTION_THRESHOLD_DB = DEFAULT_THRESHOLD_DB + 8;
 
-// Shadow-capture tuning — yolo.js's exact SILENCE_TIMEOUT (distinct from
-// turn-taking's CHECK_SILENCE_THRESHOLD_MS above — shadow-capture judges
-// "did they actually keep talking" locally, no completeness-check involved,
-// so it uses a shorter, simpler silence bar).
+// Continuation-confirmation timing — yolo.js's exact SILENCE_TIMEOUT. Once
+// broadly "shadow capture only during THINKING," now the single mechanism
+// that confirms ANY segment's continuation (see the file-level comment).
 const SHADOW_SILENCE_TIMEOUT_MS = 1000;
 
-// Fifth mobile voice-loop increment (docs/react-native/BACKLOG.md Phase 1,
-// the last one): shadow-capture. While THINKING (waiting on the LLM), a
-// SECOND independent AudioRecorder listens in parallel without touching the
-// in-flight request — confirmed safe to build via expo-audio's own
-// AudioModule.kt: recorders live in a ConcurrentHashMap with no singleton
-// constraint, and the module's own lifecycle hooks
-// (OnActivityEntersBackground/Foreground) already iterate and manage
-// multiple concurrent instances. Only once the shadow recording is
-// confirmed as real, sustained speech (the same 450ms bar as everywhere
-// else in this file) does anything happen: the in-flight response is
-// aborted and the fuller, combined utterance is sent instead — so a knock
-// or background noise during THINKING never disturbs a perfectly good
-// answer.
+// Sixth mobile voice-loop increment: optimistic turn-taking, replacing the
+// completeness-check round-trip (PR #38) with a direct send. Real-device
+// latency logging (a full session of production timings) showed the
+// dominant cost was never the on-device VAD/TTS — it was two sequential
+// network round-trips per turn: first /chat/check-utterance (2-5.5s
+// observed, just to ask "are they done?"), THEN the real /chat/send call
+// (2-10s+, scaling with reply length) only after that came back "complete."
+// That first round-trip bought silence-filling patience but nothing else —
+// the reply itself doesn't start generating until the SECOND call anyway.
 //
-// Third and fourth mobile voice-loop increments: real turn-taking via the
-// existing /chat/check-utterance endpoint, and barge-in on top of it. Not a
-// literal port of yolo.js's snapshot-based design — expo-audio's
-// AudioRecorder has no way to read a recording's bytes without stopping it
-// first (unlike Web MediaRecorder's incremental chunk delivery, confirmed
-// by reading AudioRecorder.kt directly: the only way to get a valid file is
-// stopRecording(), which fully finalizes and releases the native recorder).
-// So each completeness check here stops the current segment, immediately
-// re-arms a fresh one for the continuation (useVad's own state persists
-// across this, since active/recorder don't change — see useVad.ts), and
-// accumulates each segment's transcription as TEXT rather than trying to
-// stitch raw audio together. This actually matches yolo.js's own
-// submitKnownText more closely than its snapshot mechanism does: once a
-// completeness check has transcribed anything, the reference implementation
-// sends that text directly too, with no separate audio upload for that turn.
+// New design: the instant CHECK_SILENCE_THRESHOLD_MS (1.2s) passes, stop
+// the recorder and send that audio straight to /chat/send (no
+// /chat/check-utterance at all) — betting optimistically that the pause
+// means "done," while a backchannel filler plays immediately to fill the
+// dead air. A second recorder (still named "shadow" — same mechanism as
+// PR #40, just generalized: it now covers EVERY segment's continuation
+// window, not only the literal LLM-thinking wait) keeps listening the whole
+// time. If real speech resumes there, we do NOT abort the in-flight
+// request (the abort-vs-catch-block race that shadow-capture's original
+// design spent real effort routing around — see PR #40/#45's history) —
+// we simply let it run to completion in the background and discard
+// whatever it returns, then send the new segment as its own attempt. Which
+// attempt actually gets spoken is decided by a monotonic generation counter
+// (segmentGenerationRef) rather than a boolean flag: a boolean can't
+// correctly track "am I still the current attempt" once more than one
+// continuation happens in a row (a later attempt's reset would incorrectly
+// un-cancel an earlier one still in flight) — the same class of bug this
+// session's resetKey/micGeneration fix (PR #45) closed for useVad's state.
+//
+// Net effect: a turn that's genuinely finished after one pause now skips an
+// entire network round-trip; a turn where the speaker keeps going costs an
+// extra (discarded) model call instead of an extra (cheap) judgment call —
+// a worthwhile trade since discarding is free from the user's perspective
+// (nothing plays) while the old design's judgment call was pure latency
+// with no other benefit.
+//
+// expo-audio still can't snapshot a recording without fully stopping it
+// (AudioRecorder.kt — confirmed by direct source reading, see PR #38's
+// history), so each segment is still its own separate native recording,
+// same as before.
 //
 // Barge-in requires the mic to be live and VAD watching for the ENTIRE
-// 'speaking' duration, not just after — so the recorder now arms BEFORE TTS
-// starts (see finalizeWithText), not after. recorderLiveRef tracks whether
-// the native recorder is currently prepared+recording so armMic/
+// 'speaking' duration, not just after — so the recorder arms BEFORE TTS
+// starts (see speakReplyAndWrapUp), not after. recorderLiveRef tracks
+// whether the native recorder is currently prepared+recording so armMic/
 // rearmRecorderOnly/stopRecorderIfLive can each be called unconditionally
 // wherever they're needed without worrying about double-arming (which
 // expo-audio throws AudioRecorderAlreadyPreparedException for — confirmed in
@@ -111,12 +118,11 @@ export function useVoiceChat(sessionId: number | null) {
   // resetKey (see its comment) so VAD's internal hasSpoken/speechStartAt
   // state resets on every new turn, not just when `active` itself flips
   // value. Without this, a turn that starts and ends entirely within
-  // idle/recording (discarded as noise — completeness-check never
-  // succeeds) never changes `active` (idle and recording are both "on" for
-  // this useVad call), so the NEXT armMic() inherits frozen speech-timing
-  // refs from the PREVIOUS turn — confirmed on a real device as a tight
-  // loop, re-firing the silence ceiling within a single 50ms tick of every
-  // rearm, forever, with an identical stale activeSpeechMs every time.
+  // idle/recording never changes `active` (idle and recording are both "on"
+  // for this useVad call), so the NEXT armMic() inherits frozen
+  // speech-timing refs from the PREVIOUS turn — confirmed on a real device
+  // as a tight loop, re-firing every tick with an identical stale
+  // activeSpeechMs (PR #45).
   const [micGeneration, setMicGeneration] = useState(0);
   const [transcript, setTranscript] = useState('');
   const [reply, setReply] = useState('');
@@ -132,12 +138,6 @@ export function useVoiceChat(sessionId: number | null) {
   // useVad's effect dependency array — on every state change.
   const stateRef = useRef(state);
   stateRef.current = state;
-  // Guards the various finalize/discard paths against overlapping — several
-  // independent triggers (the silence ceiling, a completeness check saying
-  // "complete", the manual override tap) can each try to finalize, so a
-  // race between them needs an explicit lock rather than relying on one
-  // gated button.
-  const finalizingRef = useRef(false);
   // Unlike the mount effect below (which guards its own single run with a
   // local `cancelled` flag), armMic()/rearmRecorderOnly() are called from
   // several places with no cleanup of their own, so they need their own
@@ -150,43 +150,70 @@ export function useVoiceChat(sessionId: number | null) {
   // file-level comment. Set by armMic/rearmRecorderOnly, cleared by
   // stopRecorderIfLive.
   const recorderLiveRef = useRef(false);
-  // Same idea, for the shadow recorder.
+  // Same idea, for the shadow (continuation) recorder.
   const shadowRecorderLiveRef = useRef(false);
-  // Set on a confirmed barge-in, checked in finalizeWithText's finally block
-  // so it skips the normal end-of-turn armMic() — a barge-in already
+  // Set on a confirmed barge-in, checked in sendSegment's finally block so
+  // it skips the normal end-of-turn armMic() — a barge-in already
   // transitioned straight to 'recording' with its own turn-taking state
   // freshly underway (see handleSpeechStart), and armMic() would incorrectly
   // reset that out from under it.
   const bargedInRef = useRef(false);
-  // The in-flight sendMessage's abort handle, live only while finalizeWithText
-  // is actually awaiting a response — commitShadowContinuation (below) calls
-  // .abort() on it once a shadow recording is confirmed as a real
-  // continuation, so finalizeWithText's own catch block can pick up and send
-  // the fuller, combined utterance instead of answering the incomplete first
-  // half. null whenever nothing is in flight, so a stray abort() is a no-op.
-  const activeSendAbortControllerRef = useRef<AbortController | null>(null);
-  // Set by commitShadowContinuation right before it aborts, read (and
-  // cleared) by finalizeWithText's own catch block — see the comment there
-  // for why the continuation is handled INSIDE that catch rather than by a
-  // separate function racing for finalizingRef.
-  const shadowContinuationUriRef = useRef<string | null>(null);
+  // Guards handleSilenceTick's first-segment trigger against re-entry across
+  // the few 50ms VAD ticks between "silence threshold crossed" and `state`
+  // actually becoming 'thinking' (at which point the main recorder's useVad
+  // call goes inactive on its own and this guard's job is done — see where
+  // it's cleared). Independent of segmentGenerationRef below: this prevents
+  // literally sending the SAME first segment twice, not "which reply wins."
+  const firstSegmentInFlightRef = useRef(false);
   // Guards handleShadowSilenceTick's discard-as-noise branch from re-logging
-  // every 50ms tick for as long as 'thinking' stays silent after a short
-  // blip — useVad's onSilenceTick has no "already handled" concept of its
-  // own (see useVad.ts), and activeSpeechMs stays fixed once speech stops.
-  // Reset on shadow speech resuming and on a fresh arm, so a genuinely new
-  // short sound later gets its own log.
+  // every 50ms tick for as long as a continuation window stays silent after
+  // a short blip — useVad's onSilenceTick has no "already handled" concept
+  // of its own (see useVad.ts), and activeSpeechMs stays fixed once speech
+  // stops. Reset on shadow speech resuming and on a fresh arm, so a
+  // genuinely new short sound later gets its own log.
   const shadowDiscardLoggedRef = useRef(false);
 
-  // Turn-taking state — see triggerCompletenessCheck/finalizeWithText below.
-  const pendingTextRef = useRef(''); // confirmed transcript accumulated across check cycles this turn
-  const nextCheckAtRef = useRef(CHECK_SILENCE_THRESHOLD_MS); // silenceDurationMs threshold for the next check
-  const checkInFlightRef = useRef(false);
-  // True if speech resumed while a check was in flight — matches yolo.js's
-  // own staleness guard ("only act on complete if nothing new was said
-  // since this snapshot"), since by the time a stale check's answer
-  // arrives the transcription it judged no longer covers the whole thought.
-  const speechResumedSinceCheckRef = useRef(false);
+  // Turn-taking state. Each segment's transcribed text is stored keyed by
+  // its OWN generation number (see segmentGenerationRef below), not
+  // appended to a running string — segment 1's transcription can resolve
+  // AFTER segment 2's (network timing has no relationship to recording
+  // order: segment 1's request might simply be slower), and a plain
+  // accumulating string has no way to recover the right order once that
+  // happens, only whichever order the network happened to resolve in.
+  // Keying by generation and sorting numerically at read time
+  // (pendingText() below) keeps chronological order correct regardless of
+  // resolve order. Found by tracing this exact race before it ever shipped.
+  //
+  // Residual, accepted gap: a segment still sends whatever pendingText()
+  // returns AT THAT MOMENT — if an EARLIER generation's transcription is
+  // abnormally slow (slower than this whole next pause-plus-1000ms shadow
+  // cycle put together, which real timings make unlikely but not
+  // impossible), the send can go out missing that earlier segment's text.
+  // The data itself isn't lost (a later .set() for that generation still
+  // lands in the map), only that turn's reply won't have reflected it.
+  // Documented rather than engineered away — same call as this session's
+  // temperature=0 tradeoff (PR #46): a real but low-probability timing
+  // edge, not worth the added coupling a guaranteed fix would need.
+  const pendingSegmentsRef = useRef<Map<number, string>>(new Map());
+  const pendingText = useCallback(
+    () =>
+      Array.from(pendingSegmentsRef.current.entries())
+        .sort(([a], [b]) => a - b)
+        .map(([, text]) => text)
+        .join(' ')
+        .trim(),
+    []
+  );
+  // Monotonic — bumped every time a NEW segment starts sending (first or
+  // continuation) and captured locally as that segment's own identity. When
+  // a segment's sendMessage call resolves, it compares its captured value
+  // against the CURRENT counter: equal means "I'm still the latest attempt,
+  // speak me"; anything else means a later segment has since superseded me,
+  // discard silently. A plain boolean can't do this correctly once more
+  // than one continuation happens in a row — see the file-level comment.
+  // Doubles as the key into pendingSegmentsRef above, since segment order
+  // and generation order are the same thing.
+  const segmentGenerationRef = useRef(0);
 
   useEffect(() => {
     return () => {
@@ -210,10 +237,10 @@ export function useVoiceChat(sessionId: number | null) {
     } catch (err) {
       if (!mountedRef.current) return;
       log('error', 'mic', 'rearm failed', { error: err instanceof Error ? err.message : String(err) });
-      // Left un-recovered here on purpose — the next silence tick (or the
-      // hard ceiling) will find a dead recorder, fail its own check
-      // attempt, and finalize with whatever text has already been
-      // accumulated rather than getting stuck.
+      // Left un-recovered here on purpose — the next silence tick will find
+      // a dead recorder, fail its own segment-send attempt, and finalize
+      // with whatever text has already been accumulated rather than
+      // getting stuck.
     }
   }, [recorder]);
 
@@ -232,8 +259,8 @@ export function useVoiceChat(sessionId: number | null) {
     }
   }, [recorder]);
 
-  // Same pair, for the shadow recorder — armed/disarmed by the 'thinking'
-  // effect below instead of by turn-taking logic.
+  // Same pair, for the shadow (continuation) recorder — armed/disarmed by
+  // the 'thinking' effect below instead of by turn-taking logic directly.
   const armShadowRecorder = useCallback(async () => {
     if (!mountedRef.current || shadowRecorderLiveRef.current) return;
     try {
@@ -261,10 +288,12 @@ export function useVoiceChat(sessionId: number | null) {
     }
   }, [shadowRecorder]);
 
-  // Arms the shadow recorder for the whole 'thinking' phase, discards it
-  // (no commit) the moment we leave 'thinking' any other way — matches
-  // yolo.js's startVadLoop calling stopShadowCapture() as soon as
-  // currentState stops being THINKING.
+  // Arms the shadow recorder for the whole 'thinking' phase, discards it (no
+  // commit) the moment we leave 'thinking' any other way. Fires once per
+  // TRANSITION into 'thinking' — a continuation round that sends its own
+  // segment and re-enters 'thinking'-adjacent listening re-arms explicitly
+  // inside sendSegment instead (state doesn't leave 'thinking' between
+  // rounds, so this effect wouldn't fire again on its own).
   useEffect(() => {
     if (state === 'thinking') {
       void armShadowRecorder();
@@ -280,12 +309,9 @@ export function useVoiceChat(sessionId: number | null) {
   // starting to capture once speech is already detected.
   const armMic = useCallback(async () => {
     if (!mountedRef.current) return;
-    pendingTextRef.current = '';
-    nextCheckAtRef.current = CHECK_SILENCE_THRESHOLD_MS;
-    checkInFlightRef.current = false;
-    speechResumedSinceCheckRef.current = false;
+    pendingSegmentsRef.current.clear();
     bargedInRef.current = false;
-    shadowContinuationUriRef.current = null;
+    firstSegmentInFlightRef.current = false;
     await rearmRecorderOnly();
     if (!mountedRef.current || !recorderLiveRef.current) return;
     setMicArmed(true);
@@ -319,10 +345,9 @@ export function useVoiceChat(sessionId: number | null) {
     };
   }, [sessionId, armMic]);
 
-  // Shared tail: given a reply just received (however it arrived — text-
-  // based turn-taking, shadow-capture's audio continuation, or the hard
-  // ceiling), speaks it and wraps up. Kept separate so all of those callers
-  // can't drift out of sync on the barge-in-aware TTS handling.
+  // Shared tail: given a reply just received, speaks it and wraps up. Kept
+  // separate so every caller stays in sync on the barge-in-aware TTS
+  // handling.
   const speakReplyAndWrapUp = useCallback(
     async (fullReply: string, turnStartedAt: number) => {
       if (fullReply.trim()) {
@@ -357,250 +382,237 @@ export function useVoiceChat(sessionId: number | null) {
     [rearmRecorderOnly]
   );
 
-  // Sends the accumulated transcript directly as text (no audio upload —
-  // matches yolo.js's submitKnownText, which never persists audio for a
-  // turn a completeness check already transcribed) and speaks the reply.
-  const finalizeWithText = useCallback(async () => {
-    if (finalizingRef.current) return;
-    finalizingRef.current = true;
-    const sid = sessionIdRef.current;
-    const text = pendingTextRef.current.trim();
-    pendingTextRef.current = '';
-    // Reset unconditionally, not just on a success path — this call itself
-    // can be the turn AFTER a barge-in (the interrupting utterance's own
-    // finalize), and leaving a stale `true` here would make the finally
-    // block below skip armMic() for an entirely unrelated turn — state
-    // stuck with no recovery. Caught by independent review of the barge-in PR.
-    bargedInRef.current = false;
+  // The core of this design (see the file-level comment). `fromShadow`
+  // distinguishes the very first segment of a turn (captured by the main
+  // recorder, triggered by handleSilenceTick) from a continuation segment
+  // (captured by the shadow recorder, triggered by commitShadowContinuation)
+  // — and they genuinely need DIFFERENT handling, not just a different
+  // recorder to stop: /chat/send only accepts EITHER text OR audio, never
+  // both (ChatController.cs's Send action), so a continuation's audio can't
+  // be combined with the first segment's already-known text in one call.
+  // The first segment goes straight to /chat/send as raw audio — the
+  // optimistic bet this whole design rests on. A continuation instead gets
+  // a cheap transcription-only pass (checkUtteranceComplete, `.complete`
+  // ignored — see its comment in client.ts) so it can be appended as TEXT
+  // to whatever's already been recognized, and THAT combined text is what
+  // actually goes to /chat/send — otherwise the model would answer the
+  // continuation alone, with no idea what came before it.
+  const sendSegment = useCallback(
+    async (fromShadow: boolean) => {
+      const sid = sessionIdRef.current;
+      // Reset unconditionally, not just on a success path — this call itself
+      // can be the turn AFTER a barge-in (the interrupting utterance's own
+      // segment), and leaving a stale `true` here would make the finally
+      // block below skip armMic() for an entirely unrelated turn — state
+      // stuck with no recovery. Same defensive shape as the barge-in PR's
+      // own fix for this exact class of bug.
+      bargedInRef.current = false;
 
-    if (!sid || !text) {
-      finalizingRef.current = false;
-      if (!sid) setError('Сессия ещё не готова');
-      await armMic();
-      return;
-    }
+      const uri = fromShadow ? await stopShadowRecorderIfLive() : await stopRecorderIfLive();
 
-    setState('thinking');
-    setTranscript(text);
-    setReply('');
-    const turnStartedAt = Date.now();
-    log('info', 'turn', 'finalize (text) start', { textLength: text.length });
-    const abortController = new AbortController();
-    activeSendAbortControllerRef.current = abortController;
-    try {
-      // Whatever mid-turn continuation recording is currently running gets
-      // discarded here — same as yolo.js's submitKnownText clearing
-      // currentRecordingChunks with no further use of them.
-      await stopRecorderIfLive();
-
-      const fullReply = await sendMessage(
-        { sessionId: sid, message: text },
-        { onChunk: (chunk) => setReply((prev) => prev + chunk) },
-        abortController.signal
-      );
-      log('info', 'turn', 'reply received', { sendMs: Date.now() - turnStartedAt, replyLength: fullReply.length });
-      await speakReplyAndWrapUp(fullReply, turnStartedAt);
-    } catch (err) {
-      // A shadow-capture commit aborts this exact request on purpose (see
-      // commitShadowContinuation) and stashes the confirmed continuation's
-      // uri here — pick it up and send the fuller, combined utterance
-      // ourselves rather than treating this as a failure. Handled inline
-      // (not as a separate function) specifically so it runs under THIS
-      // call's already-held finalizingRef lock instead of racing a second
-      // function for it — the abort() call doesn't synchronously reject
-      // this await, so a separate function trying to acquire the lock
-      // itself could easily run before this catch block does.
-      const shadowUri = shadowContinuationUriRef.current;
-      shadowContinuationUriRef.current = null;
-      if (shadowUri) {
-        log('info', 'turn', 'aborted for shadow-capture continuation, sending combined utterance');
-        const continuationStartedAt = Date.now();
-        try {
-          setTranscript('');
-          setReply('');
-          const { fileName } = await api.uploadAudio(shadowUri);
-          const fullReply = await sendMessage(
-            { sessionId: sid, message: '', audioFileName: fileName },
-            { onTranscription: setTranscript, onChunk: (chunk) => setReply((prev) => prev + chunk) }
-          );
-          log('info', 'turn', 'reply received (shadow continuation)', {
-            sendMs: Date.now() - continuationStartedAt,
-            replyLength: fullReply.length,
-          });
-          await speakReplyAndWrapUp(fullReply, continuationStartedAt);
-        } catch (err2) {
-          const message = err2 instanceof Error ? err2.message : String(err2);
-          setError(message);
-          log('error', 'turn', 'shadow continuation failed', { error: message });
-        }
-      } else {
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message);
-        log('error', 'turn', 'finalize failed', { error: message, elapsedMs: Date.now() - turnStartedAt });
-      }
-    } finally {
-      activeSendAbortControllerRef.current = null;
-      finalizingRef.current = false;
-      // Unconditional, not just on the catch path above: a shadow commit
-      // can land after this turn's sendMessage already resolved
-      // successfully (the abort() it fires is then a no-op on an
-      // already-settled request) — in that case the catch block above
-      // never runs and never reads/clears this ref. Left alone, a stale
-      // URI from THIS turn would get picked up by some unrelated LATER
-      // turn's catch block (e.g. a plain network error), sending that
-      // turn's reply against old, irrelevant audio. Found by independent
-      // review of the shadow-capture PR.
-      shadowContinuationUriRef.current = null;
-      // A confirmed barge-in already transitioned to 'recording' with the
-      // interrupting speech's own onset already detected (see
-      // handleSpeechStart) — armMic() here would incorrectly reset that
-      // in-progress turn's state (pendingText/nextCheckAt/etc.) out from
-      // under it. Only re-arm normally when this turn actually finished on
-      // its own.
-      if (!bargedInRef.current) await armMic();
-    }
-  }, [armMic, stopRecorderIfLive, speakReplyAndWrapUp]);
-
-  // Plays a random "still listening" phrase — fire-and-forget, doesn't
-  // block or need awaiting, matches yolo.js's playStaticClip. Only called
-  // when the speaker is confirmed still mid-pause (not stale — see caller).
-  // Spoken via the same on-device TTS voice as real replies (systemSpeech's
-  // speakBackchannel) rather than the five pre-recorded WAV files this used
-  // to play — those were a fixed voice from whenever they were recorded,
-  // mismatched against whatever voice the user has actually selected. Real-
-  // device feedback described the mismatch as sounding "like some kind of
-  // horror movie."
-  const playBackchannelFiller = useCallback(() => {
-    speakBackchannel();
-  }, []);
-
-  // Snapshots the in-progress utterance (by necessity: stops the current
-  // recording segment, then immediately starts a new one for the
-  // continuation — see the file-level comment for why expo-audio can't do
-  // this non-destructively) and asks the server whether the speaker sounds
-  // done or is likely still talking/pausing to think.
-  const triggerCompletenessCheck = useCallback(async () => {
-    if (checkInFlightRef.current) return;
-    checkInFlightRef.current = true;
-    speechResumedSinceCheckRef.current = false;
-
-    try {
-      const uri = await stopRecorderIfLive();
-      // Re-arm immediately so the mic keeps listening for a continuation
-      // with minimal gap — this becomes the new "current" segment. Doesn't
-      // await: no reason to delay the network check on the re-arm finishing.
-      void rearmRecorderOnly();
-
-      if (!uri) return;
-
-      log('info', 'turn', 'completeness check start');
-      const result = await api.checkUtteranceComplete(uri);
-      const stale = speechResumedSinceCheckRef.current;
-      log('info', 'turn', 'completeness check result', {
-        complete: result.complete,
-        transcriptionLength: result.transcription.length,
-        stale,
-      });
-
-      if (result.transcription.trim()) {
-        pendingTextRef.current = pendingTextRef.current
-          ? `${pendingTextRef.current} ${result.transcription.trim()}`
-          : result.transcription.trim();
+      if (!fromShadow) {
+        // Only the first segment's trigger needs this guard — see its own
+        // comment. Release it the instant state leaves idle/recording (via
+        // setState below) rather than waiting for this whole async call to
+        // finish, since that's the moment the main recorder's useVad call
+        // goes inactive on its own and re-entry becomes structurally
+        // impossible anyway.
+        firstSegmentInFlightRef.current = false;
       }
 
-      if (stale) return; // they were already talking again by the time this resolved
-
-      if (result.complete) {
-        await finalizeWithText();
-      } else {
-        playBackchannelFiller();
-      }
-    } catch (err) {
-      log('warn', 'turn', 'completeness check failed', { error: err instanceof Error ? err.message : String(err) });
-      // Swallowed — the next recheck cycle (nextCheckAtRef already bumped
-      // forward by the caller) or the hard ceiling will retry/finalize.
-    } finally {
-      checkInFlightRef.current = false;
-    }
-  }, [rearmRecorderOnly, stopRecorderIfLive, finalizeWithText, playBackchannelFiller]);
-
-  // Guards finalizeAtCeiling against re-entry — independent of finalizingRef
-  // (owned by finalizeWithText's own lifecycle; pre-setting it here would
-  // make finalizeWithText's own guard check reject the call finalizeAtCeiling
-  // makes into it below) and independent of checkInFlightRef (a different
-  // concern — triggerCompletenessCheck's periodic rechecks). Without this,
-  // nothing stops a second VAD tick 50ms later — while the first call is
-  // still awaiting recorder.stop()/checkUtteranceComplete — from re-entering
-  // (the ceiling condition stays true every tick past 7000ms), duplicating
-  // both the network call and the accumulated text. Caught by independent
-  // review of the turn-taking PR.
-  const ceilingFinalizeInFlightRef = useRef(false);
-
-  // Hard-ceiling fallback: one last transcribe attempt on whatever's
-  // currently in flight (so the final segment isn't silently dropped just
-  // because the ceiling landed between recheck cycles), then finalize
-  // regardless of what that check judges.
-  const finalizeAtCeiling = useCallback(
-    async (activeSpeechMs: number) => {
-      if (finalizingRef.current || checkInFlightRef.current || ceilingFinalizeInFlightRef.current) {
-        log('debug', 'turn', 'finalizeAtCeiling skipped — already in flight');
+      if (!sid || !uri) {
+        if (!sid) setError('Сессия ещё не готова');
+        await armMic();
         return;
       }
-      ceilingFinalizeInFlightRef.current = true;
-      try {
-        log('warn', 'turn', 'silence ceiling reached', {
-          activeSpeechMs,
-          pendingTextSoFar: pendingTextRef.current.length,
-        });
 
-        const uri = await stopRecorderIfLive();
-        if (uri) {
-          try {
-            const result = await api.checkUtteranceComplete(uri);
-            if (result.transcription.trim()) {
-              pendingTextRef.current = pendingTextRef.current
-                ? `${pendingTextRef.current} ${result.transcription.trim()}`
-                : result.transcription.trim();
-            }
-          } catch (err) {
-            log('warn', 'turn', 'final check at ceiling failed', {
-              error: err instanceof Error ? err.message : String(err),
-            });
+      // Bumped once per attempt, whether this turns out to be the ONLY
+      // attempt or gets superseded down the line — see the field comment.
+      const myGeneration = ++segmentGenerationRef.current;
+
+      if (!fromShadow) {
+        setState('thinking');
+        setTranscript('');
+        setReply('');
+        speakBackchannel();
+      } else {
+        // The 'thinking'-entry effect above only fires on a state
+        // TRANSITION into 'thinking', which already happened for the first
+        // segment — state hasn't left 'thinking' since, so it won't fire
+        // again on its own. Re-arm explicitly so a THIRD segment can still
+        // be caught if the speaker keeps going.
+        void armShadowRecorder();
+      }
+
+      const turnStartedAt = Date.now();
+      log('info', 'turn', 'segment send start', { fromShadow });
+      try {
+        let fullReply: string;
+
+        if (fromShadow) {
+          const { transcription } = await api.checkUtteranceComplete(uri);
+          // Record BEFORE checking supersede, not after — a THIRD segment
+          // can supersede this one (generation 2) while this call was still
+          // in flight, but this segment's recognized text must still reach
+          // whichever generation ends up sending, or a middle continuation
+          // in a 2+ chain would be silently dropped rather than folded in
+          // (caught by tracing the exact 2-continuation scenario by hand
+          // before ever sending this for review).
+          if (transcription.trim()) {
+            pendingSegmentsRef.current.set(myGeneration, transcription.trim());
+            if (myGeneration === segmentGenerationRef.current) setTranscript(pendingText());
           }
+          if (myGeneration !== segmentGenerationRef.current) {
+            log('info', 'turn', 'continuation superseded — folded into pending text, not sent standalone');
+            return;
+          }
+          const combinedText = pendingText();
+          if (!combinedText) {
+            // Nothing transcribable at all across every segment so far —
+            // shadow-capture already gates on MIN_SPEECH_MS before ever
+            // committing a continuation, so this should be rare (a
+            // transcription that came back empty despite real audio), but
+            // there's nothing left to send if it happens.
+            await armMic();
+            return;
+          }
+          fullReply = await sendMessage({ sessionId: sid, message: combinedText }, {
+            onChunk: (chunk) => {
+              if (myGeneration === segmentGenerationRef.current) setReply((prev) => prev + chunk);
+            },
+          });
+        } else {
+          const { fileName } = await api.uploadAudio(uri);
+          fullReply = await sendMessage(
+            { sessionId: sid, message: '', audioFileName: fileName },
+            {
+              onTranscription: (text) => {
+                if (!text.trim()) return;
+                pendingSegmentsRef.current.set(myGeneration, text.trim());
+                if (myGeneration === segmentGenerationRef.current) setTranscript(pendingText());
+              },
+              onChunk: (chunk) => {
+                if (myGeneration === segmentGenerationRef.current) setReply((prev) => prev + chunk);
+              },
+            }
+          );
         }
 
-        if (pendingTextRef.current.trim()) {
-          await finalizeWithText();
+        if (myGeneration !== segmentGenerationRef.current) {
+          // A continuation superseded this segment while it was in flight —
+          // the reply arrived, but we deliberately never play it. Its
+          // transcription was already folded into pendingSegmentsRef above by
+          // the onTranscription/checkUtteranceComplete branch regardless of
+          // generation, so nothing recognized is lost, only the
+          // (now-incomplete-in-hindsight) reply itself.
+          log('info', 'turn', 'discarding superseded reply', { replyLength: fullReply.length });
           return;
         }
 
-        log('info', 'turn', activeSpeechMs < MIN_SPEECH_MS ? 'discarding as noise at ceiling' : 'discarding — no transcribable text', {
-          activeSpeechMs,
-        });
-        pendingTextRef.current = '';
-        nextCheckAtRef.current = CHECK_SILENCE_THRESHOLD_MS;
-        setTimeout(() => armMic(), DISCARD_COOLDOWN_MS);
+        log('info', 'turn', 'reply received', { sendMs: Date.now() - turnStartedAt, replyLength: fullReply.length });
+        pendingSegmentsRef.current.clear();
+        await speakReplyAndWrapUp(fullReply, turnStartedAt);
+      } catch (err) {
+        if (myGeneration !== segmentGenerationRef.current) {
+          // Also superseded — a failure on a discarded attempt isn't a
+          // real error from the user's perspective, don't surface it.
+          log('warn', 'turn', 'superseded segment failed (ignored)', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        log('error', 'turn', 'segment send failed', { error: message, elapsedMs: Date.now() - turnStartedAt });
+        pendingSegmentsRef.current.clear();
       } finally {
-        ceilingFinalizeInFlightRef.current = false;
+        // Only the segment that's still current owns turn wrap-up — a
+        // superseded segment's finally must not touch armMic()/bargedInRef,
+        // since a NEWER segment (or its own eventual finally) is
+        // responsible for that now.
+        if (myGeneration === segmentGenerationRef.current) {
+          if (!bargedInRef.current) await armMic();
+        }
       }
     },
-    [stopRecorderIfLive, finalizeWithText, armMic]
+    [armMic, stopRecorderIfLive, stopShadowRecorderIfLive, armShadowRecorder, speakReplyAndWrapUp, pendingText]
   );
 
-  const handleSilenceTick = useCallback(
+  // Confirmed as real, sustained continuation speech (not yet committed —
+  // see the guard at the top): stop the shadow recorder and send it as the
+  // next segment. Deliberately does NOT abort whatever segment is currently
+  // in flight — see the file-level comment for why letting it run to
+  // completion and discarding its result (via segmentGenerationRef) is
+  // simpler and race-free compared to this session's earlier
+  // AbortController-based design.
+  const commitShadowContinuation = useCallback(
+    (activeSpeechMs: number) => {
+      if (!shadowRecorderLiveRef.current) return; // already committed by an earlier tick, or never armed
+      log('info', 'turn', 'shadow-capture: confirmed continuation', { activeSpeechMs });
+      void sendSegment(true);
+    },
+    [sendSegment]
+  );
+
+  const handleShadowSilenceTick = useCallback(
     (silenceDurationMs: number, activeSpeechMs: number) => {
-      if (silenceDurationMs >= MAX_SILENCE_CEILING_MS) {
-        finalizeAtCeiling(activeSpeechMs);
-      } else if (silenceDurationMs >= nextCheckAtRef.current && !checkInFlightRef.current) {
-        nextCheckAtRef.current = silenceDurationMs + RECHECK_INTERVAL_MS;
-        triggerCompletenessCheck();
+      if (silenceDurationMs < SHADOW_SILENCE_TIMEOUT_MS) return;
+      if (activeSpeechMs >= MIN_SPEECH_MS) {
+        commitShadowContinuation(activeSpeechMs);
+      } else if (!shadowDiscardLoggedRef.current) {
+        // Too short to be real speech (knock/click) — matches yolo.js's
+        // tickShadowCapture discarding and continuing to shadow rather than
+        // tearing the recorder down. No state reset beyond the log guard
+        // above: useVad's own debounce state naturally keeps tracking (this
+        // hook has no built-in "already handled this tick" concept beyond
+        // what the caller — us — does), so a genuinely new sound right
+        // after a discarded blip is still correctly picked up by a later
+        // tick.
+        shadowDiscardLoggedRef.current = true;
+        log('debug', 'shadow', 'discarding short shadow sound', { activeSpeechMs });
       }
     },
-    [finalizeAtCeiling, triggerCompletenessCheck]
+    [commitShadowContinuation]
+  );
+
+  useVad({
+    recorder: shadowRecorder,
+    active: state === 'thinking',
+    onSpeechStart: () => log('debug', 'shadow', 'shadow speech detected'),
+    onSpeechResume: () => {
+      shadowDiscardLoggedRef.current = false;
+    },
+    onSilenceTick: handleShadowSilenceTick,
+  });
+
+  // Fires on every VAD tick while silent after having spoken — the ONLY
+  // trigger left for the FIRST segment of a turn (see the file-level
+  // comment; there is no more recheck/ceiling schedule to manage here).
+  const handleSilenceTick = useCallback(
+    (silenceDurationMs: number, activeSpeechMs: number) => {
+      if (silenceDurationMs < CHECK_SILENCE_THRESHOLD_MS || firstSegmentInFlightRef.current) return;
+      firstSegmentInFlightRef.current = true;
+      if (activeSpeechMs < MIN_SPEECH_MS) {
+        log('debug', 'turn', 'discarding short sound before first segment', { activeSpeechMs });
+        firstSegmentInFlightRef.current = false;
+        // Re-arm after a short cooldown rather than immediately, so
+        // continuous background noise can't retrigger this in a tight loop
+        // — mirrors yolo.js's identical 750ms cooldown in the same spot.
+        setTimeout(() => armMic(), DISCARD_COOLDOWN_MS);
+        return;
+      }
+      void sendSegment(false);
+    },
+    [sendSegment, armMic]
   );
 
   const handleSpeechResume = useCallback(() => {
-    speechResumedSinceCheckRef.current = true;
+    // No staleness bookkeeping needed here anymore — segmentGenerationRef
+    // already handles "was this segment superseded" at resolution time,
+    // regardless of how many times speech has resumed/paused since it was
+    // sent. Kept as a required useVad callback (still fires on a genuine
+    // quiet->loud transition mid-utterance) even though this hook no longer
+    // needs to act on it itself.
   }, []);
 
   // While 'speaking', a confirmed onset is a barge-in: stop Olga mid-word
@@ -609,7 +621,8 @@ export function useVoiceChat(sessionId: number | null) {
   // already confirmed real sustained speech (10 frames at the boosted
   // threshold, not just the normal 5) to get here at all. No network abort
   // needed: by 'speaking', sendMessage() has already resolved — there's
-  // nothing left in flight except the TTS playback itself.
+  // nothing left in flight except the TTS playback itself. Unchanged from
+  // PR #39 — this design deliberately leaves barge-in-during-speaking alone.
   const handleSpeechStart = useCallback(() => {
     if (stateRef.current === 'speaking') {
       bargedInRef.current = true;
@@ -648,72 +661,24 @@ export function useVoiceChat(sessionId: number | null) {
     onLevelSample: isSpeaking ? handleSpeakingLevelSample : undefined,
   });
 
-  // Confirmed as a real continuation (not yet committed — see the guard at
-  // the top): abort the in-flight response and stash this recording's uri
-  // for finalizeWithText's own catch block to pick up. Deliberately does
-  // NOT try to acquire finalizingRef itself — see finalizeWithText's catch
-  // comment for why that would race against the abort actually propagating.
-  const commitShadowContinuation = useCallback(
-    async (activeSpeechMs: number) => {
-      if (!shadowRecorderLiveRef.current) return; // already committed by an earlier tick, or never armed
-      log('info', 'turn', 'shadow-capture: confirmed continuation', { activeSpeechMs });
-      const uri = await stopShadowRecorderIfLive();
-      if (!uri) return;
-      shadowContinuationUriRef.current = uri;
-      activeSendAbortControllerRef.current?.abort();
-    },
-    [stopShadowRecorderIfLive]
-  );
-
-  const handleShadowSilenceTick = useCallback(
-    (silenceDurationMs: number, activeSpeechMs: number) => {
-      if (silenceDurationMs < SHADOW_SILENCE_TIMEOUT_MS) return;
-      if (activeSpeechMs >= MIN_SPEECH_MS) {
-        commitShadowContinuation(activeSpeechMs);
-      } else if (!shadowDiscardLoggedRef.current) {
-        // Too short to be real speech (knock/click) — matches yolo.js's
-        // tickShadowCapture discarding and continuing to shadow rather than
-        // tearing the recorder down. No state reset beyond the log guard
-        // above: useVad's own debounce state naturally keeps tracking (this
-        // hook has no built-in "already handled this tick" concept beyond
-        // what the caller — us — does), so a genuinely new sound right
-        // after a discarded blip is still correctly picked up by a later
-        // tick.
-        shadowDiscardLoggedRef.current = true;
-        log('debug', 'shadow', 'discarding short shadow sound', { activeSpeechMs });
-      }
-    },
-    [commitShadowContinuation]
-  );
-
-  useVad({
-    recorder: shadowRecorder,
-    active: state === 'thinking',
-    onSpeechStart: () => log('debug', 'shadow', 'shadow speech detected'),
-    onSpeechResume: () => {
-      shadowDiscardLoggedRef.current = false;
-    },
-    onSilenceTick: handleShadowSilenceTick,
-  });
-
-  // Manual override: force-finalize whatever's been captured so far,
-  // regardless of what VAD/turn-taking currently think — same "one more
-  // check, then finalize regardless" shape as the hard ceiling, just
-  // triggered by a tap instead of 7 seconds of silence. Also doubles as a
-  // manual interruption while speaking, mirroring yolo.js's
-  // yolo-speak-now-btn ("Перебить" during SPEAKING) — a safety valve for
-  // on-device VAD/turn-taking that hasn't been calibrated against a real
-  // microphone yet.
+  // Manual override: send whatever's been captured so far immediately,
+  // regardless of the 1.2s pause timer — same shape as before, just calling
+  // straight into sendSegment now that there's no separate ceiling function.
+  // Also doubles as a manual interruption while speaking, mirroring
+  // yolo.js's yolo-speak-now-btn ("Перебить" during SPEAKING) — a safety
+  // valve for on-device VAD/turn-taking that hasn't been calibrated against
+  // a real microphone yet.
   const forceFinalize = useCallback(() => {
     if (state === 'speaking') {
       bargedInRef.current = true;
       log('info', 'turn', 'barge-in: manual interruption tap');
       interruptSpeaking();
       setState('recording');
-    } else if (state === 'idle' || state === 'recording') {
-      finalizeAtCeiling(0);
+    } else if ((state === 'idle' || state === 'recording') && !firstSegmentInFlightRef.current) {
+      firstSegmentInFlightRef.current = true;
+      void sendSegment(false);
     }
-  }, [state, finalizeAtCeiling]);
+  }, [state, sendSegment]);
 
   return { state, transcript, reply, error, forceFinalize };
 }

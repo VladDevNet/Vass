@@ -3,10 +3,7 @@ import { fetch as expoFetch } from 'expo/fetch';
 import { File, Paths } from 'expo-file-system';
 import { Blob as ExpoBlob } from 'expo-blob';
 
-// Exported so other modules that need the same base URL (e.g. useVoiceChat's
-// backchannel filler clips, served as plain static files by nginx, not
-// through this file's request() wrapper) don't duplicate the fallback.
-export const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://vass.it-consult.services';
+const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://vass.it-consult.services';
 const TOKEN_KEY = 'vass_token';
 
 let token: string | null = null;
@@ -71,20 +68,12 @@ class ApiError extends Error {}
 // ApiError instead of leaving the caller waiting indefinitely. Checking
 // controller.signal.aborted (rather than the caught error's type/name) works
 // regardless of how a given fetch implementation labels its abort error.
-// Exposes `abort` (not just the timeout-triggered path) for sendMessage
-// below, which also needs to cancel on purpose (shadow-capture committing
-// a continuation mid-response) — every other caller only ever has its own
-// setTimeout call this.
-function timeoutSignal(ms: number): { signal: AbortSignal; cancel: () => void; abort: () => void } {
+function timeoutSignal(ms: number): { signal: AbortSignal; cancel: () => void } {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   return {
     signal: controller.signal,
     cancel: () => clearTimeout(timer),
-    abort: () => {
-      clearTimeout(timer);
-      controller.abort();
-    },
   };
 }
 
@@ -309,13 +298,24 @@ export const api = {
     return res.json();
   },
 
-  // Real turn-taking (docs/react-native/BACKLOG.md Phase 1): transcribes a
-  // just-finalized recording segment and judges whether the speaker sounds
-  // done or is likely still thinking — POST /chat/check-utterance, already
-  // used by the web client (frontend/js/api.js's checkUtteranceComplete) and
-  // needing no backend changes. Same Blob-multipart pattern as uploadAudio,
-  // but the field name here is `audio` (IFormFile audio in ChatController),
-  // not `file`.
+  // Transcribes a continuation segment WITHOUT triggering a full model
+  // reply — POST /chat/check-utterance, already used by the web client
+  // (frontend/js/api.js's checkUtteranceComplete) and needing no backend
+  // changes. Same Blob-multipart pattern as uploadAudio, but the field name
+  // here is `audio` (IFormFile audio in ChatController), not `file`.
+  //
+  // Repurposed from this project's original turn-taking design (which used
+  // it, plus its `complete` judgment, as a preliminary check before every
+  // segment — see git history around PR #38): useVoiceChat.ts now sends the
+  // FIRST segment of a turn straight to /chat/send instead, optimistically
+  // betting a pause means "done." This endpoint's completeness judgment is
+  // no longer read at all — only its transcription is used, and only for
+  // segments AFTER that optimistic bet turns out wrong (shadow-capture
+  // confirms the speaker kept going). /chat/send only accepts EITHER text
+  // OR audio, never both (see ChatController.cs's Send action) — an audio
+  // continuation can't be combined with the FIRST segment's already-known
+  // text in one call, so the continuation needs a separate, cheap
+  // transcription-only step before the (now combined) text can be resent.
   checkUtteranceComplete: async (uri: string): Promise<{ transcription: string; complete: boolean }> => {
     const extension = uri.split('.').pop() ?? 'm4a';
     const bytes = await new File(uri).bytes();
@@ -400,22 +400,11 @@ export interface SendMessageCallbacks {
 // Needs expo/fetch specifically: it's the fetch implementation Expo documents
 // for real streaming response bodies (see docs.expo.dev/versions/unversioned/sdk/filesystem
 // "Downloading Files with expo/fetch" and the Streams API page).
-export async function sendMessage(
-  params: SendMessageParams,
-  callbacks: SendMessageCallbacks = {},
-  // Lets a caller cancel mid-stream on purpose — shadow-capture (see
-  // useVoiceChat.ts's commitShadowContinuation) aborts an in-flight
-  // response once it confirms the user kept talking, so the fuller,
-  // combined utterance can be sent as a fresh request instead of answering
-  // the incomplete first half.
-  externalSignal?: AbortSignal
-): Promise<string> {
+export async function sendMessage(params: SendMessageParams, callbacks: SendMessageCallbacks = {}): Promise<string> {
   // One timeout spans the initial connection AND the full read loop below —
   // cancel() only runs once the reply is fully streamed (or the attempt has
   // failed), not right after the fetch call resolves.
-  const { signal, cancel, abort } = timeoutSignal(SEND_MESSAGE_TIMEOUT_MS);
-  const onExternalAbort = () => abort();
-  externalSignal?.addEventListener('abort', onExternalAbort);
+  const { signal, cancel } = timeoutSignal(SEND_MESSAGE_TIMEOUT_MS);
   try {
     let res: Awaited<ReturnType<typeof expoFetch>>;
     try {
@@ -484,6 +473,5 @@ export async function sendMessage(
     return fullText;
   } finally {
     cancel();
-    externalSignal?.removeEventListener('abort', onExternalAbort);
   }
 }
