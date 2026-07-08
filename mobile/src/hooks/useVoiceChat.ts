@@ -62,6 +62,25 @@ const INTERRUPTION_THRESHOLD_DB = DEFAULT_THRESHOLD_DB + 8;
 // that confirms ANY segment's continuation (see the file-level comment).
 const SHADOW_SILENCE_TIMEOUT_MS = 1000;
 
+// Sanity floor for commitShadowContinuation — see shadowArmedAtRef's own
+// comment for the production 400 this closes. A genuine continuation's real
+// floor is closer to ~2s than a round number: useVad's exponential
+// smoothing starts every reset at -160dB, so against continuous speech it
+// takes ~8 ticks (~400ms) just to cross DEFAULT_THRESHOLD_DB, THEN 5 more
+// ticks (~250ms) of onset debounce before hasSpoken flips — hasSpoken
+// itself doesn't fire until ~600ms in. commitShadowContinuation is only
+// ever called once activeSpeechMs has ALSO cleared MIN_SPEECH_MS (450ms),
+// and only after SHADOW_SILENCE_TIMEOUT_MS (1000ms) of trailing silence on
+// top of that — 600+450+1000 ≈ 2050ms minimum (independently re-derived
+// and confirmed during PR #51's review). 500ms leaves wide margin below
+// that real floor while safely rejecting the stale retrigger that
+// motivated this constant, confirmed in production logs as firing ~25ms
+// after a re-arm (armedForMs, measured at the exact point this constant
+// gates — not to be confused with the ~160ms gap seen between THAT
+// decision and sendSegment's own later log line, which is separately
+// explained by the native recorder-stop round trip in between).
+const MIN_SHADOW_ARM_MS = 500;
+
 // Sixth mobile voice-loop increment: optimistic turn-taking, replacing the
 // completeness-check round-trip (PR #38) with a direct send. Real-device
 // latency logging (a full session of production timings) showed the
@@ -167,6 +186,24 @@ export function useVoiceChat(sessionId: number | null) {
   const recorderLiveRef = useRef(false);
   // Same idea, for the shadow (continuation) recorder.
   const shadowRecorderLiveRef = useRef(false);
+  // Wall-clock Date.now() of the shadow recorder's last successful arm —
+  // an INDEPENDENT signal from useVad's own (VAD-tick-driven) timing state,
+  // used as a last-resort sanity check in commitShadowContinuation. Exists
+  // because of a real production 400: a stale VAD tick (the residual,
+  // reviewer-flagged race in shadowGeneration's resetKey — bounded to at
+  // most one extra spurious retrigger per re-arm, not a full loop, but not
+  // eliminated) fired a commit using activeSpeechMs CARRIED OVER from the
+  // previous continuation, ~25ms after the recorder had just been re-armed
+  // (production ClientLogEntries: "armed" then "confirmed continuation"
+  // 25ms later with an IDENTICAL activeSpeechMs to the prior commit — the
+  // tell that it was stale, not fresh). The resulting recording was a WebM
+  // with valid container framing but zero actual audio samples — ffmpeg
+  // has nothing to convert, the backend correctly 400s, and that surfaced
+  // as a visible error. activeSpeechMs itself can't catch this (it's the
+  // stale value CAUSING the false trigger), so this checks real elapsed
+  // time since arm instead — a dimension the stale VAD tick has no way to
+  // fake.
+  const shadowArmedAtRef = useRef(0);
   // Set on a confirmed barge-in, checked in sendSegment's finally block so
   // it skips the normal end-of-turn armMic() — a barge-in already
   // transitioned straight to 'recording' with its own turn-taking state
@@ -301,6 +338,7 @@ export function useVoiceChat(sessionId: number | null) {
       if (!mountedRef.current) return;
       shadowRecorder.record();
       shadowRecorderLiveRef.current = true;
+      shadowArmedAtRef.current = Date.now();
       shadowDiscardLoggedRef.current = false;
       // Bumped on EVERY successful (re)arm, not just the first one per
       // turn — see shadowGeneration's own declaration comment for why a
@@ -611,6 +649,18 @@ export function useVoiceChat(sessionId: number | null) {
   const commitShadowContinuation = useCallback(
     (activeSpeechMs: number) => {
       if (!shadowRecorderLiveRef.current) return; // already committed by an earlier tick, or never armed
+      const armedForMs = Date.now() - shadowArmedAtRef.current;
+      if (armedForMs < MIN_SHADOW_ARM_MS) {
+        // Stale VAD retrigger — see shadowArmedAtRef's own comment for the
+        // real production 400 this closes. activeSpeechMs here is exactly
+        // the kind of carried-over value that causes the false trigger in
+        // the first place, so it can't be trusted to catch this itself;
+        // wall-clock time since arm can't be faked the same way. Recorder
+        // stays live and armed either way — a genuinely fresh commit later
+        // is unaffected.
+        log('debug', 'shadow', 'discarding stale re-arm retrigger', { activeSpeechMs, armedForMs });
+        return;
+      }
       log('info', 'turn', 'shadow-capture: confirmed continuation', { activeSpeechMs });
       void sendSegment(true);
     },
