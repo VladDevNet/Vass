@@ -9,6 +9,26 @@ public class AudioAnalysisService
     private readonly IHttpClientFactory _httpClientFactory;
     private const string Model = "gemini-2.5-flash";
 
+    // On quiet/unclear audio, Gemini occasionally echoes fragments of its OWN
+    // instruction prompt back as if it were "the transcription" instead of
+    // following the "return empty on silence" instruction — a real,
+    // confirmed-in-production failure mode (seen twice: once via
+    // TranscribeAsync, once via CheckUtteranceCompletionAsync, each time the
+    // leaked text matched a prompt phrase verbatim and then got spoken back
+    // to the user or round-tripped through the main chat model). These
+    // phrases are meta-instructions about transcription/JSON formatting that
+    // a real person would essentially never say out loud to a voice
+    // assistant, so matching on them is a safe, low-false-positive guard.
+    private static readonly string[] PromptLeakMarkers =
+    [
+        "аудиозапись речи пользователя",
+        "точную транскрипцию того, что было сказано",
+        "СТРОГО в формате JSON",
+    ];
+
+    private static bool LooksLikePromptLeak(string? text) =>
+        !string.IsNullOrEmpty(text) && PromptLeakMarkers.Any(m => text.Contains(m, StringComparison.OrdinalIgnoreCase));
+
     public AudioAnalysisService(IConfiguration config, ILogger<AudioAnalysisService> logger, IHttpClientFactory httpClientFactory)
     {
         _apiKey = config["Gemini:ApiKey"]!;
@@ -94,7 +114,14 @@ public class AudioAnalysisService
                 .Where(p => p.TryGetProperty("text", out _))
                 .Select(p => p.GetProperty("text").GetString() ?? ""));
 
-            return content.Trim().Trim('"');
+            var transcription = content.Trim().Trim('"');
+            if (LooksLikePromptLeak(transcription))
+            {
+                _logger.LogWarning("Gemini echoed its own prompt instead of transcribing — treating as no speech. Raw: {Content}", content);
+                return null;
+            }
+
+            return transcription;
         }
         catch (Exception ex)
         {
@@ -212,10 +239,18 @@ public class AudioAnalysisService
             }
 
             var resultJson = clean[jsonStart..(jsonEnd + 1)];
-            return JsonSerializer.Deserialize<UtteranceCheckResult>(resultJson, new JsonSerializerOptions
+            var result = JsonSerializer.Deserialize<UtteranceCheckResult>(resultJson, new JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true
             });
+
+            if (result != null && LooksLikePromptLeak(result.Transcription))
+            {
+                _logger.LogWarning("Gemini echoed its own prompt instead of transcribing — treating as no speech. Raw: {Content}", content);
+                return new UtteranceCheckResult { Transcription = "", Complete = false };
+            }
+
+            return result;
         }
         catch (Exception ex)
         {
