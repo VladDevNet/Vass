@@ -237,6 +237,14 @@ function speakChunk(text: string, voice: string, chunkIndex: number, totalChunks
     Speech.speak(text, {
       language: 'ru-RU',
       voice,
+      // Fires from Android's own UtteranceProgressListener.onStart (see
+      // expo-speech's SpeechModule.kt) — the actual moment audio begins,
+      // not just when this JS call was dispatched. Diagnostic only: added
+      // to pin down a real-device report of a multi-second gap between the
+      // reply appearing on screen and being audibly spoken, which the
+      // existing 'speaking reply' log (fired BEFORE Speech.speak() is even
+      // called) can't distinguish from native TTS engine startup latency.
+      onStart: () => log('debug', 'tts', 'chunk playback started', { chunkIndex, totalChunks }),
       onDone: () => resolve(),
       onStopped: () => {
         if (consumeExpectedStop()) {
@@ -291,6 +299,10 @@ function speakBackchannelPhrase(text: string, voice: string): Promise<void> {
     Speech.speak(text, {
       language: 'ru-RU',
       voice,
+      // Same diagnostic as speakChunk's onStart — the filler's whole point
+      // is filling dead air IMMEDIATELY, so if native TTS startup latency
+      // is real, it undermines this path just as much as the real reply.
+      onStart: () => log('debug', 'tts', 'backchannel playback started'),
       onDone: () => resolve(),
       onStopped: () => resolve(),
       onError: (err) => {
