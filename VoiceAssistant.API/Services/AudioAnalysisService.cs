@@ -74,7 +74,41 @@ public class AudioAnalysisService
         }
 
         var raw = content[(quoteStart + 1)..Math.Min(i, content.Length)];
-        return raw.Replace("\\\"", "\"").Replace("\\\\", "\\").Replace("\\n", " ").Trim();
+        return UnescapeJsonString(raw).Trim();
+    }
+
+    // Single-pass unescape — chained global .Replace() calls (the original
+    // version of this) are unsound for JSON: after a \\ → \ replace runs,
+    // a genuine \n newline-escape becomes indistinguishable from a literal
+    // backslash-then-letter-n that happened to appear in the text (\\n in
+    // the raw JSON), so a later \n → " " replace would wrongly eat the
+    // literal "n" too. Found by independent review. Scanning once and
+    // consuming each escape pair together avoids the whole class of
+    // ordering bugs.
+    private static string UnescapeJsonString(string raw)
+    {
+        var sb = new System.Text.StringBuilder(raw.Length);
+        for (var i = 0; i < raw.Length; i++)
+        {
+            if (raw[i] == '\\' && i + 1 < raw.Length)
+            {
+                i++;
+                sb.Append(raw[i] switch
+                {
+                    '"' => '"',
+                    '\\' => '\\',
+                    'n' => ' ',
+                    'r' => ' ',
+                    't' => ' ',
+                    var other => other, // unrecognized escape — keep the character, drop the backslash
+                });
+            }
+            else
+            {
+                sb.Append(raw[i]);
+            }
+        }
+        return sb.ToString();
     }
 
     public AudioAnalysisService(IConfiguration config, ILogger<AudioAnalysisService> logger, IHttpClientFactory httpClientFactory)
@@ -347,7 +381,17 @@ public class AudioAnalysisService
                 // instead of prematurely treating a cut-off fragment as
                 // "done."
                 var partial = TryExtractPartialTranscription(clean);
-                if (!string.IsNullOrWhiteSpace(partial) && !LooksLikePromptLeak(partial))
+                // Checked against the WHOLE response (clean), not just the
+                // narrowly-extracted partial — independent review found a
+                // real gap: the prompt's own JSON example
+                // ({"transcription": "текст", ...}) means "transcription"
+                // can appear before any real leaked instructional text, so
+                // IndexOf's first match could grab the placeholder word
+                // "текст" — which alone matches none of PromptLeakMarkers —
+                // while the REST of clean plainly contains a leak. clean is
+                // a superset of partial, so this check is strictly more
+                // thorough, not just different.
+                if (!string.IsNullOrWhiteSpace(partial) && !LooksLikePromptLeak(clean))
                 {
                     _logger.LogWarning(
                         "Completion-check response truncated before JSON closed — salvaged {Length}-char partial transcription. Raw: {Content}",
