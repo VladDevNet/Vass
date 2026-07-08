@@ -124,6 +124,21 @@ export function useVoiceChat(sessionId: number | null) {
   // as a tight loop, re-firing every tick with an identical stale
   // activeSpeechMs (PR #45).
   const [micGeneration, setMicGeneration] = useState(0);
+  // Same idea, for the shadow (continuation) recorder's OWN useVad call —
+  // bumped on every successful armShadowRecorder(), not just on the
+  // 'thinking'-transition effect. Without this, a SECOND continuation
+  // within the same 'thinking' phase inherits frozen hasSpoken/
+  // speechStartAt/lastSpeechAt state from the FIRST continuation (state
+  // never leaves 'thinking' between them, so useVad's active prop never
+  // flips value — same root cause as micGeneration above, just triggered by
+  // a mid-phase re-arm instead of a whole new turn). Confirmed by
+  // independent review: without this, the freshly re-armed shadow recorder
+  // reads quiet on its very first post-arm tick, but hasSpoken/lastSpeechAt
+  // are still the FIRST continuation's stale values (already past every
+  // threshold, since that's why it just committed) — onSilenceTick fires
+  // immediately, re-committing again, forever, on every ordinary
+  // pause-then-resume-then-pause speech pattern.
+  const [shadowGeneration, setShadowGeneration] = useState(0);
   const [transcript, setTranscript] = useState('');
   const [reply, setReply] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -184,13 +199,15 @@ export function useVoiceChat(sessionId: number | null) {
   // (pendingText() below) keeps chronological order correct regardless of
   // resolve order. Found by tracing this exact race before it ever shipped.
   //
-  // Residual, accepted gap: a segment still sends whatever pendingText()
-  // returns AT THAT MOMENT — if an EARLIER generation's transcription is
-  // abnormally slow (slower than this whole next pause-plus-1000ms shadow
-  // cycle put together, which real timings make unlikely but not
-  // impossible), the send can go out missing that earlier segment's text.
-  // The data itself isn't lost (a later .set() for that generation still
-  // lands in the map), only that turn's reply won't have reflected it.
+  // Residual, accepted gap — SAME-TURN only (cross-turn writes are closed
+  // off entirely by turnGenerationRef below): a segment still sends
+  // whatever pendingText() returns AT THAT MOMENT — if an EARLIER
+  // generation's transcription is abnormally slow (slower than this whole
+  // next pause-plus-1000ms shadow cycle put together, which real timings
+  // make unlikely but not impossible), the send can go out missing that
+  // earlier segment's text. The data itself isn't lost (a later .set() for
+  // that generation still lands in the map, gated only on the turn still
+  // being the same one), only that turn's reply won't have reflected it.
   // Documented rather than engineered away — same call as this session's
   // temperature=0 tradeoff (PR #46): a real but low-probability timing
   // edge, not worth the added coupling a guaranteed fix would need.
@@ -214,6 +231,20 @@ export function useVoiceChat(sessionId: number | null) {
   // Doubles as the key into pendingSegmentsRef above, since segment order
   // and generation order are the same thing.
   const segmentGenerationRef = useRef(0);
+  // A DIFFERENT axis from segmentGenerationRef above — that one answers "is
+  // this the latest attempt WITHIN a turn," this one answers "has the whole
+  // TURN this segment belongs to already ended." Bumped once per armMic()
+  // (once per turn, not once per segment). Needed because segmentGenerationRef
+  // is never reset across turns (deliberately — see its own comment), so a
+  // segment from a turn that's ALREADY OVER (armMic() already ran for the
+  // NEXT turn) can still have segmentGenerationRef.current unchanged if that
+  // next turn discarded its own first sound as noise without ever calling
+  // sendSegment (see handleSilenceTick's discard branch) — without this,
+  // such a stale segment's late-arriving transcription would splice
+  // unrelated old-turn text into the NEW turn's pendingSegmentsRef, or worse,
+  // a stale reply could get spoken over a mic that's already listening for
+  // something else entirely. Found by independent review of this PR.
+  const turnGenerationRef = useRef(0);
 
   useEffect(() => {
     return () => {
@@ -259,8 +290,10 @@ export function useVoiceChat(sessionId: number | null) {
     }
   }, [recorder]);
 
-  // Same pair, for the shadow (continuation) recorder — armed/disarmed by
-  // the 'thinking' effect below instead of by turn-taking logic directly.
+  // Same pair, for the shadow (continuation) recorder — armed both by the
+  // 'thinking' effect below AND directly by sendSegment on every
+  // continuation commit (see its own comment), unlike the main recorder
+  // which only ever arms once per turn.
   const armShadowRecorder = useCallback(async () => {
     if (!mountedRef.current || shadowRecorderLiveRef.current) return;
     try {
@@ -269,6 +302,11 @@ export function useVoiceChat(sessionId: number | null) {
       shadowRecorder.record();
       shadowRecorderLiveRef.current = true;
       shadowDiscardLoggedRef.current = false;
+      // Bumped on EVERY successful (re)arm, not just the first one per
+      // turn — see shadowGeneration's own declaration comment for why a
+      // second-or-later continuation within the same 'thinking' phase
+      // needs its own reset just as much as a whole new turn does.
+      setShadowGeneration((g) => g + 1);
       log('debug', 'shadow', 'armed');
     } catch (err) {
       if (!mountedRef.current) return;
@@ -309,6 +347,13 @@ export function useVoiceChat(sessionId: number | null) {
   // starting to capture once speech is already detected.
   const armMic = useCallback(async () => {
     if (!mountedRef.current) return;
+    // Marks every segment still in flight from whatever turn just ended as
+    // belonging to a dead turn — see turnGenerationRef's own comment.
+    // Bumped unconditionally here, even if the re-arm below ends up
+    // failing, since by the time armMic() is called at all, the CALLER
+    // (sendSegment's finally, or the discard-cooldown timeout) already
+    // considers that turn's work finished.
+    turnGenerationRef.current += 1;
     pendingSegmentsRef.current.clear();
     bargedInRef.current = false;
     firstSegmentInFlightRef.current = false;
@@ -400,6 +445,11 @@ export function useVoiceChat(sessionId: number | null) {
   const sendSegment = useCallback(
     async (fromShadow: boolean) => {
       const sid = sessionIdRef.current;
+      // Captured up front, before any await — identifies which TURN this
+      // segment belongs to (see turnGenerationRef's own comment). Distinct
+      // from myGeneration below, which is captured later and identifies
+      // this segment's standing WITHIN that turn.
+      const myTurn = turnGenerationRef.current;
       // Reset unconditionally, not just on a success path — this call itself
       // can be the turn AFTER a barge-in (the interrupting utterance's own
       // segment), and leaving a stale `true` here would make the finally
@@ -451,6 +501,16 @@ export function useVoiceChat(sessionId: number | null) {
 
         if (fromShadow) {
           const { transcription } = await api.checkUtteranceComplete(uri);
+          if (myTurn !== turnGenerationRef.current) {
+            // The TURN itself is already over (armMic() already ran for
+            // a next one) — pendingSegmentsRef now belongs to whatever
+            // turn is current, so writing into it here would splice this
+            // dead turn's text into an unrelated conversation. Distinct
+            // from the ordinary supersede check below, which still wants
+            // the write (same turn, just a later segment took over).
+            log('info', 'turn', 'discarding continuation from an already-ended turn');
+            return;
+          }
           // Record BEFORE checking supersede, not after — a THIRD segment
           // can supersede this one (generation 2) while this call was still
           // in flight, but this segment's recognized text must still reach
@@ -487,7 +547,7 @@ export function useVoiceChat(sessionId: number | null) {
             { sessionId: sid, message: '', audioFileName: fileName },
             {
               onTranscription: (text) => {
-                if (!text.trim()) return;
+                if (!text.trim() || myTurn !== turnGenerationRef.current) return;
                 pendingSegmentsRef.current.set(myGeneration, text.trim());
                 if (myGeneration === segmentGenerationRef.current) setTranscript(pendingText());
               },
@@ -498,14 +558,14 @@ export function useVoiceChat(sessionId: number | null) {
           );
         }
 
-        if (myGeneration !== segmentGenerationRef.current) {
-          // A continuation superseded this segment while it was in flight —
-          // the reply arrived, but we deliberately never play it. Its
-          // transcription was already folded into pendingSegmentsRef above by
-          // the onTranscription/checkUtteranceComplete branch regardless of
-          // generation, so nothing recognized is lost, only the
-          // (now-incomplete-in-hindsight) reply itself.
-          log('info', 'turn', 'discarding superseded reply', { replyLength: fullReply.length });
+        if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) {
+          // Either a continuation superseded this segment within the SAME
+          // turn (its transcription was already folded into
+          // pendingSegmentsRef above regardless of generation, so nothing
+          // recognized is lost, only this now-incomplete-in-hindsight reply
+          // itself), or the whole TURN has since ended — either way, this
+          // reply must never be spoken.
+          log('info', 'turn', 'discarding superseded or stale-turn reply', { replyLength: fullReply.length });
           return;
         }
 
@@ -513,10 +573,12 @@ export function useVoiceChat(sessionId: number | null) {
         pendingSegmentsRef.current.clear();
         await speakReplyAndWrapUp(fullReply, turnStartedAt);
       } catch (err) {
-        if (myGeneration !== segmentGenerationRef.current) {
-          // Also superseded — a failure on a discarded attempt isn't a
-          // real error from the user's perspective, don't surface it.
-          log('warn', 'turn', 'superseded segment failed (ignored)', {
+        if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) {
+          // Also superseded (or the whole turn already ended) — a failure
+          // on a discarded attempt isn't a real error from the user's
+          // perspective, don't surface it, and don't clear a map that may
+          // by now belong to a different turn entirely.
+          log('warn', 'turn', 'superseded or stale-turn segment failed (ignored)', {
             error: err instanceof Error ? err.message : String(err),
           });
           return;
@@ -526,11 +588,12 @@ export function useVoiceChat(sessionId: number | null) {
         log('error', 'turn', 'segment send failed', { error: message, elapsedMs: Date.now() - turnStartedAt });
         pendingSegmentsRef.current.clear();
       } finally {
-        // Only the segment that's still current owns turn wrap-up — a
-        // superseded segment's finally must not touch armMic()/bargedInRef,
-        // since a NEWER segment (or its own eventual finally) is
+        // Only the segment that's still current AND whose turn is still
+        // alive owns turn wrap-up — a superseded (or stale-turn) segment's
+        // finally must not touch armMic()/bargedInRef, since a NEWER
+        // segment (or its own eventual finally) is
         // responsible for that now.
-        if (myGeneration === segmentGenerationRef.current) {
+        if (myGeneration === segmentGenerationRef.current && myTurn === turnGenerationRef.current) {
           if (!bargedInRef.current) await armMic();
         }
       }
@@ -578,6 +641,18 @@ export function useVoiceChat(sessionId: number | null) {
   useVad({
     recorder: shadowRecorder,
     active: state === 'thinking',
+    // Without this, a second-or-later continuation within the same
+    // 'thinking' phase reruns on a recorder that was just stopped and
+    // re-armed but inherits FROZEN hasSpoken/speechStartAt/lastSpeechAt
+    // state from the previous continuation — since `active` itself never
+    // changes value across that re-arm (state stays 'thinking' the whole
+    // time). See shadowGeneration's own declaration comment; this is the
+    // exact same bug class resetKey already closed for the main recorder
+    // (PR #45), just triggered by a mid-phase re-arm instead of a whole new
+    // turn. Found by independent review of this PR — reproduced as an
+    // immediate, self-sustaining commit loop on every ordinary
+    // pause-then-resume-then-pause speech pattern.
+    resetKey: shadowGeneration,
     onSpeechStart: () => log('debug', 'shadow', 'shadow speech detected'),
     onSpeechResume: () => {
       shadowDiscardLoggedRef.current = false;
