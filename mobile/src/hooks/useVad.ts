@@ -4,6 +4,10 @@ import { log } from '../logging/remoteLogger';
 
 const POLL_INTERVAL_MS = 50;
 
+// Throttle for the optional onLevelSample diagnostic callback — every tick
+// would be far too noisy to actually read back later.
+const SAMPLE_INTERVAL_MS = 1000;
+
 // ~250ms of sustained sound before treating it as real speech (not a click
 // or door slam) — same debounce shape as the web client's proven VAD
 // (frontend/js/yolo.js's START_SPEECH_FRAMES, also 5 frames at a 50ms tick).
@@ -53,6 +57,15 @@ export interface UseVadOptions {
   // useVoiceChat can implement real turn-taking without useVad needing to
   // know anything about completeness-checks.
   onSilenceTick: (silenceDurationMs: number, activeSpeechMs: number) => void;
+  // Optional, throttled (~once/SAMPLE_INTERVAL_MS) raw level report,
+  // regardless of threshold-crossing state — unlike every other callback
+  // above, fires even while quiet the whole time. Added for barge-in
+  // diagnostics (see useVoiceChat.ts): with no signal at all when nothing
+  // crosses INTERRUPTION_THRESHOLD_DB, there's no way to tell "user tried to
+  // interrupt but wasn't loud/sustained enough" apart from "mic heard
+  // nothing at all" after the fact. Opt-in and independent of the
+  // speech/silence state machine above, so existing callers are unaffected.
+  onLevelSample?: (smoothedDb: number, rawMetering: number) => void;
 }
 
 // Direct RMS-style port of yolo.js's startVadLoop (frontend/js/yolo.js:406-506):
@@ -69,11 +82,13 @@ export function useVad({
   onSpeechStart,
   onSpeechResume,
   onSilenceTick,
+  onLevelSample,
 }: UseVadOptions): void {
   const smoothedRef = useRef(-160);
   const speechFramesRef = useRef(0);
   const resumeFramesRef = useRef(0);
   const hasSpokenRef = useRef(false);
+  const sinceLastSampleMsRef = useRef(0);
   // True once we've registered "currently silent" after having spoken —
   // lets onSpeechResume fire only on an actual quiet->loud transition, not
   // on every loud frame while already mid-utterance.
@@ -90,6 +105,8 @@ export function useVad({
   onSpeechResumeRef.current = onSpeechResume;
   const onSilenceTickRef = useRef(onSilenceTick);
   onSilenceTickRef.current = onSilenceTick;
+  const onLevelSampleRef = useRef(onLevelSample);
+  onLevelSampleRef.current = onLevelSample;
 
   useEffect(() => {
     // Fresh state every time this (re)arms — mirrors yolo.js's
@@ -105,6 +122,7 @@ export function useVad({
     isSilentRef.current = false;
     speechStartAtRef.current = 0;
     lastSpeechAtRef.current = 0;
+    sinceLastSampleMsRef.current = 0;
 
     if (!active) return;
 
@@ -114,6 +132,14 @@ export function useVad({
 
       smoothedRef.current = smoothedRef.current * 0.75 + metering * 0.25;
       const now = Date.now();
+
+      if (onLevelSampleRef.current) {
+        sinceLastSampleMsRef.current += POLL_INTERVAL_MS;
+        if (sinceLastSampleMsRef.current >= SAMPLE_INTERVAL_MS) {
+          sinceLastSampleMsRef.current = 0;
+          onLevelSampleRef.current(Math.round(smoothedRef.current * 10) / 10, metering);
+        }
+      }
 
       if (smoothedRef.current > thresholdDb) {
         speechFramesRef.current++;

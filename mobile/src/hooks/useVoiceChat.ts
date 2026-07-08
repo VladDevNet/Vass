@@ -619,6 +619,16 @@ export function useVoiceChat(sessionId: number | null) {
   }, []);
 
   const isSpeaking = state === 'speaking';
+  // Diagnostic only, scoped to 'speaking' (barge-in) — logs are otherwise
+  // silent whenever nothing crosses INTERRUPTION_THRESHOLD_DB, so a real
+  // interruption attempt that stayed just under the boosted bar leaves no
+  // trace at all. Real-device testing reported barge-in "not working at
+  // all" with zero corroborating log evidence either way — this exists so
+  // the NEXT attempt has an actual level trace to diagnose from instead of
+  // guessing at a threshold change blind.
+  const handleSpeakingLevelSample = useCallback((smoothedDb: number, rawMetering: number) => {
+    log('debug', 'vad', 'speaking level sample', { smoothedDb, rawMetering, thresholdDb: INTERRUPTION_THRESHOLD_DB });
+  }, []);
   useVad({
     recorder,
     active: micArmed && (state === 'idle' || state === 'recording' || isSpeaking),
@@ -627,6 +637,7 @@ export function useVoiceChat(sessionId: number | null) {
     onSpeechStart: handleSpeechStart,
     onSpeechResume: handleSpeechResume,
     onSilenceTick: handleSilenceTick,
+    onLevelSample: isSpeaking ? handleSpeakingLevelSample : undefined,
   });
 
   // Confirmed as a real continuation (not yet committed — see the guard at
