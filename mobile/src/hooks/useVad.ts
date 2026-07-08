@@ -4,6 +4,10 @@ import { log } from '../logging/remoteLogger';
 
 const POLL_INTERVAL_MS = 50;
 
+// Throttle for the optional onLevelSample diagnostic callback — every tick
+// would be far too noisy to actually read back later.
+const SAMPLE_INTERVAL_MS = 1000;
+
 // ~250ms of sustained sound before treating it as real speech (not a click
 // or door slam) — same debounce shape as the web client's proven VAD
 // (frontend/js/yolo.js's START_SPEECH_FRAMES, also 5 frames at a 50ms tick).
@@ -53,6 +57,20 @@ export interface UseVadOptions {
   // useVoiceChat can implement real turn-taking without useVad needing to
   // know anything about completeness-checks.
   onSilenceTick: (silenceDurationMs: number, activeSpeechMs: number) => void;
+  // Optional, throttled (~once/SAMPLE_INTERVAL_MS) level report, regardless
+  // of threshold-crossing state — unlike every other callback above, fires
+  // even while quiet the whole time. Added for barge-in diagnostics (see
+  // useVoiceChat.ts): with no signal at all when nothing crosses
+  // INTERRUPTION_THRESHOLD_DB, there's no way to tell "user tried to
+  // interrupt but wasn't loud/sustained enough" apart from "mic heard
+  // nothing at all" after the fact. Opt-in and independent of the
+  // speech/silence state machine above, so existing callers are unaffected.
+  // Reports the PEAK level observed since the last sample, not a point-in-
+  // time reading at the sample tick — a 1-second throttle on an instant
+  // value would routinely miss a loud-but-brief (<1s) sound entirely, which
+  // is exactly the "heard it but not long enough" case this exists to
+  // catch. Found by independent review.
+  onLevelSample?: (peakSmoothedDb: number, peakRawMetering: number) => void;
 }
 
 // Direct RMS-style port of yolo.js's startVadLoop (frontend/js/yolo.js:406-506):
@@ -69,11 +87,15 @@ export function useVad({
   onSpeechStart,
   onSpeechResume,
   onSilenceTick,
+  onLevelSample,
 }: UseVadOptions): void {
   const smoothedRef = useRef(-160);
   const speechFramesRef = useRef(0);
   const resumeFramesRef = useRef(0);
   const hasSpokenRef = useRef(false);
+  const sinceLastSampleMsRef = useRef(0);
+  const peakSmoothedSinceSampleRef = useRef(-160);
+  const peakRawSinceSampleRef = useRef(-160);
   // True once we've registered "currently silent" after having spoken —
   // lets onSpeechResume fire only on an actual quiet->loud transition, not
   // on every loud frame while already mid-utterance.
@@ -90,6 +112,8 @@ export function useVad({
   onSpeechResumeRef.current = onSpeechResume;
   const onSilenceTickRef = useRef(onSilenceTick);
   onSilenceTickRef.current = onSilenceTick;
+  const onLevelSampleRef = useRef(onLevelSample);
+  onLevelSampleRef.current = onLevelSample;
 
   useEffect(() => {
     // Fresh state every time this (re)arms — mirrors yolo.js's
@@ -105,6 +129,9 @@ export function useVad({
     isSilentRef.current = false;
     speechStartAtRef.current = 0;
     lastSpeechAtRef.current = 0;
+    sinceLastSampleMsRef.current = 0;
+    peakSmoothedSinceSampleRef.current = -160;
+    peakRawSinceSampleRef.current = -160;
 
     if (!active) return;
 
@@ -114,6 +141,21 @@ export function useVad({
 
       smoothedRef.current = smoothedRef.current * 0.75 + metering * 0.25;
       const now = Date.now();
+
+      if (onLevelSampleRef.current) {
+        peakSmoothedSinceSampleRef.current = Math.max(peakSmoothedSinceSampleRef.current, smoothedRef.current);
+        peakRawSinceSampleRef.current = Math.max(peakRawSinceSampleRef.current, metering);
+        sinceLastSampleMsRef.current += POLL_INTERVAL_MS;
+        if (sinceLastSampleMsRef.current >= SAMPLE_INTERVAL_MS) {
+          sinceLastSampleMsRef.current = 0;
+          onLevelSampleRef.current(
+            Math.round(peakSmoothedSinceSampleRef.current * 10) / 10,
+            Math.round(peakRawSinceSampleRef.current * 10) / 10
+          );
+          peakSmoothedSinceSampleRef.current = -160;
+          peakRawSinceSampleRef.current = -160;
+        }
+      }
 
       if (smoothedRef.current > thresholdDb) {
         speechFramesRef.current++;

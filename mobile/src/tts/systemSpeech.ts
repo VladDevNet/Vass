@@ -14,8 +14,17 @@ const MAX_CHUNK_LENGTH = Math.min(Speech.maxSpeechInputLength - 100, 3500);
 
 // A stalled/never-firing onDone would otherwise leave the UI stuck in
 // 'speaking' forever — same MAX_PLAYBACK_MS safety-net pattern already used
-// for network TTS playback in useVoiceChat.ts.
-const MAX_SPEECH_MS = 60_000;
+// for network TTS playback in useVoiceChat.ts. Per CHUNK, not per reply (see
+// speakToCompletion) — a single chunk can run up to MAX_CHUNK_LENGTH
+// (~3400 chars), and a real production reply that long legitimately took
+// longer than a flat 60s to read aloud and got silently truncated
+// mid-sentence by what was previously a single reply-wide timer (found via
+// real-device log analysis: "MAX_SPEECH_MS safety timeout hit" firing on a
+// normal, un-stuck 1441-char single-chunk reply). 100ms/char is a generous
+// allowance — real observed Russian TTS pace is well under that — with a
+// floor so short chunks still get a meaningful safety net.
+const MAX_CHUNK_SPEECH_MS_PER_CHAR = 100;
+const MIN_CHUNK_SPEECH_MS = 30_000;
 
 // undefined = not looked up yet this session, null = no Russian voice found.
 let cachedRussianVoice: string | null | undefined;
@@ -179,7 +188,8 @@ function consumeExpectedStop(): boolean {
 // CURRENT chunk cleanly (its onStopped resolves instead of rejecting) — it
 // does nothing to stop speakToCompletion's for-loop from moving on to the
 // NEXT chunk of a multi-chunk reply, since that loop only breaks early on
-// its own local `timedOut` flag (see MAX_SPEECH_MS below). Barge-in needs
+// its own local `timedOut` flag (see the per-chunk safety timeout in
+// speakToCompletion below). Barge-in needs
 // both: stop cleanly AND don't continue. Checked (and reset for the next
 // call) inside speakToCompletion itself, right alongside `timedOut`.
 let interruptRequested = false;
@@ -206,10 +216,10 @@ export function interruptSpeaking(): void {
 //
 // onStopped needs consumeExpectedStop() rather than a blanket resolve():
 // every Speech.stop() call this app can currently make is marked via
-// markExpectedStop() first (the MAX_SPEECH_MS safety timeout below, and
-// stopSpeaking()'s external callers like useVoiceChat's unmount cleanup) —
-// there's no barge-in yet (see BACKLOG.md), so nothing else legitimately
-// stops a chunk mid-playback. That means an onStopped with the flag NOT set
+// markExpectedStop() first (the per-chunk safety timeout below,
+// interruptSpeaking()'s barge-in, and stopSpeaking()'s external callers like
+// useVoiceChat's unmount cleanup) — nothing else legitimately stops a chunk
+// mid-playback. That means an onStopped with the flag NOT set
 // can only be Android's own TextToSpeech engine losing audio focus to
 // something external (a notification, another app, an OS-level event) —
 // expo-speech's Android bridge discards the `interrupted` flag Android's
@@ -270,21 +280,31 @@ export async function speakToCompletion(text: string): Promise<void> {
   // into cutting this new one off before it even starts.
   interruptRequested = false;
 
-  let timedOut = false;
-  // Stops (not just ignores) playback once the cap is hit — resolving
-  // without calling stop() would let a long reply keep talking in the
-  // background after the UI has already moved on to 'idle'.
-  const timeoutId = setTimeout(() => {
-    timedOut = true;
-    log('warn', 'tts', 'MAX_SPEECH_MS safety timeout hit');
-    markExpectedStop();
-    Speech.stop();
-  }, MAX_SPEECH_MS);
-
   try {
     for (let i = 0; i < chunks.length; i++) {
-      if (timedOut || interruptRequested) break;
-      await speakChunk(chunks[i], voice, i, chunks.length);
+      if (interruptRequested) break;
+
+      let timedOut = false;
+      // Stops (not just ignores) playback once THIS chunk's cap is hit —
+      // resolving without calling stop() would let it keep talking in the
+      // background after the UI has already moved on. Scoped per-chunk (not
+      // one timer for the whole reply) so a multi-chunk reply's total
+      // runtime isn't capped by a single reply-wide ceiling — see the
+      // MAX_CHUNK_SPEECH_MS_PER_CHAR comment above.
+      const timeoutMs = Math.max(MIN_CHUNK_SPEECH_MS, chunks[i].length * MAX_CHUNK_SPEECH_MS_PER_CHAR);
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        log('warn', 'tts', 'chunk speech safety timeout hit', { chunkIndex: i, totalChunks: chunks.length, timeoutMs });
+        markExpectedStop();
+        Speech.stop();
+      }, timeoutMs);
+
+      try {
+        await speakChunk(chunks[i], voice, i, chunks.length);
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      if (timedOut) break;
     }
   } catch (err) {
     // A mid-reply failure (bad chunk, engine error) — stop rather than
@@ -295,8 +315,6 @@ export async function speakToCompletion(text: string): Promise<void> {
     // so there's no pending onStopped left for the flag to matter to.
     Speech.stop();
     throw err;
-  } finally {
-    clearTimeout(timeoutId);
   }
 }
 
