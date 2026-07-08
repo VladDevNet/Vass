@@ -93,6 +93,7 @@ public class AudioAnalysisService
                                 Это аудиозапись речи пользователя, говорящего на русском или украинском языке.
                                 Сделай точную транскрипцию того, что пользователь сказал в записи. Убери посторонние вздохи, шумы или щелчки, оставив чистый текст.
                                 Ответь ТОЛЬКО текстом транскрипции, без кавычек и пояснений. Если запись пустая, тихая или не содержит речи, верни пустую строку.
+                                Если не уверен, что именно было сказано — НЕ придумывай правдоподобный текст. Лучше вернуть пустую строку, чем угадать неверно.
                                 """
                         }
                     }
@@ -101,7 +102,21 @@ public class AudioAnalysisService
             generationConfig = new
             {
                 maxOutputTokens = 256,
-                thinkingConfig = new { thinkingBudget = 0 }
+                thinkingConfig = new { thinkingBudget = 0 },
+                // Faithful transcription needs the model to reproduce what it
+                // actually heard, not creatively complete an ambiguous/quiet
+                // clip into a plausible-sounding sentence — the default
+                // temperature is tuned for conversational generation, not
+                // extraction. Confirmed in production: on unclear audio,
+                // Gemini fabricated a coherent-but-entirely-invented request
+                // ("Алло, Сбер, включи музыку...") that the user never said —
+                // not a prompt-leak (a different, already-handled failure
+                // mode), a genuine ASR-style hallucination. Low temperature
+                // reduces (does not eliminate) this: it makes the model favor
+                // its single most-probable read of the audio consistently,
+                // rather than sampling toward a fluent alternative when
+                // uncertain.
+                temperature = 0.0
             }
         };
 
@@ -201,6 +216,8 @@ public class AudioAnalysisService
                                 Ответь СТРОГО в формате JSON без markdown:
                                 {"transcription": "текст", "complete": true или false}
                                 Если записи не слышно/тишина, верни {"transcription": "", "complete": false}.
+                                Если не уверен, что именно было сказано — НЕ придумывай правдоподобный текст.
+                                Лучше вернуть пустую transcription, чем угадать неверно.
                                 """
                         }
                     }
@@ -209,7 +226,10 @@ public class AudioAnalysisService
             generationConfig = new
             {
                 maxOutputTokens = 300,
-                thinkingConfig = new { thinkingBudget = 0 }
+                thinkingConfig = new { thinkingBudget = 0 },
+                // See TranscribeAsync's identical setting for why — same
+                // fabrication risk applies here, confirmed in production.
+                temperature = 0.0
             }
         };
 
