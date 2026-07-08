@@ -39,6 +39,7 @@ public class AudioAnalysisService
         "СТРОГО в формате JSON",
         "текстом транскрипции",
         "слово-паразит в конце вроде", // CheckUtteranceCompletionAsync's longest, most substantive sentence — the one review flagged as most likely to be what Gemini actually latches onto during an echo
+        "не придумывай правдоподобный текст", // added when the anti-hallucination instruction (see temperature comment below) was added to both prompts — independent review of that same change caught this file's own warning above going unheeded
     ];
 
     private static bool LooksLikePromptLeak(string? text) =>
@@ -115,7 +116,15 @@ public class AudioAnalysisService
                 // reduces (does not eliminate) this: it makes the model favor
                 // its single most-probable read of the audio consistently,
                 // rather than sampling toward a fluent alternative when
-                // uncertain.
+                // uncertain. Known tradeoff (raised by independent review,
+                // worth recording rather than glossing over): temperature=0
+                // is greedy argmax decoding — if fabrication IS the model's
+                // top-probability read for some recurring noise pattern (a
+                // washing machine, a TV), 0.0 makes that exact wrong output
+                // deterministic and repeatable instead of an occasional
+                // sampling-driven miss. The upside of that same determinism:
+                // any such case becomes reproducible from the saved audio,
+                // unlike a one-off hallucination under nonzero temperature.
                 temperature = 0.0
             }
         };
