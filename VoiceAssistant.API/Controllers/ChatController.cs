@@ -473,7 +473,21 @@ public class ChatController : ControllerBase
             }
 
             wavPath = await ConvertToWavAsync(tempWebm);
-            if (wavPath == null) return BadRequest(new { error = "conversion failed" });
+            if (wavPath == null)
+            {
+                // Most often a clip with valid container framing but zero
+                // actual audio samples (ffmpeg: "Could not find codec
+                // parameters ... unknown codec") — a caller stopped the
+                // recording essentially the instant it started. Treat the
+                // same as "converted fine but nothing to transcribe" rather
+                // than a hard error: both callers of this endpoint already
+                // handle transcription="" gracefully (web: falls through to
+                // the "not complete yet" branch; mobile: skips folding
+                // anything into the pending turn text), so there's nothing
+                // a 400 communicates that an empty result doesn't already.
+                _logger.LogWarning("check-utterance: unconvertable audio, treating as no speech");
+                return Ok(new { transcription = "", complete = false });
+            }
 
             var result = await _audioAnalysis.CheckUtteranceCompletionAsync(wavPath, geminiKey);
             if (result == null) return StatusCode(502, new { error = "check failed" });
