@@ -114,6 +114,17 @@ const SHADOW_SILENCE_TIMEOUT_MS = 1000;
 export function useVoiceChat(sessionId: number | null) {
   const [state, setState] = useState<VoiceState>('idle');
   const [micArmed, setMicArmed] = useState(false);
+  // Bumped on every successful armMic() — passed to the main useVad call as
+  // resetKey (see its comment) so VAD's internal hasSpoken/speechStartAt
+  // state resets on every new turn, not just when `active` itself flips
+  // value. Without this, a turn that starts and ends entirely within
+  // idle/recording (discarded as noise — completeness-check never
+  // succeeds) never changes `active` (idle and recording are both "on" for
+  // this useVad call), so the NEXT armMic() inherits frozen speech-timing
+  // refs from the PREVIOUS turn — confirmed on a real device as a tight
+  // loop, re-firing the silence ceiling within a single 50ms tick of every
+  // rearm, forever, with an identical stale activeSpeechMs every time.
+  const [micGeneration, setMicGeneration] = useState(0);
   const [transcript, setTranscript] = useState('');
   const [reply, setReply] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -285,6 +296,7 @@ export function useVoiceChat(sessionId: number | null) {
     await rearmRecorderOnly();
     if (!mountedRef.current || !recorderLiveRef.current) return;
     setMicArmed(true);
+    setMicGeneration((g) => g + 1);
     setState('idle');
     log('debug', 'mic', 'armed');
   }, [rearmRecorderOnly]);
@@ -636,6 +648,7 @@ export function useVoiceChat(sessionId: number | null) {
   useVad({
     recorder,
     active: micArmed && (state === 'idle' || state === 'recording' || isSpeaking),
+    resetKey: micGeneration,
     thresholdDb: isSpeaking ? INTERRUPTION_THRESHOLD_DB : undefined,
     startFrames: isSpeaking ? INTERRUPTION_FRAMES : undefined,
     onSpeechStart: handleSpeechStart,

@@ -36,6 +36,23 @@ export interface UseVadOptions {
   // Only polls while true — the caller arms/disarms per conversation turn
   // (idle+recording = armed, thinking+speaking = not, until barge-in lands).
   active: boolean;
+  // Bump (any new value — a counter works well) to force a state reset on a
+  // genuinely new turn even when `active` itself doesn't change value. This
+  // matters because `active` is a boolean OR of several caller states (e.g.
+  // useVoiceChat's main call: idle/recording/speaking all count) — a turn
+  // that starts and ends entirely within "idle or recording" (discarded as
+  // noise, no completeness-check ever succeeds) never flips `active`
+  // false→true, so without this the effect below never reruns and
+  // hasSpoken/speechStartAt/lastSpeechAt stay frozen from the PREVIOUS
+  // turn's utterance. On the very next tick, "now - stale lastSpeechAt"
+  // already exceeds any real silence ceiling, firing it again immediately
+  // with the old, frozen activeSpeechMs — a tight loop confirmed on a real
+  // device (identical activeSpeechMs across dozens of cycles 1ms apart from
+  // the preceding "mic armed" log line). Optional and independent of
+  // active/recorder/thresholdDb/startFrames below — omit if the caller's
+  // `active` already goes false between every turn (e.g. shadow-capture's
+  // thinking-only call doesn't need this).
+  resetKey?: number | string;
   thresholdDb?: number;
   // How many consecutive loud frames before treating sound as real speech —
   // see DEFAULT_START_SPEECH_FRAMES. Raised by the caller for a stricter,
@@ -82,6 +99,7 @@ export interface UseVadOptions {
 export function useVad({
   recorder,
   active,
+  resetKey,
   thresholdDb = DEFAULT_THRESHOLD_DB,
   startFrames = DEFAULT_START_SPEECH_FRAMES,
   onSpeechStart,
@@ -121,7 +139,10 @@ export function useVad({
     // at the start of each turn. Does NOT re-run mid-turn just because the
     // underlying native recorder briefly stops/restarts for a
     // completeness-check snapshot (see useVoiceChat) — active/recorder stay
-    // the same across that, so this state correctly persists across it.
+    // the same across that, so this state correctly persists across it. DOES
+    // re-run on every genuinely new turn via resetKey, even when active
+    // itself doesn't change value (see its own comment above) — required
+    // for turns that start and end without active ever going false.
     smoothedRef.current = -160;
     speechFramesRef.current = 0;
     resumeFramesRef.current = 0;
@@ -193,5 +214,5 @@ export function useVad({
     }, POLL_INTERVAL_MS);
 
     return () => clearInterval(interval);
-  }, [active, recorder, thresholdDb, startFrames]);
+  }, [active, recorder, thresholdDb, startFrames, resetKey]);
 }
