@@ -19,11 +19,20 @@ public class AudioAnalysisService
     // phrases are meta-instructions about transcription/JSON formatting that
     // a real person would essentially never say out loud to a voice
     // assistant, so matching on them is a safe, low-false-positive guard.
+    // Deliberately one marker per DISTINCT sentence of each prompt (not just
+    // the opening line) — independent review of this fix found the initial
+    // set only covered the exact two sentences that had already leaked in
+    // production, leaving the rest of each prompt (especially
+    // TranscribeAsync's tail, which has no other fallback gate the way
+    // CheckUtteranceCompletionAsync's JSON-brace check does) free to leak
+    // undetected if Gemini echoes a different fragment next time.
     private static readonly string[] PromptLeakMarkers =
     [
         "аудиозапись речи пользователя",
         "точную транскрипцию того, что было сказано",
         "СТРОГО в формате JSON",
+        "текстом транскрипции",
+        "разговаривающего с голосовым ассистентом",
     ];
 
     private static bool LooksLikePromptLeak(string? text) =>
