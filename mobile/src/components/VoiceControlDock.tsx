@@ -8,7 +8,6 @@ interface VoiceControlDockProps {
   onHistoryPress: () => void;
   onMicPress: () => void;
   onMicLongPress: () => void;
-  settingsDisabled: boolean;
   historyDisabled: boolean;
 }
 
@@ -26,17 +25,18 @@ export function VoiceControlDock({
   onHistoryPress,
   onMicPress,
   onMicLongPress,
-  settingsDisabled,
   historyDisabled,
 }: VoiceControlDockProps) {
   return (
     <View style={styles.dock}>
-      <Pressable
-        style={[styles.sideButton, settingsDisabled && styles.sideButtonDisabled]}
-        onPress={onSettingsPress}
-        disabled={settingsDisabled}
-        accessibilityLabel="Настройки"
-      >
+      {/* Настройки — единственный путь к logout, поэтому НИКОГДА не
+          блокируются состоянием разговора (см. HomeScreen.tsx): при
+          непрерывно слушающем VAD state может редко задерживаться в
+          'idle', так что завязка на него могла делать кнопку недоступной
+          большую часть времени — согласуется с репортом с реального
+          устройства ("не работает"), хотя точный механизм не трассирован
+          логами, только код-инспекция. */}
+      <Pressable style={styles.sideButton} onPress={onSettingsPress} accessibilityLabel="Настройки">
         <Text style={styles.sideGlyph}>⚙️</Text>
       </Pressable>
 
@@ -70,9 +70,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   sideButton: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     backgroundColor: amoled.glassBackground,
     borderWidth: 1,
     borderColor: amoled.glassBorder,
@@ -83,12 +83,12 @@ const styles = StyleSheet.create({
     opacity: 0.4,
   },
   sideGlyph: {
-    fontSize: 20,
+    fontSize: 30,
   },
   micButton: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 88,
+    height: 88,
+    borderRadius: 44,
     backgroundColor: amoled.glassBackgroundStrong,
     borderWidth: 2,
     borderColor: 'rgba(245,158,11,0.6)',
@@ -96,6 +96,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   micGlyph: {
-    fontSize: 28,
+    fontSize: 34,
   },
 });
