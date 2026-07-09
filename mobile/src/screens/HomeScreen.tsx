@@ -5,6 +5,7 @@ import { useKeepAwake } from 'expo-keep-awake';
 import { StatusBar } from 'expo-status-bar';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../api/client';
+import type { VoiceState } from '../hooks/useVoiceChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { useSleepTimer } from '../hooks/useSleepTimer';
 import { AvatarFace } from '../components/AvatarFace';
@@ -17,7 +18,7 @@ import { ChatHistoryScreen } from './ChatHistoryScreen';
 
 const SLEEP_AFTER_MS = 90_000;
 
-const HEADLINE: Record<string, string> = {
+const HEADLINE: Record<VoiceState, string> = {
   idle: 'Слушаю вас…',
   recording: 'Слышу вас…',
   thinking: 'Думаю…',
@@ -25,7 +26,7 @@ const HEADLINE: Record<string, string> = {
   paused: 'На паузе',
 };
 
-const SUBTITLE: Record<string, string> = {
+const SUBTITLE: Record<VoiceState, string> = {
   idle: 'Можно говорить естественно',
   recording: 'Собираю мысль',
   thinking: 'Сейчас отвечу',
@@ -33,7 +34,7 @@ const SUBTITLE: Record<string, string> = {
   paused: 'Продолжим, когда будете готовы',
 };
 
-const PRESENCE_LABEL: Record<string, string> = {
+const PRESENCE_LABEL: Record<VoiceState, string> = {
   idle: 'рядом',
   recording: 'слушает',
   thinking: 'думает',
@@ -88,7 +89,8 @@ export function HomeScreen() {
   // long-press во время thinking ставит на паузу (см. pauseConversation),
   // а forceFinalize сам по себе безопасно ничего не делает в 'thinking'.
   const disabled = !sessionId;
-  const navigationDisabled = state !== 'idle' || !sessionId;
+  const settingsDisabled = state !== 'idle';
+  const historyDisabled = state !== 'idle' || !sessionId;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
@@ -107,7 +109,7 @@ export function HomeScreen() {
           <Pressable
             style={styles.profileButton}
             onPress={() => setShowSettings(true)}
-            disabled={navigationDisabled}
+            disabled={settingsDisabled}
             accessibilityLabel="Профиль"
           >
             <Text style={styles.profileGlyph}>👤</Text>
@@ -145,7 +147,8 @@ export function HomeScreen() {
           onHistoryPress={() => setShowHistory(true)}
           onMicPress={forceFinalize}
           onMicLongPress={() => void pauseConversation()}
-          navigationDisabled={navigationDisabled}
+          settingsDisabled={settingsDisabled}
+          historyDisabled={historyDisabled}
         />
       </View>
     </SafeAreaView>

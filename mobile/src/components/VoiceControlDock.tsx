@@ -8,7 +8,8 @@ interface VoiceControlDockProps {
   onHistoryPress: () => void;
   onMicPress: () => void;
   onMicLongPress: () => void;
-  navigationDisabled: boolean;
+  settingsDisabled: boolean;
+  historyDisabled: boolean;
 }
 
 const MIC_GLYPH: Record<VoiceState, string> = {
@@ -25,14 +26,15 @@ export function VoiceControlDock({
   onHistoryPress,
   onMicPress,
   onMicLongPress,
-  navigationDisabled,
+  settingsDisabled,
+  historyDisabled,
 }: VoiceControlDockProps) {
   return (
     <View style={styles.dock}>
       <Pressable
-        style={[styles.sideButton, navigationDisabled && styles.sideButtonDisabled]}
+        style={[styles.sideButton, settingsDisabled && styles.sideButtonDisabled]}
         onPress={onSettingsPress}
-        disabled={navigationDisabled}
+        disabled={settingsDisabled}
         accessibilityLabel="Настройки"
       >
         <Text style={styles.sideGlyph}>⚙️</Text>
@@ -48,9 +50,9 @@ export function VoiceControlDock({
       </Pressable>
 
       <Pressable
-        style={[styles.sideButton, navigationDisabled && styles.sideButtonDisabled]}
+        style={[styles.sideButton, historyDisabled && styles.sideButtonDisabled]}
         onPress={onHistoryPress}
-        disabled={navigationDisabled}
+        disabled={historyDisabled}
         accessibilityLabel="История"
       >
         <Text style={styles.sideGlyph}>🕐</Text>
