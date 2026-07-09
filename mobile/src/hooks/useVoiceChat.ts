@@ -158,9 +158,23 @@ const MIN_SHADOW_ARM_MS = 500;
 // splitIntoChunks already uses for the non-streaming case (imperfect for
 // things like "3.14" or "т.е." — an accepted, pre-existing limitation, not
 // a new one introduced here).
+//
+// The leading part REQUIRES at least one real character (+, not *) —
+// matching splitIntoChunks' own proven pattern exactly, not a lookalike.
+// Real-device feedback ("TTS проговаривает 'точка'") traced back to this:
+// stripMarkdownForSpeechChunk's \n{2,} -> '. ' conversion can land right
+// next to an ALREADY-terminator-ending sentence (a markdown paragraph
+// break straight after a normal '.'), and with * (zero-or-more) allowed,
+// this regex could match a lone leftover terminator with nothing real in
+// front of it as its own "sentence" — which then reaches Speech.speak()
+// completely unfiltered (neither stripMarkdownForSpeech nor
+// splitIntoChunks treats bare punctuation as empty) and gets read aloud
+// as its own word. See also the pump loop's own content check in
+// systemSpeech.ts, added as a second, independent layer catching the same
+// class of input regardless of how it got queued.
 function extractCompleteSentences(buffer: string): { sentences: string[]; rest: string } {
   const sentences: string[] = [];
-  const re = /[^.!?…]*[.!?…]+\s*/g;
+  const re = /[^.!?…]+[.!?…]+\s*/g;
   let consumed = 0;
   let match: RegExpExecArray | null;
   while ((match = re.exec(buffer)) !== null) {
