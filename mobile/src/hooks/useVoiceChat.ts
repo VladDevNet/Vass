@@ -608,7 +608,10 @@ export function useVoiceChat(sessionId: number | null) {
       // treat as current once the user comes back — that reset already
       // happens naturally, either via resumeConversation's own armMic()
       // fallback (nothing to resume) or the next real turn's armMic().
-      if (pausedRef.current) return;
+      if (pausedRef.current) {
+        log('info', 'turn', 'discarding captured segment — paused before it could be sent', { fromShadow });
+        return;
+      }
 
       if (!sid || !uri) {
         if (!sid) setError('Сессия ещё не готова');
