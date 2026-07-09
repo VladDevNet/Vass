@@ -24,3 +24,6 @@ Thumbs.db
 ## Mobile build artifacts (local-only, never committed)
 mobile-builds/
 *.apk
+
+## Brainstorming visual companion (local scratch, never committed)
+.superpowers/

@@ -1,19 +1,45 @@
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useKeepAwake } from 'expo-keep-awake';
+import { StatusBar } from 'expo-status-bar';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../api/client';
+import type { VoiceState } from '../hooks/useVoiceChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
+import { useSleepTimer } from '../hooks/useSleepTimer';
 import { AvatarFace } from '../components/AvatarFace';
+import { OlgaLayeredAvatar } from '../components/OlgaLayeredAvatar';
+import { ConversationPeek } from '../components/ConversationPeek';
+import { VoiceControlDock } from '../components/VoiceControlDock';
+import { amoled } from '../theme/amoled';
 import { ProfileScreen } from './ProfileScreen';
 import { ChatHistoryScreen } from './ChatHistoryScreen';
 
-const STATE_LABEL: Record<string, string> = {
+const SLEEP_AFTER_MS = 90_000;
+
+const HEADLINE: Record<VoiceState, string> = {
   idle: 'Слушаю вас…',
   recording: 'Слышу вас…',
   thinking: 'Думаю…',
   speaking: 'Отвечаю…',
   paused: 'На паузе',
+};
+
+const SUBTITLE: Record<VoiceState, string> = {
+  idle: 'Можно говорить естественно',
+  recording: 'Собираю мысль',
+  thinking: 'Сейчас отвечу',
+  speaking: '',
+  paused: 'Продолжим, когда будете готовы',
+};
+
+const PRESENCE_LABEL: Record<VoiceState, string> = {
+  idle: 'рядом',
+  recording: 'слушает',
+  thinking: 'думает',
+  speaking: 'говорит',
+  paused: 'на паузе',
 };
 
 export function HomeScreen() {
@@ -23,15 +49,17 @@ export function HomeScreen() {
   // whole screen, not just the active recording/speaking states.
   useKeepAwake();
 
-  const { user, displayName, assistantName, logout } = useAuth();
+  const { assistantName } = useAuth();
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
-  const [deviceCode, setDeviceCode] = useState<string | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [linkError, setLinkError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  // Ошибка загрузки любого слоя OlgaLayeredAvatar — падаем на AvatarFace
+  // на остаток сессии, без retry-петли. См. spec, «Обработка ошибок».
+  const [assetsFailed, setAssetsFailed] = useState(false);
   const { state, transcript, reply, error, forceFinalize, pauseConversation } = useVoiceChat(sessionId);
+
+  const sleeping = useSleepTimer(state === 'idle', SLEEP_AFTER_MS);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,19 +76,6 @@ export function HomeScreen() {
     };
   }, []);
 
-  async function handleShowDeviceCode() {
-    setLinkError(null);
-    setIsGenerating(true);
-    try {
-      const { code } = await api.createDeviceLink();
-      setDeviceCode(code);
-    } catch (err) {
-      setLinkError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setIsGenerating(false);
-    }
-  }
-
   if (showSettings) {
     return <ProfileScreen mode="settings" onDone={() => setShowSettings(false)} />;
   }
@@ -69,202 +84,148 @@ export function HomeScreen() {
     return <ChatHistoryScreen sessionId={sessionId} onDone={() => setShowHistory(false)} />;
   }
 
-  // Unlike forceFinalize's own internal branching (which already safely
-  // no-ops for whichever states it doesn't apply to), the Pressable itself
-  // is only disabled when there's truly nothing useful either gesture could
-  // do: no session loaded yet. 'thinking' used to also disable this — but a
-  // long-press during 'thinking' pauses turn-taking (see pauseConversation),
-  // so it needs to stay tappable there now; forceFinalize's own no-op for a
-  // plain tap during 'thinking' already covers that gesture correctly on
-  // its own, same as it always has for every other state.
+  // Та же логика, что была: единственное состояние с реально нечем
+  // заняться — отсутствие сессии. 'thinking' больше НЕ блокирует нажатие —
+  // long-press во время thinking ставит на паузу (см. pauseConversation),
+  // а forceFinalize сам по себе безопасно ничего не делает в 'thinking'.
   const disabled = !sessionId;
+  const settingsDisabled = state !== 'idle';
+  const historyDisabled = state !== 'idle' || !sessionId;
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.greeting}>Привет, {displayName ?? user?.email}</Text>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+      <StatusBar style="light" />
+      <View style={styles.container}>
+        {sessionError && <Text style={styles.error}>{sessionError}</Text>}
 
-      {sessionError && <Text style={styles.error}>{sessionError}</Text>}
-
-      <Pressable onPress={forceFinalize} onLongPress={() => void pauseConversation()} disabled={disabled}>
-        <AvatarFace state={state} />
-      </Pressable>
-      <Text style={styles.stateLabel}>{STATE_LABEL[state]}</Text>
-      {state === 'paused' ? (
-        <Text style={styles.hint}>Нажмите, чтобы продолжить</Text>
-      ) : (
-        <>
-          {(state === 'idle' || state === 'recording') && (
-            <Text style={styles.hint}>Говорите свободно — нажмите, если хотите ответить сразу</Text>
-          )}
-          {state === 'speaking' && <Text style={styles.hint}>Нажмите, чтобы перебить</Text>}
-          <Text style={styles.hint}>Удерживайте, чтобы поставить на паузу</Text>
-        </>
-      )}
-
-      {!!transcript && (
-        <View style={styles.bubble}>
-          <Text style={styles.bubbleLabel}>Вы:</Text>
-          <Text style={styles.bubbleText}>{transcript}</Text>
+        <View style={styles.identityRow}>
+          <View style={styles.identityLeft}>
+            <View style={styles.onlineDot} />
+            <View>
+              <Text style={styles.identityName}>{assistantName || 'Ольга'}</Text>
+              <Text style={styles.identityPresence}>{PRESENCE_LABEL[state]}</Text>
+            </View>
+          </View>
+          <Pressable
+            style={styles.profileButton}
+            onPress={() => setShowSettings(true)}
+            disabled={settingsDisabled}
+            accessibilityLabel="Профиль"
+          >
+            <Text style={styles.profileGlyph}>👤</Text>
+          </Pressable>
         </View>
-      )}
-      {!!reply && (
-        <View style={[styles.bubble, styles.bubbleReply]}>
-          <Text style={styles.bubbleLabel}>{assistantName ?? 'Ассистент'}:</Text>
-          <Text style={styles.bubbleText}>{reply}</Text>
+
+        {!sleeping && (
+          <View style={styles.headlineBlock}>
+            <Text style={styles.headline}>{HEADLINE[state]}</Text>
+            {!!SUBTITLE[state] && <Text style={styles.subtitle}>{SUBTITLE[state]}</Text>}
+          </View>
+        )}
+
+        <View style={styles.avatarStage}>
+          <Pressable onPress={forceFinalize} onLongPress={() => void pauseConversation()} disabled={disabled}>
+            {assetsFailed ? (
+              <AvatarFace state={state} />
+            ) : (
+              <OlgaLayeredAvatar
+                state={state}
+                sleeping={sleeping}
+                disabled={disabled}
+                onLoadError={() => setAssetsFailed(true)}
+              />
+            )}
+          </Pressable>
         </View>
-      )}
-      {error && <Text style={styles.error}>{error}</Text>}
 
-      <View style={styles.divider} />
+        <ConversationPeek transcript={transcript} reply={reply} state={state} />
+        {error && <Text style={styles.error}>{error}</Text>}
 
-      {deviceCode ? (
-        <View style={styles.codeBox}>
-          <Text style={styles.codeLabel}>Код действителен 10 минут:</Text>
-          <Text style={styles.codeValue}>{deviceCode}</Text>
-          <Text style={styles.codeHint}>
-            Введите его на новом устройстве в разделе «Есть код с другого устройства?»
-          </Text>
-        </View>
-      ) : (
-        <Pressable style={styles.linkButton} onPress={handleShowDeviceCode} disabled={isGenerating}>
-          <Text style={styles.linkButtonText}>
-            {isGenerating ? 'Создаю код…' : 'Показать код для нового устройства'}
-          </Text>
-        </Pressable>
-      )}
-      {linkError && <Text style={styles.error}>{linkError}</Text>}
-
-      <Pressable
-        style={[styles.linkButton, (state !== 'idle' || !sessionId) && styles.buttonDisabled]}
-        onPress={() => setShowHistory(true)}
-        disabled={state !== 'idle' || !sessionId}
-      >
-        <Text style={styles.linkButtonText}>История</Text>
-      </Pressable>
-
-      <Pressable
-        style={[styles.linkButton, state !== 'idle' && styles.buttonDisabled]}
-        onPress={() => setShowSettings(true)}
-        disabled={state !== 'idle'}
-      >
-        <Text style={styles.linkButtonText}>Настройки</Text>
-      </Pressable>
-
-      <Pressable style={styles.logoutButton} onPress={logout}>
-        <Text style={styles.logoutText}>Выйти</Text>
-      </Pressable>
-    </ScrollView>
+        <VoiceControlDock
+          state={state}
+          onSettingsPress={() => setShowSettings(true)}
+          onHistoryPress={() => setShowHistory(true)}
+          onMicPress={forceFinalize}
+          onMicLongPress={() => void pauseConversation()}
+          settingsDisabled={settingsDisabled}
+          historyDisabled={historyDisabled}
+        />
+      </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: amoled.background,
+  },
   container: {
-    flexGrow: 1,
-    alignItems: 'center',
-    padding: 24,
-    paddingTop: 48,
-    backgroundColor: '#fff',
-  },
-  greeting: {
-    fontSize: 18,
-    fontWeight: '600',
-    marginBottom: 24,
-    textAlign: 'center',
-  },
-  stateLabel: {
-    fontSize: 15,
-    color: '#666',
-    marginBottom: 4,
-    textAlign: 'center',
-  },
-  hint: {
-    fontSize: 12,
-    color: '#999',
-    marginBottom: 24,
-    textAlign: 'center',
-  },
-  bubble: {
-    alignSelf: 'stretch',
-    backgroundColor: '#f0f4fa',
-    borderRadius: 12,
-    padding: 14,
-    marginBottom: 10,
-  },
-  bubbleReply: {
-    backgroundColor: '#eef7ee',
-  },
-  bubbleLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#666',
-    marginBottom: 4,
-  },
-  bubbleText: {
-    fontSize: 16,
-    lineHeight: 22,
-  },
-  divider: {
-    alignSelf: 'stretch',
-    height: 1,
-    backgroundColor: '#eee',
-    marginVertical: 24,
-  },
-  linkButton: {
-    borderWidth: 1,
-    borderColor: '#4a6fa5',
-    borderRadius: 10,
-    paddingVertical: 12,
+    flex: 1,
     paddingHorizontal: 20,
-    marginBottom: 24,
+    paddingTop: 8,
+    paddingBottom: 20,
+    justifyContent: 'space-between',
   },
-  linkButtonText: {
-    color: '#4a6fa5',
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  buttonDisabled: {
-    opacity: 0.5,
-  },
-  codeBox: {
+  identityRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 24,
-    padding: 16,
-    borderRadius: 12,
-    backgroundColor: '#f0f4fa',
+    justifyContent: 'space-between',
   },
-  codeLabel: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 8,
+  identityLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
-  codeValue: {
-    fontSize: 40,
+  onlineDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#3B82F6',
+  },
+  identityName: {
+    color: amoled.textPrimary,
+    fontSize: 17,
     fontWeight: '700',
-    letterSpacing: 8,
-    color: '#4a6fa5',
-    marginBottom: 8,
   },
-  codeHint: {
+  identityPresence: {
+    color: amoled.textSecondary,
     fontSize: 13,
-    color: '#666',
-    textAlign: 'center',
-    maxWidth: 260,
+  },
+  profileButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: amoled.glassBackground,
+    borderWidth: 1,
+    borderColor: amoled.glassBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileGlyph: {
+    fontSize: 18,
+  },
+  headlineBlock: {
+    marginTop: 24,
+  },
+  headline: {
+    color: amoled.textPrimary,
+    fontSize: 34,
+    fontWeight: '800',
+  },
+  subtitle: {
+    color: amoled.textSecondary,
+    fontSize: 15,
+    marginTop: 6,
+  },
+  avatarStage: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
   },
   error: {
-    color: '#c0392b',
-    marginBottom: 16,
+    color: '#F87171',
+    marginBottom: 12,
     textAlign: 'center',
-  },
-  logoutButton: {
-    borderWidth: 1,
-    borderColor: '#c0392b',
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-  },
-  logoutText: {
-    color: '#c0392b',
-    fontSize: 16,
-    fontWeight: '600',
   },
 });
