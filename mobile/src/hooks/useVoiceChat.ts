@@ -403,6 +403,25 @@ export function useVoiceChat(sessionId: number | null) {
   // 'thinking' effect below AND directly by sendSegment on every
   // continuation commit (see its own comment), unlike the main recorder
   // which only ever arms once per turn.
+  //
+  // Known, accepted narrow gap (independent review, not empirically
+  // confirmed — flagged as lower-confidence, unlike pausedRef's other four
+  // confirmed instances elsewhere in this file): if pauseConversation's own
+  // stopShadowRecorderIfLive() call races AHEAD of this function's own
+  // prepareToRecordAsync() below (same shape as the main recorder's races),
+  // it can find nothing live yet to stop, and this function has no
+  // symmetric pausedRef recheck of its own before setting
+  // shadowRecorderLiveRef.current = true. Deliberately NOT fixed the same
+  // way as the main recorder: skipping record()/the liveRef write here
+  // without also stopping the now-prepared native object risks a DIFFERENT
+  // bug (prepareToRecordAsync() called again on an object already prepared
+  // — the exact AudioRecorderAlreadyPreparedException this file's own
+  // comments elsewhere warn about), and it's unclear from the JS-level API
+  // alone whether an unstarted prepare needs its own explicit teardown call
+  // to avoid that. Consequence is degraded, not deadlocked: shadow-capture
+  // (mid-reply continuation detection) silently stops re-arming for the
+  // rest of the session, but the core turn loop and pause/resume themselves
+  // are unaffected. Revisit if ever actually observed on a real device.
   const armShadowRecorder = useCallback(async () => {
     if (!mountedRef.current || shadowRecorderLiveRef.current) return;
     try {
@@ -570,6 +589,26 @@ export function useVoiceChat(sessionId: number | null) {
         // impossible anyway.
         firstSegmentInFlightRef.current = false;
       }
+
+      // Re-check AFTER that (possibly slow, native) stop — the same race
+      // shape as armMic()/onBeforeFirstSpeech/resumeConversation, a fourth
+      // instance independent review found by systematically sweeping every
+      // setState() in this file rather than just rearmRecorderOnly() call
+      // sites. VAD firing this via handleSilenceTick/commitShadowContinuation
+      // and a long-press landing are two independent event sources that can
+      // genuinely coincide — the natural result of one interruption (trail
+      // off mid-sentence AND reach for the avatar at the same moment), not
+      // a contrived double-gesture. If paused now, discard whatever was
+      // just captured — audio already stopped above regardless — instead
+      // of committing to 'thinking' and sending it; matches
+      // pauseConversation's own "discard in-progress recording" decision
+      // for a plain pause-from-'recording'. Not routed through
+      // armMicUnlessPaused: armMic() would bump turnGenerationRef/clear
+      // pendingSegmentsRef for a turn resumeConversation may still need to
+      // treat as current once the user comes back — that reset already
+      // happens naturally, either via resumeConversation's own armMic()
+      // fallback (nothing to resume) or the next real turn's armMic().
+      if (pausedRef.current) return;
 
       if (!sid || !uri) {
         if (!sid) setError('Сессия ещё не готова');
@@ -907,6 +946,14 @@ export function useVoiceChat(sessionId: number | null) {
   // comment; there is no more recheck/ceiling schedule to manage here).
   const handleSilenceTick = useCallback(
     (silenceDurationMs: number, activeSpeechMs: number) => {
+      // A stray VAD tick can still fire after pausedRef flips true but
+      // before React has actually torn down this hook's polling interval
+      // (useVad's active prop only takes effect on its next render) — this
+      // is transitively safe via sendSegment's own pausedRef check now
+      // (see its comment), but bailing out here too avoids uselessly
+      // starting a stopRecorderIfLive() call at all. Defense in depth,
+      // same reasoning as handleSpeechStart's own guard below.
+      if (pausedRef.current) return;
       if (silenceDurationMs < CHECK_SILENCE_THRESHOLD_MS || firstSegmentInFlightRef.current) return;
       firstSegmentInFlightRef.current = true;
       if (activeSpeechMs < MIN_SPEECH_MS) {
@@ -950,6 +997,15 @@ export function useVoiceChat(sessionId: number | null) {
   // not just inferred from the generation counter) stops it from having
   // any further visible effect once it does resolve.
   const handleSpeechStart = useCallback(() => {
+    // Same defense-in-depth reasoning as handleSilenceTick's own guard —
+    // a stray VAD tick landing in the brief window between pausedRef
+    // flipping true and this hook's polling interval actually tearing
+    // down would otherwise overwrite 'paused' with 'recording' here
+    // directly (this function has no await of its own for a later
+    // recheck to hook into, unlike sendSegment/armMic/onBeforeFirstSpeech/
+    // resumeConversation — the whole body runs synchronously once
+    // invoked, so the ONLY place to guard is the entry point).
+    if (pausedRef.current) return;
     if (stateRef.current === 'speaking') {
       bargedInRef.current = true;
       log('info', 'turn', 'barge-in: interrupted assistant');
