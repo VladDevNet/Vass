@@ -414,7 +414,18 @@ export function createStreamingSpeech(onBeforeFirstSpeech?: () => Promise<void>)
       }
       const sentence = queue.shift()!;
       const clean = stripMarkdownForSpeech(sentence);
-      if (!clean) continue;
+      // Neither this strip nor splitIntoChunks below treats bare
+      // punctuation as empty — a "sentence" that's nothing but leftover
+      // terminators/whitespace (e.g. a stray "." — see
+      // extractCompleteSentences' own comment in useVoiceChat.ts for how
+      // one can reach this queue) would otherwise sail through both and
+      // reach Speech.speak() as literal input, which Android's TTS reads
+      // aloud as its own word ("точка") rather than staying silent. This
+      // is the second, independent layer catching that class of input —
+      // the first (useVoiceChat.ts's stricter extraction regex) narrows
+      // how OFTEN one is ever queued at all, this one guarantees none of
+      // them ever reach actual playback regardless of source.
+      if (!clean || !/[^.!?…\s]/.test(clean)) continue;
 
       for (const chunk of splitIntoChunks(clean, MAX_CHUNK_LENGTH)) {
         if (aborted) return;
