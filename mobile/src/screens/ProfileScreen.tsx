@@ -29,7 +29,7 @@ interface ProfileScreenProps {
 }
 
 export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
-  const { displayName, assistantName, refreshProfile } = useAuth();
+  const { displayName, assistantName, refreshProfile, logout } = useAuth();
   const [name, setName] = useState(displayName ?? '');
   const [assistantNameInput, setAssistantNameInput] = useState(assistantName ?? '');
   const [savingName, setSavingName] = useState(false);
@@ -39,6 +39,10 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
   const [voices, setVoices] = useState<Voice[] | undefined>(undefined);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
   const [voicesError, setVoicesError] = useState<string | null>(null);
+
+  const [deviceCode, setDeviceCode] = useState<string | null>(null);
+  const [isGeneratingCode, setIsGeneratingCode] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -80,6 +84,19 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
     setSelectedVoiceId(voice.identifier);
     setVoicePreference(voice.identifier);
     previewVoice(voice.identifier);
+  }
+
+  async function handleShowDeviceCode() {
+    setLinkError(null);
+    setIsGeneratingCode(true);
+    try {
+      const { code } = await api.createDeviceLink();
+      setDeviceCode(code);
+    } catch (err) {
+      setLinkError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsGeneratingCode(false);
+    }
   }
 
   // Android's Google TTS engine doesn't give voices a human name (raw
@@ -162,6 +179,42 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
           </Pressable>
         );
       })}
+
+      {mode === 'settings' && (
+        <>
+          <View style={styles.divider} />
+
+          <Text style={styles.label}>Новое устройство</Text>
+          {deviceCode ? (
+            <View style={styles.codeBox}>
+              <Text style={styles.hint}>Код действителен 10 минут:</Text>
+              <Text style={styles.codeValue}>{deviceCode}</Text>
+              <Text style={styles.hint}>
+                Введите его на новом устройстве в разделе «Есть код с другого устройства?»
+              </Text>
+            </View>
+          ) : (
+            <Pressable
+              style={[styles.button, isGeneratingCode && styles.buttonDisabled]}
+              onPress={handleShowDeviceCode}
+              disabled={isGeneratingCode}
+            >
+              {isGeneratingCode ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.buttonText}>Показать код для нового устройства</Text>
+              )}
+            </Pressable>
+          )}
+          {linkError && <Text style={styles.error}>{linkError}</Text>}
+
+          <View style={styles.divider} />
+
+          <Pressable style={styles.logoutButton} onPress={logout}>
+            <Text style={styles.logoutText}>Выйти</Text>
+          </Pressable>
+        </>
+      )}
 
       <Pressable onPress={onDone} style={styles.doneLink}>
         <Text style={styles.doneLinkText}>{mode === 'onboarding' ? 'Пропустить' : 'Назад'}</Text>
@@ -267,5 +320,31 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: '#4a6fa5',
     fontSize: 15,
+  },
+  codeBox: {
+    alignItems: 'center',
+    marginBottom: 16,
+    padding: 16,
+    borderRadius: 12,
+    backgroundColor: '#f0f4fa',
+  },
+  codeValue: {
+    fontSize: 36,
+    fontWeight: '700',
+    letterSpacing: 8,
+    color: '#4a6fa5',
+    marginVertical: 6,
+  },
+  logoutButton: {
+    borderWidth: 1,
+    borderColor: '#c0392b',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  logoutText: {
+    color: '#c0392b',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
