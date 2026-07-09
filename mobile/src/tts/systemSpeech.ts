@@ -152,6 +152,24 @@ export function stripMarkdownForSpeech(text: string): string {
 // regex below (which needs trailing whitespace after the marker) can no
 // longer match on the isolated, trimmed "1." alone. Found by independent
 // review.
+//
+// Residual, accepted gap (same review pass, empirically measured — not
+// closed by the fix above): "re-stripping the whole buffer equals
+// stripping once" is FALSE for two narrow chunk-boundary shapes — a
+// marker whose period arrives with no trailing whitespace yet (buffer is
+// literally "1." when extractCompleteSentences grabs it as a complete
+// sentence, before this function ever sees the space that would let the
+// numbered-list regex match) and a later list item whose leading "\n"
+// anchor was already flattened to a space by an EARLIER pass over an
+// earlier chunk (the ^-anchored bullet/numbered regexes below can't
+// recognize a line start that no longer has a real newline before it).
+// Measured against real split positions: ~2 of 32-35 possible chunk
+// boundaries for a 2-item list, both immediately at the marker/newline
+// itself. Failure mode is a mispronounced marker read aloud, not
+// silence/crash/stuck-state — same tolerance this file already extends to
+// "3.14"/"т.е." elsewhere. Not worth the structural fix (holding back a
+// suspected-marker prefix across a chunk boundary before ever extracting)
+// for a cosmetic, narrow-window gap.
 export function stripMarkdownForSpeechChunk(text: string): string {
   return text
     // \u{1F300}-\u{1F5FF} (Misc Symbols and Pictographs — 👍🎉🔥 etc.) added
