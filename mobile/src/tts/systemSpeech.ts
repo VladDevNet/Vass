@@ -567,10 +567,10 @@ export function interruptSpeaking(): void {
 // queue (unlike interruptSpeaking, which is for barge-in and throws
 // everything away). See StreamingSpeech.pause's own comment for the
 // resume-with-repetition contract. A no-op if nothing is currently active.
+// markExpectedStop()/Speech.stop() are NOT repeated here — pause() itself
+// already does both (independent review flagged the original duplication).
 export function pauseSpeaking(): void {
-  markExpectedStop();
   activeStreaming?.pause();
-  Speech.stop();
 }
 
 // Public API — resumes a paused instance. No-op if nothing is paused.

@@ -271,6 +271,17 @@ export function useVoiceChat(sessionId: number | null) {
   // freshly underway (see handleSpeechStart), and armMic() would incorrectly
   // reset that out from under it.
   const bargedInRef = useRef(false);
+  // Whether the conversation is explicitly paused — mutated SYNCHRONOUSLY at
+  // the exact call site in pauseConversation/resumeConversation, unlike
+  // stateRef (which mirrors `state` but only updates once a render actually
+  // runs). onBeforeFirstSpeech below awaits a native rearm that can easily
+  // still be in flight when pauseConversation fires — checking stateRef
+  // afterward isn't reliably fresh enough there (confirmed by independent
+  // review: the render carrying 'paused' isn't guaranteed to have flushed
+  // by the time that await resolves), which is exactly the class of gap
+  // bargedInRef/firstSegmentInFlightRef already exist to close for their
+  // own races. This is the same fix, for pause.
+  const pausedRef = useRef(false);
   // Guards handleSilenceTick's first-segment trigger against re-entry across
   // the few 50ms VAD ticks between "silence threshold crossed" and `state`
   // actually becoming 'thinking' (at which point the main recorder's useVad
@@ -473,7 +484,7 @@ export function useVoiceChat(sessionId: number | null) {
   // is the ONE place allowed to call armMic() directly while paused — that's
   // the whole point of resuming when there's nothing left to resume speaking.
   const armMicUnlessPaused = useCallback(async () => {
-    if (stateRef.current === 'paused') return;
+    if (pausedRef.current) return;
     await armMic();
   }, [armMic]);
 
@@ -624,8 +635,23 @@ export function useVoiceChat(sessionId: number | null) {
             // FIRST utterance never starts before the mic is actually live
             // to catch an interruption.
             await rearmRecorderOnly();
+            // Re-check pause AFTER that (possibly slow, native) rearm —
+            // pauseConversation's own stopRecorderIfLive() call can run
+            // BEFORE this rearm has actually made the recorder live (both
+            // race in the background from the same 'thinking'->'speaking'
+            // transition), missing it entirely. Left unchecked, the
+            // recorder would end up live — and the UI would read
+            // 'speaking' — during what the user believes is a silent
+            // pause. Checked via pausedRef, not stateRef: independent
+            // review found stateRef isn't reliably fresh enough here, since
+            // it only updates once a render actually runs, not
+            // synchronously at the moment pauseConversation ran.
+            if (pausedRef.current) {
+              await stopRecorderIfLive();
+              return;
+            }
             if (myGeneration === segmentGenerationRef.current) setState('speaking');
-          }, stateRef.current === 'paused');
+          }, pausedRef.current);
           // ^ startPaused: a reply's first chunk can arrive while the user
           // already paused during 'thinking' (before there was anything to
           // pause yet) — see pauseConversation/resumeConversation below.
@@ -964,8 +990,16 @@ export function useVoiceChat(sessionId: number | null) {
   // - 'idle': nothing in flight; just stops listening until resumed.
   // Both recorders are stopped unconditionally so a phone call itself can
   // never be captured as a continuation or a barge-in attempt while paused.
+  // Gated on pausedRef, not state — set SYNCHRONOUSLY, before any await, so
+  // a second long-press landing before this call's own awaits resolve
+  // bails out immediately instead of running the stop/pause sequence twice
+  // (the same re-entrancy shape firstSegmentInFlightRef already guards
+  // elsewhere in this file). See pausedRef's own comment for why state/
+  // stateRef aren't reliably fresh enough for this — independent review
+  // found the exact gap this closes.
   const pauseConversation = useCallback(async () => {
-    if (state === 'paused') return;
+    if (pausedRef.current) return;
+    pausedRef.current = true;
     log('info', 'turn', 'paused by user', { fromState: state });
     pauseSpeaking();
     await stopRecorderIfLive();
@@ -987,9 +1021,15 @@ export function useVoiceChat(sessionId: number | null) {
   // speech actually finishes, exactly as it would for a reply that was
   // never paused at all. Otherwise (paused from idle/recording, or a turn
   // that failed/produced nothing speakable while paused) there's nothing to
-  // resume speaking — just go back to fresh listening.
+  // resume speaking — just go back to fresh listening. Gated on pausedRef,
+  // cleared SYNCHRONOUSLY before any await for the same double-tap
+  // re-entrancy reason as pauseConversation above — independent review
+  // found a rapid double-tap could otherwise both pass a state-based guard
+  // and both call rearmRecorderOnly(), which throws on a genuine
+  // concurrent double-prepare.
   const resumeConversation = useCallback(async () => {
-    if (state !== 'paused') return;
+    if (!pausedRef.current) return;
+    pausedRef.current = false;
     if (hasSpeechToResume()) {
       log('info', 'turn', 'resumed by user — continuing paused speech');
       await rearmRecorderOnly();
@@ -999,7 +1039,7 @@ export function useVoiceChat(sessionId: number | null) {
       log('info', 'turn', 'resumed by user — nothing to continue, listening again');
       await armMic();
     }
-  }, [state, rearmRecorderOnly, armMic]);
+  }, [rearmRecorderOnly, armMic]);
 
   // Manual override: send whatever's been captured so far immediately,
   // regardless of the 1.2s pause timer — same shape as before, just calling
