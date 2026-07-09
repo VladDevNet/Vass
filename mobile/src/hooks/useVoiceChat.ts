@@ -159,14 +159,17 @@ const MIN_SHADOW_ARM_MS = 500;
 // things like "3.14" or "т.е." — an accepted, pre-existing limitation, not
 // a new one introduced here).
 //
-// The leading part REQUIRES at least one real character (+, not *) —
-// matching splitIntoChunks' own proven pattern exactly, not a lookalike.
-// Real-device feedback ("TTS проговаривает 'точка'") traced back to this:
-// stripMarkdownForSpeechChunk's \n{2,} -> '. ' conversion can land right
-// next to an ALREADY-terminator-ending sentence (a markdown paragraph
-// break straight after a normal '.'), and with * (zero-or-more) allowed,
-// this regex could match a lone leftover terminator with nothing real in
-// front of it as its own "sentence" — which then reaches Speech.speak()
+// The leading part REQUIRES at least one real character (+, not *) — the
+// same leading quantifier splitIntoChunks already uses (its trailing
+// quantifier stays *, deliberately: unlike this function, it must still
+// capture a final unterminated fragment since there's no more text coming).
+// Real-device feedback ("TTS проговаривает 'точка'") traced to a confirmed,
+// reproduced mechanism: stripMarkdownForSpeechChunk's \n{2,} -> '. '
+// conversion synthesizes a fresh terminator, and when a chunk boundary
+// lands right after it (e.g. buffer drains to "" after "Раз.", next chunk
+// arrives as "\n\nДва." and strips to ". Два."), the old * (zero-or-more)
+// leading quantifier let this regex match that leftover ". " as its own
+// zero-real-content "sentence" — which then reaches Speech.speak()
 // completely unfiltered (neither stripMarkdownForSpeech nor
 // splitIntoChunks treats bare punctuation as empty) and gets read aloud
 // as its own word. See also the pump loop's own content check in
