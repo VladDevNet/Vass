@@ -9,7 +9,10 @@ import {
 import { api, sendMessage } from '../api/client';
 import {
   createStreamingSpeech,
+  hasSpeechToResume,
   interruptSpeaking,
+  pauseSpeaking,
+  resumeSpeaking,
   speakBackchannel,
   stopSpeaking,
   stripMarkdownForSpeechChunk,
@@ -18,7 +21,7 @@ import type { StreamingSpeech } from '../tts/systemSpeech';
 import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
 
-export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking';
+export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking' | 'paused';
 
 // android.audioSource defaults to MediaRecorder.AudioSource.MIC — raw,
 // unprocessed input (verified in expo-audio's own AudioRecorder.kt) — unlike
@@ -461,6 +464,19 @@ export function useVoiceChat(sessionId: number | null) {
     log('debug', 'mic', 'armed');
   }, [rearmRecorderOnly]);
 
+  // Same as armMic(), except a no-op while the user has the conversation
+  // explicitly paused. Several call sites below reach armMic() after a turn
+  // ends or fails for reasons that have nothing to do with pausing (a reply
+  // finishing normally, an empty continuation, a network error, a
+  // discarded-noise cooldown) — none of them should silently un-pause the
+  // app out from under someone who stepped away mid-call. resumeConversation
+  // is the ONE place allowed to call armMic() directly while paused — that's
+  // the whole point of resuming when there's nothing left to resume speaking.
+  const armMicUnlessPaused = useCallback(async () => {
+    if (stateRef.current === 'paused') return;
+    await armMic();
+  }, [armMic]);
+
   // One-time setup: mic permission + audio mode, then arm for the first turn.
   useEffect(() => {
     if (!sessionId) return;
@@ -531,7 +547,7 @@ export function useVoiceChat(sessionId: number | null) {
 
       if (!sid || !uri) {
         if (!sid) setError('Сессия ещё не готова');
-        await armMic();
+        await armMicUnlessPaused();
         return;
       }
 
@@ -609,7 +625,12 @@ export function useVoiceChat(sessionId: number | null) {
             // to catch an interruption.
             await rearmRecorderOnly();
             if (myGeneration === segmentGenerationRef.current) setState('speaking');
-          });
+          }, stateRef.current === 'paused');
+          // ^ startPaused: a reply's first chunk can arrive while the user
+          // already paused during 'thinking' (before there was anything to
+          // pause yet) — see pauseConversation/resumeConversation below.
+          // Created (and queued into) regardless, just held silent until
+          // resumeConversation calls resumeSpeaking().
         }
 
         // The CHUNK (non-trimming) variant specifically — see its own
@@ -662,7 +683,7 @@ export function useVoiceChat(sessionId: number | null) {
             // committing a continuation, so this should be rare (a
             // transcription that came back empty despite real audio), but
             // there's nothing left to send if it happens.
-            await armMic();
+            await armMicUnlessPaused();
             return;
           }
           fullReply = await sendMessage({ sessionId: sid, message: combinedText }, {
@@ -762,11 +783,11 @@ export function useVoiceChat(sessionId: number | null) {
         // segment (or its own eventual finally) is
         // responsible for that now.
         if (myGeneration === segmentGenerationRef.current && myTurn === turnGenerationRef.current) {
-          if (!bargedInRef.current) await armMic();
+          if (!bargedInRef.current) await armMicUnlessPaused();
         }
       }
     },
-    [armMic, stopRecorderIfLive, stopShadowRecorderIfLive, armShadowRecorder, rearmRecorderOnly, pendingText]
+    [armMicUnlessPaused, stopRecorderIfLive, stopShadowRecorderIfLive, armShadowRecorder, rearmRecorderOnly, pendingText]
   );
 
   // Confirmed as real, sustained continuation speech (not yet committed —
@@ -853,12 +874,16 @@ export function useVoiceChat(sessionId: number | null) {
         // Re-arm after a short cooldown rather than immediately, so
         // continuous background noise can't retrigger this in a tight loop
         // — mirrors yolo.js's identical 750ms cooldown in the same spot.
-        setTimeout(() => armMic(), DISCARD_COOLDOWN_MS);
+        // armMicUnlessPaused, not armMic — this timer is independent of
+        // VAD polling (which does stop immediately on pause), so a
+        // long-press landing inside this exact 750ms window would
+        // otherwise still fire an un-pausing armMic() call on its own.
+        setTimeout(() => void armMicUnlessPaused(), DISCARD_COOLDOWN_MS);
         return;
       }
       void sendSegment(false);
     },
-    [sendSegment, armMic]
+    [sendSegment, armMicUnlessPaused]
   );
 
   const handleSpeechResume = useCallback(() => {
@@ -921,15 +946,75 @@ export function useVoiceChat(sessionId: number | null) {
     onLevelSample: isSpeaking ? handleSpeakingLevelSample : undefined,
   });
 
+  // Long-press on the avatar — a real-world interruption (a phone call, a
+  // knock at the door), not a barge-in: the user wants to step away and
+  // pick the conversation back up, not hand the turn to themselves. Stops
+  // BOTH playback and listening in place rather than ending the turn, and
+  // is deliberately available from every active state, not just 'speaking':
+  // - 'speaking': pauses on-device TTS mid-sentence (see pauseSpeaking's own
+  //   comment) — the only case with something to actually resume speaking.
+  // - 'thinking': stops shadow-capture so the interruption itself (or
+  //   silence on the call) is never misheard as a continuation. If the
+  //   reply's first sentence hasn't arrived yet, handleChunk's
+  //   createStreamingSpeech(..., startPaused) call picks this up once it
+  //   does, holding it silently until resumeConversation.
+  // - 'recording': discards whatever was captured so far — the user is
+  //   leaving mid-thought, not finishing it, so there's nothing to resume
+  //   there either.
+  // - 'idle': nothing in flight; just stops listening until resumed.
+  // Both recorders are stopped unconditionally so a phone call itself can
+  // never be captured as a continuation or a barge-in attempt while paused.
+  const pauseConversation = useCallback(async () => {
+    if (state === 'paused') return;
+    log('info', 'turn', 'paused by user', { fromState: state });
+    pauseSpeaking();
+    await stopRecorderIfLive();
+    await stopShadowRecorderIfLive();
+    setState('paused');
+  }, [state, stopRecorderIfLive, stopShadowRecorderIfLive]);
+
+  // Tap on the avatar while paused. If a StreamingSpeech instance is still
+  // alive (hasSpeechToResume — mid-reply when paused, or a reply that
+  // arrived WHILE paused), pick it back up: rearm the recorder and enter
+  // 'speaking' ourselves first (barge-in needs the mic live for the WHOLE
+  // resumed playback, same requirement as the original first utterance —
+  // see rearmRecorderOnly's call sites elsewhere in this file), then let
+  // resumeSpeaking() unblock the pump loop, which repeats whichever
+  // sentence was interrupted in full (see createStreamingSpeech's own
+  // comment). Nothing else is needed for the rest of that reply — the
+  // original sendSegment call is still alive, just suspended, for the
+  // entire pause; its own finally block re-arms the mic once the resumed
+  // speech actually finishes, exactly as it would for a reply that was
+  // never paused at all. Otherwise (paused from idle/recording, or a turn
+  // that failed/produced nothing speakable while paused) there's nothing to
+  // resume speaking — just go back to fresh listening.
+  const resumeConversation = useCallback(async () => {
+    if (state !== 'paused') return;
+    if (hasSpeechToResume()) {
+      log('info', 'turn', 'resumed by user — continuing paused speech');
+      await rearmRecorderOnly();
+      setState('speaking');
+      resumeSpeaking();
+    } else {
+      log('info', 'turn', 'resumed by user — nothing to continue, listening again');
+      await armMic();
+    }
+  }, [state, rearmRecorderOnly, armMic]);
+
   // Manual override: send whatever's been captured so far immediately,
   // regardless of the 1.2s pause timer — same shape as before, just calling
   // straight into sendSegment now that there's no separate ceiling function.
   // Also doubles as a manual interruption while speaking, mirroring
   // yolo.js's yolo-speak-now-btn ("Перебить" during SPEAKING) — a safety
   // valve for on-device VAD/turn-taking that hasn't been calibrated against
-  // a real microphone yet.
+  // a real microphone yet. A tap while paused resumes instead — see
+  // resumeConversation; pauseConversation itself is triggered by a
+  // long-press, not this short-tap handler, so the two gestures don't fight
+  // over the same touch.
   const forceFinalize = useCallback(() => {
-    if (state === 'speaking') {
+    if (state === 'paused') {
+      void resumeConversation();
+    } else if (state === 'speaking') {
       bargedInRef.current = true;
       log('info', 'turn', 'barge-in: manual interruption tap');
       interruptSpeaking();
@@ -938,9 +1023,9 @@ export function useVoiceChat(sessionId: number | null) {
       firstSegmentInFlightRef.current = true;
       void sendSegment(false);
     }
-  }, [state, sendSegment]);
+  }, [state, sendSegment, resumeConversation]);
 
-  return { state, transcript, reply, error, forceFinalize };
+  return { state, transcript, reply, error, forceFinalize, pauseConversation };
 }
 
 // Generous cap on how long a synthesized reply could plausibly run — a

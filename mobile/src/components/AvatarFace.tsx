@@ -17,6 +17,7 @@ const HEAD_COLOR: Record<VoiceState, string> = {
   recording: '#FFD3D3',
   thinking: '#FFE1C4',
   speaking: '#D9F2DD',
+  paused: '#E0E0E4',
 };
 
 export function AvatarFace({ state }: Props) {

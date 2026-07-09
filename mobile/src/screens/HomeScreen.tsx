@@ -13,6 +13,7 @@ const STATE_LABEL: Record<string, string> = {
   recording: 'Слышу вас…',
   thinking: 'Думаю…',
   speaking: 'Отвечаю…',
+  paused: 'На паузе',
 };
 
 export function HomeScreen() {
@@ -30,7 +31,7 @@ export function HomeScreen() {
   const [linkError, setLinkError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const { state, transcript, reply, error, forceFinalize } = useVoiceChat(sessionId);
+  const { state, transcript, reply, error, forceFinalize, pauseConversation } = useVoiceChat(sessionId);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,14 +69,15 @@ export function HomeScreen() {
     return <ChatHistoryScreen sessionId={sessionId} onDone={() => setShowHistory(false)} />;
   }
 
-  // 'speaking' is deliberately NOT included here — useVoiceChat's
-  // forceFinalize already has a correct, dedicated branch for a tap during
-  // 'speaking' (manual barge-in: interrupts Olga and hands the turn back),
-  // logged distinctly from voice-triggered barge-in. Disabling the button
-  // for 'speaking' made that branch permanently unreachable from the UI —
-  // 'thinking' alone is the only state with genuinely nothing to do yet
-  // (no reply exists to interrupt or send).
-  const busy = state === 'thinking';
+  // Unlike forceFinalize's own internal branching (which already safely
+  // no-ops for whichever states it doesn't apply to), the Pressable itself
+  // is only disabled when there's truly nothing useful either gesture could
+  // do: no session loaded yet. 'thinking' used to also disable this — but a
+  // long-press during 'thinking' pauses turn-taking (see pauseConversation),
+  // so it needs to stay tappable there now; forceFinalize's own no-op for a
+  // plain tap during 'thinking' already covers that gesture correctly on
+  // its own, same as it always has for every other state.
+  const disabled = !sessionId;
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -83,14 +85,21 @@ export function HomeScreen() {
 
       {sessionError && <Text style={styles.error}>{sessionError}</Text>}
 
-      <Pressable onPress={forceFinalize} disabled={busy || !sessionId}>
+      <Pressable onPress={forceFinalize} onLongPress={() => void pauseConversation()} disabled={disabled}>
         <AvatarFace state={state} />
       </Pressable>
       <Text style={styles.stateLabel}>{STATE_LABEL[state]}</Text>
-      {(state === 'idle' || state === 'recording') && (
-        <Text style={styles.hint}>Говорите свободно — нажмите, если хотите ответить сразу</Text>
+      {state === 'paused' ? (
+        <Text style={styles.hint}>Нажмите, чтобы продолжить</Text>
+      ) : (
+        <>
+          {(state === 'idle' || state === 'recording') && (
+            <Text style={styles.hint}>Говорите свободно — нажмите, если хотите ответить сразу</Text>
+          )}
+          {state === 'speaking' && <Text style={styles.hint}>Нажмите, чтобы перебить</Text>}
+          <Text style={styles.hint}>Удерживайте, чтобы поставить на паузу</Text>
+        </>
       )}
-      {state === 'speaking' && <Text style={styles.hint}>Нажмите, чтобы перебить</Text>}
 
       {!!transcript && (
         <View style={styles.bubble}>

@@ -344,6 +344,17 @@ export interface StreamingSpeech {
   // — for barge-in. Safe to call even if nothing has started speaking yet
   // (e.g. interrupted during onBeforeFirstSpeech's own setup).
   abort(): void;
+  // Pauses playback WITHOUT discarding the queue (unlike abort) — for the
+  // avatar's pause gesture (useVoiceChat.ts's pauseConversation), not
+  // barge-in. Whatever sentence was actually playing when this fires is
+  // repeated in full on resume(), not resumed mid-word — no per-word
+  // position is ever tracked, a deliberate "resume from the nearest point,
+  // a little repetition is fine" product decision. Safe to call before
+  // anything has started speaking, or while the queue is simply empty and
+  // the pump is waiting for more text.
+  pause(): void;
+  // Resumes a paused instance. No-op if not currently paused.
+  resume(): void;
 }
 
 // Currently-active StreamingSpeech instance, if any — lets
@@ -371,11 +382,29 @@ let activeStreaming: StreamingSpeech | null = null;
 // async) — and without racing it: the pump loop below awaits this before
 // ever calling Speech.speak(), regardless of how many sentences are
 // already queued by the time it gets there.
-export function createStreamingSpeech(onBeforeFirstSpeech?: () => Promise<void>): StreamingSpeech {
+//
+// startPaused lets the caller create an instance that won't speak (or run
+// onBeforeFirstSpeech) until resume() is called — for a pause that lands
+// during 'thinking', before the reply's first sentence has even arrived
+// yet (see useVoiceChat.ts's handleChunk, which lazily creates the
+// instance on the FIRST chunk regardless of pause state, passing this).
+export function createStreamingSpeech(
+  onBeforeFirstSpeech?: () => Promise<void>,
+  startPaused = false
+): StreamingSpeech {
   const queue: string[] = [];
   let finished = false;
   let aborted = false;
+  let paused = startPaused;
   let wake: (() => void) | null = null;
+  let pauseWake: (() => void) | null = null;
+  // The sentence currently being processed/spoken, if any — held OUTSIDE
+  // the queue (not just queue[0]) so pause() can hand it back to the pump
+  // loop on the very next resume without disturbing whatever's still
+  // queued behind it.
+  let currentSentence: string | null = null;
+  let armed = false;
+  let voice: string | null = null;
   let spokenCount = 0;
 
   const notify = () => {
@@ -383,37 +412,62 @@ export function createStreamingSpeech(onBeforeFirstSpeech?: () => Promise<void>)
     wake = null;
     w?.();
   };
+  const notifyPause = () => {
+    const w = pauseWake;
+    pauseWake = null;
+    w?.();
+  };
 
   async function pump(): Promise<void> {
-    // onBeforeFirstSpeech runs FIRST, before even checking whether a voice
-    // exists — arming the recorder and entering 'speaking' has to happen
-    // regardless of whether on-device TTS ends up working at all, since
-    // the caller falls back to network TTS on failure (including "no
-    // voice") and still needs barge-in live for THAT playback. Getting
-    // this order backwards was a real regression found by independent
-    // review: with the voice check first, a voice-less device never left
-    // 'thinking' during the entire fallback playback, silently disabling
-    // both voice and tap barge-in for it — the old (pre-streaming) design
-    // set 'speaking' unconditionally before ever attempting on-device
-    // speech, and this restores that guarantee.
-    await onBeforeFirstSpeech?.();
-    if (aborted) return;
-
-    const voice = await getRussianVoice();
-    if (aborted) return;
-    if (!voice) throw new Error('На устройстве нет русского голоса');
-
     while (true) {
       if (aborted) return;
-      if (queue.length === 0) {
-        if (finished) return;
+      if (paused) {
         await new Promise<void>((resolve) => {
-          wake = resolve;
+          pauseWake = resolve;
         });
         continue;
       }
-      const sentence = queue.shift()!;
-      const clean = stripMarkdownForSpeech(sentence);
+
+      if (!armed) {
+        // onBeforeFirstSpeech runs FIRST, before even checking whether a
+        // voice exists — arming the recorder and entering 'speaking' has
+        // to happen regardless of whether on-device TTS ends up working at
+        // all, since the caller falls back to network TTS on failure
+        // (including "no voice") and still needs barge-in live for THAT
+        // playback. Getting this order backwards was a real regression
+        // found by independent review: with the voice check first, a
+        // voice-less device never left 'thinking' during the entire
+        // fallback playback, silently disabling both voice and tap
+        // barge-in for it — the old (pre-streaming) design set 'speaking'
+        // unconditionally before ever attempting on-device speech, and
+        // this restores that guarantee. Guarded by `armed` so a pause/
+        // resume cycle doesn't repeat these side effects on every loop
+        // — except when paused DURING setup itself (below), where
+        // repeating them on the next resume is correct, not accidental.
+        armed = true;
+        await onBeforeFirstSpeech?.();
+        if (aborted) return;
+        if (paused) {
+          armed = false;
+          continue;
+        }
+        voice = await getRussianVoice();
+        if (aborted) return;
+        if (!voice) throw new Error('На устройстве нет русского голоса');
+      }
+
+      if (currentSentence === null) {
+        if (queue.length === 0) {
+          if (finished) return;
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+          });
+          continue;
+        }
+        currentSentence = queue.shift()!;
+      }
+
+      const clean = stripMarkdownForSpeech(currentSentence);
       // Neither this strip nor splitIntoChunks below treats bare
       // punctuation as empty — a "sentence" that's nothing but leftover
       // terminators/whitespace (e.g. a stray "." — see
@@ -425,15 +479,32 @@ export function createStreamingSpeech(onBeforeFirstSpeech?: () => Promise<void>)
       // the first (useVoiceChat.ts's stricter extraction regex) narrows
       // how OFTEN one is ever queued at all, this one guarantees none of
       // them ever reach actual playback regardless of source.
-      if (!clean || !/[^.!?…\s]/.test(clean)) continue;
+      if (!clean || !/[^.!?…\s]/.test(clean)) {
+        currentSentence = null;
+        continue;
+      }
 
+      let interrupted = false;
       for (const chunk of splitIntoChunks(clean, MAX_CHUNK_LENGTH)) {
         if (aborted) return;
         // -1: no fixed total in streaming mode, unlike the array-based loop
         // this replaces — more sentences can always still be coming.
-        const timedOut = await speakChunkSafely(chunk, voice, spokenCount++, -1);
+        const timedOut = await speakChunkSafely(chunk, voice!, spokenCount++, -1);
         if (timedOut) return;
+        if (paused) {
+          interrupted = true;
+          break;
+        }
       }
+      // Only clear currentSentence once every chunk of it actually
+      // finished — pausing mid-sentence leaves it set, so resume repeats
+      // the SAME sentence from its first chunk (not wherever playback was
+      // cut off — no per-chunk position is tracked). A sentence rarely
+      // spans more than one chunk (MAX_CHUNK_LENGTH is ~3400 characters),
+      // so in practice this means repeating one short sentence — the
+      // deliberate "resume from the nearest point, a little repetition is
+      // fine" product decision pause() exists for.
+      if (!interrupted) currentSentence = null;
     }
   }
 
@@ -457,7 +528,20 @@ export function createStreamingSpeech(onBeforeFirstSpeech?: () => Promise<void>)
     abort(): void {
       aborted = true;
       queue.length = 0;
+      currentSentence = null;
       notify();
+      notifyPause();
+    },
+    pause(): void {
+      if (paused || aborted) return;
+      paused = true;
+      markExpectedStop();
+      Speech.stop();
+    },
+    resume(): void {
+      if (!paused) return;
+      paused = false;
+      notifyPause();
     },
   };
 
@@ -477,6 +561,30 @@ export function interruptSpeaking(): void {
   markExpectedStop();
   activeStreaming?.abort();
   Speech.stop();
+}
+
+// Public API — pauses whatever's currently playing WITHOUT discarding the
+// queue (unlike interruptSpeaking, which is for barge-in and throws
+// everything away). See StreamingSpeech.pause's own comment for the
+// resume-with-repetition contract. A no-op if nothing is currently active.
+export function pauseSpeaking(): void {
+  markExpectedStop();
+  activeStreaming?.pause();
+  Speech.stop();
+}
+
+// Public API — resumes a paused instance. No-op if nothing is paused.
+export function resumeSpeaking(): void {
+  activeStreaming?.resume();
+}
+
+// Whether there's a live (possibly paused) StreamingSpeech instance to
+// resume — lets useVoiceChat.ts's resumeConversation distinguish "resume
+// actual paused speech" from "nothing was ever speaking, just go back to
+// listening" (e.g. paused while idle/recording, or a turn that failed/
+// produced no speakable content while paused).
+export function hasSpeechToResume(): boolean {
+  return activeStreaming !== null;
 }
 
 // Short, warm acknowledgment phrases ("still listening") played during a
