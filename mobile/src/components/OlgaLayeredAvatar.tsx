@@ -65,7 +65,12 @@ export function OlgaLayeredAvatar({ state, sleeping, disabled, onLoadError }: Ol
 
   return (
     <View style={[styles.wrapper, disabled && styles.disabled]}>
-      {!sleeping && <HaloGlow color={halo.color} intensity={halo.intensity} size={AVATAR_SIZE} />}
+      {/* Затухает, но не пропадает — на чистом AMOLED-чёрном фоне полное
+          отсутствие halo + затемнённый портрет выглядело неотличимо от
+          выключенного экрана (реальный физический тест: "экран
+          отключается"), хотя useKeepAwake() исправно держит дисплей
+          активным (см. HomeScreen.tsx) — проблема была чисто визуальная. */}
+      <HaloGlow color={halo.color} intensity={sleeping ? halo.intensity * 0.25 : halo.intensity} size={AVATAR_SIZE} />
       <Image
         source={require('../../assets/avatar/olga_base.png')}
         style={[
@@ -156,7 +161,7 @@ const styles = StyleSheet.create({
   // не имеет built-in CSS filter). Разные значения — sleeping заметно
   // темнее paused, см. spec.
   sleepingPortrait: {
-    opacity: 0.5,
+    opacity: 0.65,
   },
   pausedPortrait: {
     opacity: 0.8,
