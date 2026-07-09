@@ -535,8 +535,6 @@ export function createStreamingSpeech(
     pause(): void {
       if (paused || aborted) return;
       paused = true;
-      markExpectedStop();
-      Speech.stop();
     },
     resume(): void {
       if (!paused) return;
@@ -566,11 +564,23 @@ export function interruptSpeaking(): void {
 // Public API — pauses whatever's currently playing WITHOUT discarding the
 // queue (unlike interruptSpeaking, which is for barge-in and throws
 // everything away). See StreamingSpeech.pause's own comment for the
-// resume-with-repetition contract. A no-op if nothing is currently active.
-// markExpectedStop()/Speech.stop() are NOT repeated here — pause() itself
-// already does both (independent review flagged the original duplication).
+// resume-with-repetition contract.
+//
+// Speech.stop() here is UNCONDITIONAL, same shape as interruptSpeaking/
+// stopSpeaking, and for the same reason: it's the only thing that also
+// interrupts a currently-playing BACKCHANNEL filler (speakBackchannel,
+// below), which plays outside activeStreaming's tracking entirely.
+// activeStreaming?.pause() alone doesn't touch native playback at all
+// (StreamingSpeech.pause() only flips the internal flag — matching abort(),
+// which likewise never calls Speech.stop() itself); an earlier version of
+// this function dropped the Speech.stop() call as "redundant" with pause()'s
+// own, which briefly regressed exactly this — a long-press landing during a
+// filler phrase let it keep playing out loud instead of cutting off.
+// Independent review caught it.
 export function pauseSpeaking(): void {
+  markExpectedStop();
   activeStreaming?.pause();
+  Speech.stop();
 }
 
 // Public API — resumes a paused instance. No-op if nothing is paused.

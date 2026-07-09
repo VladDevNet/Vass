@@ -469,11 +469,26 @@ export function useVoiceChat(sessionId: number | null) {
     firstSegmentInFlightRef.current = false;
     await rearmRecorderOnly();
     if (!mountedRef.current || !recorderLiveRef.current) return;
+    // Re-check AFTER that (possibly slow, native) rearm — the same race
+    // shape as onBeforeFirstSpeech's and resumeConversation's own (see
+    // pausedRef's comment): a long-press can land while THIS rearm is
+    // still in flight, and committing to 'idle' here regardless would
+    // silently overwrite 'paused' and leave the mic live/listening. Every
+    // caller of armMic() (armMicUnlessPaused's guarded call sites, and
+    // resumeConversation's own direct one) already ensures pausedRef was
+    // false at the moment THEY called in — this guards the same window
+    // one level deeper, where a pause can still race the await armMic()
+    // itself just did. Found by auditing every rearmRecorderOnly() call
+    // site after independent review caught the same shape twice already.
+    if (pausedRef.current) {
+      await stopRecorderIfLive();
+      return;
+    }
     setMicArmed(true);
     setMicGeneration((g) => g + 1);
     setState('idle');
     log('debug', 'mic', 'armed');
-  }, [rearmRecorderOnly]);
+  }, [rearmRecorderOnly, stopRecorderIfLive]);
 
   // Same as armMic(), except a no-op while the user has the conversation
   // explicitly paused. Several call sites below reach armMic() after a turn
@@ -1033,13 +1048,32 @@ export function useVoiceChat(sessionId: number | null) {
     if (hasSpeechToResume()) {
       log('info', 'turn', 'resumed by user — continuing paused speech');
       await rearmRecorderOnly();
+      // Re-check AFTER that (possibly slow, native) rearm — the exact same
+      // shape as onBeforeFirstSpeech's own race, just one call site over:
+      // a fresh long-press can land while THIS rearm is still in flight,
+      // setting pausedRef back to true — committing to 'speaking'/
+      // resumeSpeaking() here regardless would silently un-pause audio the
+      // user just re-paused, AND (worse) leave pausedRef stuck true with
+      // nothing left to ever clear it (this is the only place that does),
+      // permanently deadlocking every later turn's createStreamingSpeech
+      // call into startPaused. Found by independent review, empirically
+      // reproduced. Back off instead: stop the recorder this rearm just
+      // armed (pauseConversation's own stop attempt can miss it for the
+      // same reason it can in onBeforeFirstSpeech) and leave the
+      // instance's own internal pause alone (resumeSpeaking() was never
+      // called, so it's genuinely still paused) — a LATER resume tap goes
+      // through this same function fresh and completes normally.
+      if (pausedRef.current) {
+        await stopRecorderIfLive();
+        return;
+      }
       setState('speaking');
       resumeSpeaking();
     } else {
       log('info', 'turn', 'resumed by user — nothing to continue, listening again');
       await armMic();
     }
-  }, [rearmRecorderOnly, armMic]);
+  }, [rearmRecorderOnly, armMic, stopRecorderIfLive]);
 
   // Manual override: send whatever's been captured so far immediately,
   // regardless of the 1.2s pause timer — same shape as before, just calling
