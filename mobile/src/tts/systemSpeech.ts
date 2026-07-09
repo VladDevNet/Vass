@@ -8,21 +8,21 @@ const VOICE_PREFERENCE_KEY = 'vass_voice_id';
 // — expo-speech doesn't chunk automatically. A warm, conversational reply
 // from the companion can easily run past it, so long replies are split on
 // sentence boundaries and spoken as separate, explicitly sequenced chunks
-// (see speakToCompletion — NOT fired all at once relying on native
-// auto-queueing; see the comment there for why).
+// (see createStreamingSpeech below — NOT fired all at once relying on
+// native auto-queueing; see speakChunk's comment for why).
 const MAX_CHUNK_LENGTH = Math.min(Speech.maxSpeechInputLength - 100, 3500);
 
 // A stalled/never-firing onDone would otherwise leave the UI stuck in
 // 'speaking' forever — same MAX_PLAYBACK_MS safety-net pattern already used
-// for network TTS playback in useVoiceChat.ts. Per CHUNK, not per reply (see
-// speakToCompletion) — a single chunk can run up to MAX_CHUNK_LENGTH
-// (~3400 chars), and a real production reply that long legitimately took
-// longer than a flat 60s to read aloud and got silently truncated
-// mid-sentence by what was previously a single reply-wide timer (found via
-// real-device log analysis: "MAX_SPEECH_MS safety timeout hit" firing on a
-// normal, un-stuck 1441-char single-chunk reply). 100ms/char is a generous
-// allowance — real observed Russian TTS pace is well under that — with a
-// floor so short chunks still get a meaningful safety net.
+// for network TTS playback in useVoiceChat.ts. Per CHUNK, not per reply —
+// a single chunk can run up to MAX_CHUNK_LENGTH (~3400 chars), and a real
+// production reply that long legitimately took longer than a flat 60s to
+// read aloud and got silently truncated mid-sentence by what was previously
+// a single reply-wide timer (found via real-device log analysis:
+// "MAX_SPEECH_MS safety timeout hit" firing on a normal, un-stuck
+// 1441-char single-chunk reply). 100ms/char is a generous allowance — real
+// observed Russian TTS pace is well under that — with a floor so short
+// chunks still get a meaningful safety net.
 const MAX_CHUNK_SPEECH_MS_PER_CHAR = 100;
 const MIN_CHUNK_SPEECH_MS = 30_000;
 
@@ -52,8 +52,8 @@ export function isLikelyLocalVoice(identifier: string): boolean {
 
 // The resolved voice actually in effect right now — an explicit preference
 // from the settings screen if one was ever set, otherwise the same
-// auto-picked default speakToCompletion() would fall back to. Exported so
-// the settings screen can highlight "what's currently active" even for
+// auto-picked default createStreamingSpeech() would fall back to. Exported
+// so the settings screen can highlight "what's currently active" even for
 // someone who never explicitly chose anything.
 export async function getResolvedVoiceId(): Promise<string | null> {
   return getRussianVoice();
@@ -118,7 +118,59 @@ async function getRussianVoice(): Promise<string | null> {
 // along, which is exactly why this only showed up as a mobile bug — Speech
 // on Android reads "**" and "#" literally instead of silently dropping them
 // the way a markdown renderer would.
-function stripMarkdownForSpeech(text: string): string {
+//
+// Split into a non-trimming core (exported as stripMarkdownForSpeechChunk)
+// and this trimming wrapper on purpose: useVoiceChat.ts's sendSegment
+// applies the CORE to its streaming sentence buffer before extracting
+// sentences from it, not just here per already-extracted sentence (see
+// stripMarkdownForSpeechChunk's own comment for why trimming there would
+// be actively wrong, not just redundant). Everything else in this file
+// still wants the trimmed version — a complete, already-extracted sentence
+// or full reply has no "more text might still be coming" concern.
+export function stripMarkdownForSpeech(text: string): string {
+  return stripMarkdownForSpeechChunk(text).trim();
+}
+
+// The core replacements only, no trim — see stripMarkdownForSpeech above
+// for the trimming wrapper most callers want instead. Exists as its own
+// export specifically for useVoiceChat.ts's GROWING streaming buffer: that
+// buffer can legitimately end in a single meaningful space mid-stream (a
+// chunk boundary landing right after a word, with the next word arriving
+// in a LATER chunk) — trimming it away would glue the two words together
+// once the next chunk is concatenated on. Idempotent like the wrapper
+// above (every replacement here either removes its target outright or only
+// fires once per occurrence), so re-running it on the whole accumulated
+// buffer on every new chunk — not just the newly-arrived piece — is safe,
+// and is what correctly handles a marker split across a chunk boundary
+// (e.g. "**bold" | "text**"): a chunk-local strip would only see and
+// remove the half that's arrived so far, but re-stripping the full buffer
+// catches the complete marker once both halves are in it. Also why
+// numbered-list markers need this applied BEFORE sentence extraction, not
+// just after (see extractCompleteSentences' caller in useVoiceChat.ts): a
+// marker like "1." gets extracted as if it were its own complete sentence
+// (its period looks like a terminator), and by then the numbered-list
+// regex below (which needs trailing whitespace after the marker) can no
+// longer match on the isolated, trimmed "1." alone. Found by independent
+// review.
+//
+// Residual, accepted gap (same review pass, empirically measured — not
+// closed by the fix above): "re-stripping the whole buffer equals
+// stripping once" is FALSE for two narrow chunk-boundary shapes — a
+// marker whose period arrives with no trailing whitespace yet (buffer is
+// literally "1." when extractCompleteSentences grabs it as a complete
+// sentence, before this function ever sees the space that would let the
+// numbered-list regex match) and a later list item whose leading "\n"
+// anchor was already flattened to a space by an EARLIER pass over an
+// earlier chunk (the ^-anchored bullet/numbered regexes below can't
+// recognize a line start that no longer has a real newline before it).
+// Measured against real split positions: ~2 of 32-35 possible chunk
+// boundaries for a 2-item list, both immediately at the marker/newline
+// itself. Failure mode is a mispronounced marker read aloud, not
+// silence/crash/stuck-state — same tolerance this file already extends to
+// "3.14"/"т.е." elsewhere. Not worth the structural fix (holding back a
+// suspected-marker prefix across a chunk boundary before ever extracting)
+// for a cosmetic, narrow-window gap.
+export function stripMarkdownForSpeechChunk(text: string): string {
   return text
     // \u{1F300}-\u{1F5FF} (Misc Symbols and Pictographs — 👍🎉🔥 etc.) added
     // on top of the web version's ranges, which miss that block entirely.
@@ -136,8 +188,7 @@ function stripMarkdownForSpeech(text: string): string {
     .replace(/[✓✗✔✘☑☐→←↑↓►▶◀▼▲+]/g, '') // special symbols
     .replace(/\n{2,}/g, '. ') // multiple newlines → pause
     .replace(/\n/g, ' ') // single newlines → space
-    .replace(/\s{2,}/g, ' ') // collapse spaces
-    .trim();
+    .replace(/\s{2,}/g, ' '); // collapse spaces
 }
 
 function splitIntoChunks(text: string, maxLength: number): string[] {
@@ -184,26 +235,6 @@ function consumeExpectedStop(): boolean {
   return was;
 }
 
-// Separate from expectedStop: marking a stop as "expected" only stops the
-// CURRENT chunk cleanly (its onStopped resolves instead of rejecting) — it
-// does nothing to stop speakToCompletion's for-loop from moving on to the
-// NEXT chunk of a multi-chunk reply, since that loop only breaks early on
-// its own local `timedOut` flag (see the per-chunk safety timeout in
-// speakToCompletion below). Barge-in needs
-// both: stop cleanly AND don't continue. Checked (and reset for the next
-// call) inside speakToCompletion itself, right alongside `timedOut`.
-let interruptRequested = false;
-
-// Public API — call to cut a reply short on purpose mid-playback (barge-in)
-// and prevent it from continuing to any remaining chunks. Distinct from
-// stopSpeaking() (unmount cleanup, where nothing continues afterward
-// regardless so the loop-breaking distinction doesn't matter).
-export function interruptSpeaking(): void {
-  interruptRequested = true;
-  markExpectedStop();
-  Speech.stop();
-}
-
 // Speaks one chunk and resolves once it's actually finished via onDone, or
 // rejects on onError. speak() itself is fire-and-forget on the JS side: on
 // Android it dispatches onto a native background thread (AppContext's own
@@ -229,9 +260,9 @@ export function interruptSpeaking(): void {
 // onStopped as success (the previous behavior) meant a lost-focus interrupt
 // silently ended the reply with no error and no fallback — the exact
 // "assistant just goes quiet mid-reply" symptom reported from a real
-// device. Rejecting instead lets speakToCompletion's existing catch below
-// re-throw, which triggers useVoiceChat's existing network-TTS fallback —
-// same recovery path as any other on-device TTS failure.
+// device. Rejecting instead lets speakChunkSafely's caller re-throw, which
+// triggers useVoiceChat's existing network-TTS fallback — same recovery
+// path as any other on-device TTS failure.
 function speakChunk(text: string, voice: string, chunkIndex: number, totalChunks: number): Promise<void> {
   return new Promise((resolve, reject) => {
     Speech.speak(text, {
@@ -269,6 +300,174 @@ function speakChunk(text: string, voice: string, chunkIndex: number, totalChunks
   });
 }
 
+// Wraps speakChunk with the per-chunk safety-timeout protection described
+// above MIN_CHUNK_SPEECH_MS — shared by every chunk createStreamingSpeech's
+// pump loop speaks. Returns true if the timeout fired: the caller should
+// stop entirely rather than move on to the next sentence — if this one
+// chunk's already-generous window wasn't enough, something is wrong with
+// the engine for this whole utterance, not just this one piece.
+async function speakChunkSafely(
+  text: string,
+  voice: string,
+  chunkIndex: number,
+  totalChunks: number
+): Promise<boolean> {
+  let timedOut = false;
+  const timeoutMs = Math.max(MIN_CHUNK_SPEECH_MS, text.length * MAX_CHUNK_SPEECH_MS_PER_CHAR);
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    log('warn', 'tts', 'chunk speech safety timeout hit', { chunkIndex, totalChunks, timeoutMs });
+    markExpectedStop();
+    Speech.stop();
+  }, timeoutMs);
+  try {
+    await speakChunk(text, voice, chunkIndex, totalChunks);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+  return timedOut;
+}
+
+export interface StreamingSpeech {
+  // Queues a sentence to be spoken once any prior ones finish. Safe to call
+  // repeatedly while a previous sentence is still playing — that's the
+  // whole point: an SSE onChunk callback firing faster than speech can keep
+  // up just grows the queue, it doesn't block.
+  push(text: string): void;
+  // Signals no more sentences are coming. Resolves once the queue fully
+  // drains and everything's been spoken. Rejects only on a genuine,
+  // unrecovered TTS engine failure (see speakChunk's onError/unexpected-
+  // onStopped) — an abort() resolves this normally, matching speakChunk's
+  // own "an expected stop is success, not failure" convention.
+  finish(): Promise<void>;
+  // Stops whatever's currently playing and discards anything still queued
+  // — for barge-in. Safe to call even if nothing has started speaking yet
+  // (e.g. interrupted during onBeforeFirstSpeech's own setup).
+  abort(): void;
+}
+
+// Currently-active StreamingSpeech instance, if any — lets
+// interruptSpeaking()/stopSpeaking() (called from outside this file, with
+// no reference to whichever instance is live) reach in and abort it. At
+// most one is ever active at a time — the same invariant expectedStop
+// above already relies on (only one real reply is ever being spoken at
+// once; backchannel fillers deliberately never touch this, see
+// speakBackchannelPhrase's comment).
+let activeStreaming: StreamingSpeech | null = null;
+
+// Speaks sentences as they arrive, instead of waiting for a complete reply
+// to be known first — the on-device counterpart to letting playback start
+// while generation is still in progress. Previously the reply had to
+// finish streaming ENTIRELY (2-15s+ observed in production, scaling with
+// reply length) before a single word was spoken; now the first sentence
+// can be heard as soon as IT alone is ready, while the rest keeps
+// generating in the background — the "streaming TTS" follow-up explicitly
+// deferred when the optimistic turn-taking redesign shipped (PR #49).
+//
+// onBeforeFirstSpeech lets the caller do async setup (arm the recorder for
+// barge-in, flip UI state to 'speaking') that must complete before the
+// FIRST utterance actually starts, without blocking push() itself — push()
+// only enqueues text, it can't await (SendMessageCallbacks.onChunk isn't
+// async) — and without racing it: the pump loop below awaits this before
+// ever calling Speech.speak(), regardless of how many sentences are
+// already queued by the time it gets there.
+export function createStreamingSpeech(onBeforeFirstSpeech?: () => Promise<void>): StreamingSpeech {
+  const queue: string[] = [];
+  let finished = false;
+  let aborted = false;
+  let wake: (() => void) | null = null;
+  let spokenCount = 0;
+
+  const notify = () => {
+    const w = wake;
+    wake = null;
+    w?.();
+  };
+
+  async function pump(): Promise<void> {
+    // onBeforeFirstSpeech runs FIRST, before even checking whether a voice
+    // exists — arming the recorder and entering 'speaking' has to happen
+    // regardless of whether on-device TTS ends up working at all, since
+    // the caller falls back to network TTS on failure (including "no
+    // voice") and still needs barge-in live for THAT playback. Getting
+    // this order backwards was a real regression found by independent
+    // review: with the voice check first, a voice-less device never left
+    // 'thinking' during the entire fallback playback, silently disabling
+    // both voice and tap barge-in for it — the old (pre-streaming) design
+    // set 'speaking' unconditionally before ever attempting on-device
+    // speech, and this restores that guarantee.
+    await onBeforeFirstSpeech?.();
+    if (aborted) return;
+
+    const voice = await getRussianVoice();
+    if (aborted) return;
+    if (!voice) throw new Error('На устройстве нет русского голоса');
+
+    while (true) {
+      if (aborted) return;
+      if (queue.length === 0) {
+        if (finished) return;
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+        continue;
+      }
+      const sentence = queue.shift()!;
+      const clean = stripMarkdownForSpeech(sentence);
+      if (!clean) continue;
+
+      for (const chunk of splitIntoChunks(clean, MAX_CHUNK_LENGTH)) {
+        if (aborted) return;
+        // -1: no fixed total in streaming mode, unlike the array-based loop
+        // this replaces — more sentences can always still be coming.
+        const timedOut = await speakChunkSafely(chunk, voice, spokenCount++, -1);
+        if (timedOut) return;
+      }
+    }
+  }
+
+  const pumpPromise = pump();
+  // Swallow here so an aborted stream (finish() never called/awaited) never
+  // surfaces as an unhandled rejection — finish() below is the one place
+  // that awaits (and re-throws) this SAME promise; a .catch() here doesn't
+  // stop that from happening, it only adds a second, independent handler.
+  pumpPromise.catch(() => {});
+
+  const handle: StreamingSpeech = {
+    push(text: string) {
+      queue.push(text);
+      notify();
+    },
+    async finish(): Promise<void> {
+      finished = true;
+      notify();
+      await pumpPromise;
+    },
+    abort(): void {
+      aborted = true;
+      queue.length = 0;
+      notify();
+    },
+  };
+
+  activeStreaming = handle;
+  void pumpPromise.finally(() => {
+    if (activeStreaming === handle) activeStreaming = null;
+  });
+
+  return handle;
+}
+
+// Public API — call to cut a reply short on purpose mid-playback (barge-in)
+// and prevent it from continuing to any remaining sentences. Distinct from
+// stopSpeaking() (unmount cleanup, where nothing continues afterward
+// regardless so the "keep going vs. stop" distinction doesn't matter).
+export function interruptSpeaking(): void {
+  markExpectedStop();
+  activeStreaming?.abort();
+  Speech.stop();
+}
+
 // Short, warm acknowledgment phrases ("still listening") played during a
 // pause while turn-taking decides whether the speaker is done — mirrors
 // yolo.js's BACKCHANNEL_FILLERS, matches companion-system.txt's "тёплый
@@ -283,17 +482,18 @@ const BACKCHANNEL_PHRASES = ['Угу.', 'Ага.', 'Так.', 'М-м, слуша
 // speakChunk above despite the near-identical Speech.speak() call:
 // speakChunk's onStopped consumes the module-level expectedStop flag, which
 // works ONLY because at most one speakChunk call has ever been in flight at
-// a time — true for speakToCompletion's own strictly-sequenced loop, but
-// NOT once a backchannel filler can be queued (Android's TextToSpeech
-// defaults to QUEUE_ADD, confirmed in expo-speech's own SpeechModule.kt)
-// alongside a real reply that starts moments later. If a barge-in's
-// Speech.stop() then stops BOTH utterances in one native call, only ONE of
-// their onStopped handlers can actually consume the shared flag — the
-// other would wrongly see it already cleared and reject as "unexpected,"
-// sending a real, cleanly-interrupted reply into the network-TTS fallback
-// path instead of just stopping. A filler doesn't need that fallback
-// machinery at all — it's a non-critical nicety — so it simply never
-// participates in expectedStop tracking. Found by independent review.
+// a time — true for createStreamingSpeech's own strictly-sequenced pump
+// loop, but NOT once a backchannel filler can be queued (Android's
+// TextToSpeech defaults to QUEUE_ADD, confirmed in expo-speech's own
+// SpeechModule.kt) alongside a real reply that starts moments later. If a
+// barge-in's Speech.stop() then stops BOTH utterances in one native call,
+// only ONE of their onStopped handlers can actually consume the shared
+// flag — the other would wrongly see it already cleared and reject as
+// "unexpected," sending a real, cleanly-interrupted reply into the
+// network-TTS fallback path instead of just stopping. A filler doesn't
+// need that fallback machinery at all — it's a non-critical nicety — so it
+// simply never participates in expectedStop tracking. Found by independent
+// review.
 function speakBackchannelPhrase(text: string, voice: string): Promise<void> {
   return new Promise((resolve) => {
     Speech.speak(text, {
@@ -337,68 +537,12 @@ export function speakBackchannel(): void {
   })();
 }
 
-// Mirrors api.synthesizeSpeech's role in useVoiceChat.stopAndRespond, but
-// speaks directly instead of returning a file URI to play — expo-speech has
-// no file/bytes output, only start/done/error callbacks.
-export async function speakToCompletion(text: string): Promise<void> {
-  const voice = await getRussianVoice();
-  if (!voice) throw new Error('На устройстве нет русского голоса');
-
-  const clean = stripMarkdownForSpeech(text);
-  if (!clean) return;
-
-  const chunks = splitIntoChunks(clean, MAX_CHUNK_LENGTH);
-  if (chunks.length === 0) return;
-
-  log('debug', 'tts', 'speaking reply', { voice, chunkCount: chunks.length, textLength: clean.length });
-
-  // Fresh for this call — a barge-in from a PREVIOUS reply must not leak
-  // into cutting this new one off before it even starts.
-  interruptRequested = false;
-
-  try {
-    for (let i = 0; i < chunks.length; i++) {
-      if (interruptRequested) break;
-
-      let timedOut = false;
-      // Stops (not just ignores) playback once THIS chunk's cap is hit —
-      // resolving without calling stop() would let it keep talking in the
-      // background after the UI has already moved on. Scoped per-chunk (not
-      // one timer for the whole reply) so a multi-chunk reply's total
-      // runtime isn't capped by a single reply-wide ceiling — see the
-      // MAX_CHUNK_SPEECH_MS_PER_CHAR comment above.
-      const timeoutMs = Math.max(MIN_CHUNK_SPEECH_MS, chunks[i].length * MAX_CHUNK_SPEECH_MS_PER_CHAR);
-      const timeoutId = setTimeout(() => {
-        timedOut = true;
-        log('warn', 'tts', 'chunk speech safety timeout hit', { chunkIndex: i, totalChunks: chunks.length, timeoutMs });
-        markExpectedStop();
-        Speech.stop();
-      }, timeoutMs);
-
-      try {
-        await speakChunk(chunks[i], voice, i, chunks.length);
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      if (timedOut) break;
-    }
-  } catch (err) {
-    // A mid-reply failure (bad chunk, engine error) — stop rather than
-    // leave a partial utterance hanging, since the caller is about to
-    // start the network-fallback playback right after this rejects. Not
-    // marked as an expected stop: we're already mid-rejection here (either
-    // this chunk's own onError, or a previous chunk's unexpected onStopped)
-    // so there's no pending onStopped left for the flag to matter to.
-    Speech.stop();
-    throw err;
-  }
-}
-
 // Public API — called from outside this file whenever something else needs
 // to cut speech short (currently just useVoiceChat's unmount cleanup).
 // Marks the stop as expected first so speakChunk's onStopped handler
 // doesn't mistake this for a lost-focus interruption — see its comment.
 export function stopSpeaking(): void {
   markExpectedStop();
+  activeStreaming?.abort();
   Speech.stop();
 }
