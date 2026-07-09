@@ -89,8 +89,14 @@ export function HomeScreen() {
   // long-press во время thinking ставит на паузу (см. pauseConversation),
   // а forceFinalize сам по себе безопасно ничего не делает в 'thinking'.
   const disabled = !sessionId;
-  const settingsDisabled = state !== 'idle';
-  const historyDisabled = state !== 'idle' || !sessionId;
+  // Настройки НЕ блокируются состоянием разговора — это единственный путь
+  // к logout, и useVoiceChat продолжает работать в фоне независимо от того,
+  // что отрендерено (хуки безусловны, условен только JSX). Раньше здесь была
+  // завязка на state !== 'idle' — с непрерывно слушающим VAD это делало
+  // кнопку недоступной почти всё время, реальный тест на устройстве это
+  // подтвердил. История по-прежнему требует сессию — без неё ей физически
+  // нечего показывать.
+  const historyDisabled = !sessionId;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
@@ -109,7 +115,6 @@ export function HomeScreen() {
           <Pressable
             style={styles.profileButton}
             onPress={() => setShowSettings(true)}
-            disabled={settingsDisabled}
             accessibilityLabel="Профиль"
           >
             <Text style={styles.profileGlyph}>👤</Text>
@@ -147,7 +152,6 @@ export function HomeScreen() {
           onHistoryPress={() => setShowHistory(true)}
           onMicPress={forceFinalize}
           onMicLongPress={() => void pauseConversation()}
-          settingsDisabled={settingsDisabled}
           historyDisabled={historyDisabled}
         />
       </View>

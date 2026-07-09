@@ -3,7 +3,7 @@ import { Animated, Image, StyleSheet, View } from 'react-native';
 import type { VoiceState } from '../hooks/useVoiceChat';
 import { haloByState } from '../theme/amoled';
 
-const AVATAR_SIZE = 220;
+const AVATAR_SIZE = 320;
 
 interface OlgaLayeredAvatarProps {
   state: VoiceState;
