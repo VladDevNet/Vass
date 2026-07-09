@@ -118,7 +118,41 @@ async function getRussianVoice(): Promise<string | null> {
 // along, which is exactly why this only showed up as a mobile bug — Speech
 // on Android reads "**" and "#" literally instead of silently dropping them
 // the way a markdown renderer would.
-function stripMarkdownForSpeech(text: string): string {
+//
+// Split into a non-trimming core (exported as stripMarkdownForSpeechChunk)
+// and this trimming wrapper on purpose: useVoiceChat.ts's sendSegment
+// applies the CORE to its streaming sentence buffer before extracting
+// sentences from it, not just here per already-extracted sentence (see
+// stripMarkdownForSpeechChunk's own comment for why trimming there would
+// be actively wrong, not just redundant). Everything else in this file
+// still wants the trimmed version — a complete, already-extracted sentence
+// or full reply has no "more text might still be coming" concern.
+export function stripMarkdownForSpeech(text: string): string {
+  return stripMarkdownForSpeechChunk(text).trim();
+}
+
+// The core replacements only, no trim — see stripMarkdownForSpeech above
+// for the trimming wrapper most callers want instead. Exists as its own
+// export specifically for useVoiceChat.ts's GROWING streaming buffer: that
+// buffer can legitimately end in a single meaningful space mid-stream (a
+// chunk boundary landing right after a word, with the next word arriving
+// in a LATER chunk) — trimming it away would glue the two words together
+// once the next chunk is concatenated on. Idempotent like the wrapper
+// above (every replacement here either removes its target outright or only
+// fires once per occurrence), so re-running it on the whole accumulated
+// buffer on every new chunk — not just the newly-arrived piece — is safe,
+// and is what correctly handles a marker split across a chunk boundary
+// (e.g. "**bold" | "text**"): a chunk-local strip would only see and
+// remove the half that's arrived so far, but re-stripping the full buffer
+// catches the complete marker once both halves are in it. Also why
+// numbered-list markers need this applied BEFORE sentence extraction, not
+// just after (see extractCompleteSentences' caller in useVoiceChat.ts): a
+// marker like "1." gets extracted as if it were its own complete sentence
+// (its period looks like a terminator), and by then the numbered-list
+// regex below (which needs trailing whitespace after the marker) can no
+// longer match on the isolated, trimmed "1." alone. Found by independent
+// review.
+export function stripMarkdownForSpeechChunk(text: string): string {
   return text
     // \u{1F300}-\u{1F5FF} (Misc Symbols and Pictographs — 👍🎉🔥 etc.) added
     // on top of the web version's ranges, which miss that block entirely.
@@ -136,8 +170,7 @@ function stripMarkdownForSpeech(text: string): string {
     .replace(/[✓✗✔✘☑☐→←↑↓►▶◀▼▲+]/g, '') // special symbols
     .replace(/\n{2,}/g, '. ') // multiple newlines → pause
     .replace(/\n/g, ' ') // single newlines → space
-    .replace(/\s{2,}/g, ' ') // collapse spaces
-    .trim();
+    .replace(/\s{2,}/g, ' '); // collapse spaces
 }
 
 function splitIntoChunks(text: string, maxLength: number): string[] {
@@ -334,11 +367,23 @@ export function createStreamingSpeech(onBeforeFirstSpeech?: () => Promise<void>)
   };
 
   async function pump(): Promise<void> {
-    const voice = await getRussianVoice();
-    if (!voice) throw new Error('На устройстве нет русского голоса');
-
+    // onBeforeFirstSpeech runs FIRST, before even checking whether a voice
+    // exists — arming the recorder and entering 'speaking' has to happen
+    // regardless of whether on-device TTS ends up working at all, since
+    // the caller falls back to network TTS on failure (including "no
+    // voice") and still needs barge-in live for THAT playback. Getting
+    // this order backwards was a real regression found by independent
+    // review: with the voice check first, a voice-less device never left
+    // 'thinking' during the entire fallback playback, silently disabling
+    // both voice and tap barge-in for it — the old (pre-streaming) design
+    // set 'speaking' unconditionally before ever attempting on-device
+    // speech, and this restores that guarantee.
     await onBeforeFirstSpeech?.();
     if (aborted) return;
+
+    const voice = await getRussianVoice();
+    if (aborted) return;
+    if (!voice) throw new Error('На устройстве нет русского голоса');
 
     while (true) {
       if (aborted) return;

@@ -7,7 +7,13 @@ import {
   useAudioRecorder,
 } from 'expo-audio';
 import { api, sendMessage } from '../api/client';
-import { createStreamingSpeech, interruptSpeaking, speakBackchannel, stopSpeaking } from '../tts/systemSpeech';
+import {
+  createStreamingSpeech,
+  interruptSpeaking,
+  speakBackchannel,
+  stopSpeaking,
+  stripMarkdownForSpeechChunk,
+} from '../tts/systemSpeech';
 import type { StreamingSpeech } from '../tts/systemSpeech';
 import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
@@ -520,6 +526,13 @@ export function useVoiceChat(sessionId: number | null) {
         setState('thinking');
         setTranscript('');
         setReply('');
+        // A stale error from a previous, unrelated failed turn would
+        // otherwise sit visible forever — nothing else ever clears it
+        // (see setError's other call sites: only the one-time mount
+        // effect resets it, no successful turn ever did). Found alongside
+        // the bargedInRef gap below: a barge-in used to be able to
+        // surface one via this exact path.
+        setError(null);
         speakBackchannel();
       } else {
         // The 'thinking'-entry effect above only fires on a state
@@ -582,7 +595,14 @@ export function useVoiceChat(sessionId: number | null) {
           });
         }
 
-        sentenceBuffer += chunk;
+        // The CHUNK (non-trimming) variant specifically — see its own
+        // comment in systemSpeech.ts for why: this buffer can legitimately
+        // end in one meaningful trailing space mid-stream (a chunk boundary
+        // landing right after a word, with the next word still to come),
+        // and the trimming stripMarkdownForSpeech would eat that space,
+        // gluing the next chunk's word onto this one with no space between
+        // them.
+        sentenceBuffer = stripMarkdownForSpeechChunk(sentenceBuffer + chunk);
         const { sentences, rest } = extractCompleteSentences(sentenceBuffer);
         sentenceBuffer = rest;
         for (const sentence of sentences) streamingHolder.current.push(sentence);
@@ -646,18 +666,27 @@ export function useVoiceChat(sessionId: number | null) {
           );
         }
 
-        if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) {
+        if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current || bargedInRef.current) {
           // Either a continuation superseded this segment within the SAME
           // turn (its transcription was already folded into
           // pendingSegmentsRef above regardless of generation, so nothing
           // recognized is lost, only this now-incomplete-in-hindsight reply
-          // itself), or the whole TURN has since ended — either way, this
-          // reply must never be spoken. Also abort any streaming speech
-          // handleChunk already started for it — its own supersede check
-          // would catch this on the NEXT chunk, but this was the LAST one
-          // (sendMessage already resolved), so nothing will trigger that
-          // check again on its own.
-          log('info', 'turn', 'discarding superseded or stale-turn reply', { replyLength: fullReply.length });
+          // itself), the whole TURN has since ended, or a barge-in already
+          // cut this reply off (bargedInRef checked directly — barge-in
+          // alone doesn't bump segmentGenerationRef, only the interrupting
+          // utterance's OWN later segment does, and with streaming TTS
+          // sendMessage() is routinely still in flight when that happens —
+          // see handleSpeechStart's comment. Without this, resolving here
+          // would setError()/log "reply received" for a turn the user
+          // already walked away from, found by independent review). Either
+          // way, this reply must never be spoken. Also abort any streaming
+          // speech handleChunk already started for it — its own supersede
+          // check would catch this on the NEXT chunk, but this was the
+          // LAST one (sendMessage already resolved), so nothing will
+          // trigger that check again on its own.
+          log('info', 'turn', 'discarding superseded, stale-turn, or barged-in-over reply', {
+            replyLength: fullReply.length,
+          });
           streamingHolder.current?.abort();
           return;
         }
@@ -694,12 +723,13 @@ export function useVoiceChat(sessionId: number | null) {
         // network call itself failed may have started a streaming instance
         // that would otherwise be left dangling in the background.
         streamingHolder.current?.abort();
-        if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) {
-          // Also superseded (or the whole turn already ended) — a failure
-          // on a discarded attempt isn't a real error from the user's
-          // perspective, don't surface it, and don't clear a map that may
-          // by now belong to a different turn entirely.
-          log('warn', 'turn', 'superseded or stale-turn segment failed (ignored)', {
+        if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current || bargedInRef.current) {
+          // Also superseded, stale-turn, or already barged-in-over (see
+          // the matching comment on the success-path check above) — a
+          // failure on a discarded attempt isn't a real error from the
+          // user's perspective, don't surface it, and don't clear a map
+          // that may by now belong to a different turn entirely.
+          log('warn', 'turn', 'superseded, stale-turn, or barged-in-over segment failed (ignored)', {
             error: err instanceof Error ? err.message : String(err),
           });
           return;
