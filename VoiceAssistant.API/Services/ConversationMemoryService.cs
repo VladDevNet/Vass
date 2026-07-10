@@ -31,6 +31,14 @@ public class ConversationMemoryService
     public static bool ShouldCompact(string? mediumTermSummary)
         => (mediumTermSummary?.Length ?? 0) > CompactionThresholdChars;
 
+    // GeminiService.StreamResponseAsync doesn't throw for API-key/HTTP/connection
+    // failures — it yields a Russian error string as if it were model output (see
+    // GeminiService.cs's three non-cancellation error paths). Without this guard, a
+    // transient Gemini outage would get persisted into MediumTermSummary as if it
+    // were a real summary, and LastSummarizedMessageId would advance past content
+    // that was never actually summarized.
+    public static bool IsGeminiErrorResponse(string text) => text.StartsWith("Ошибка", StringComparison.Ordinal);
+
     // Вызывается из ChatController.Send() после сохранения ОБЕИХ реплик хода.
     // Никогда не бросает — упавший side-call оставляет MediumTermSummary/
     // LastSummarizedMessageId нетронутыми, следующий ход попробует снова.
@@ -85,7 +93,11 @@ public class ConversationMemoryService
         }
 
         var newChunk = sb.ToString().Trim();
-        if (string.IsNullOrEmpty(newChunk)) return;
+        if (string.IsNullOrEmpty(newChunk) || IsGeminiErrorResponse(newChunk))
+        {
+            _logger.LogWarning("Medium-term summarization side-call returned no usable content for session {SessionId}: {Response}", session.Id, newChunk);
+            return;
+        }
 
         session.MediumTermSummary = string.IsNullOrEmpty(session.MediumTermSummary)
             ? newChunk
@@ -117,7 +129,11 @@ public class ConversationMemoryService
         }
 
         var compacted = sb.ToString().Trim();
-        if (string.IsNullOrEmpty(compacted)) return;
+        if (string.IsNullOrEmpty(compacted) || IsGeminiErrorResponse(compacted))
+        {
+            _logger.LogWarning("Medium-term compaction side-call returned no usable content for session {SessionId}: {Response}", session.Id, compacted);
+            return;
+        }
 
         session.MediumTermSummary = compacted;
         await _db.SaveChangesAsync();
