@@ -106,11 +106,11 @@ export function HomeScreen() {
   // Purely additive (no behavior change), same reasoning as forceFinalize's
   // new no-op log in useVoiceChat.ts.
   function openSettings() {
-    log('debug', 'app', 'settings opened', { state });
+    log('debug', 'app', 'settings opened', { state, sleeping });
     setShowSettings(true);
   }
   function openHistory() {
-    log('debug', 'app', 'history opened', { state, hasSession: !!sessionId });
+    log('debug', 'app', 'history opened', { state, sleeping, hasSession: !!sessionId });
     setShowHistory(true);
   }
 
