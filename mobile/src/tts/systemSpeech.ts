@@ -604,7 +604,7 @@ export function hasSpeechToResume(): boolean {
 // скорости ответа" — avoided anything that could read as rushing/curt on
 // flat TTS intonation, e.g. a repeated "Да, да." or an interrogative-
 // sounding "Так-так.").
-const BACKCHANNEL_PHRASES = ['Угу.', 'Ага.', 'Так.', 'М-м, слушаю.', 'Понимаю.'];
+const BACKCHANNEL_PHRASES = ['Хорошо.', 'Минутку.', 'Понятно.', 'Секунду.', 'Дайте подумать.'];
 
 // Speaks one short phrase, resolving on ANY stop — done, engine-initiated,
 // or explicitly stopped — never rejecting. Deliberately separate from
