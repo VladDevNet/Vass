@@ -3,6 +3,7 @@ import * as SecureStore from 'expo-secure-store';
 import { log } from '../logging/remoteLogger';
 
 const VOICE_PREFERENCE_KEY = 'vass_voice_id';
+const VOICE_GENDER_TAGS_KEY = 'vass_voice_gender_tags';
 
 // Android's TextToSpeech.speak() hard-rejects (throws) text longer than this
 // — expo-speech doesn't chunk automatically. A warm, conversational reply
@@ -28,6 +29,12 @@ const MIN_CHUNK_SPEECH_MS = 30_000;
 
 // undefined = not looked up yet this session, null = no Russian voice found.
 let cachedRussianVoice: string | null | undefined;
+
+export type VoiceGender = 'male' | 'female';
+
+// undefined = not loaded yet this session. Separate from cachedRussianVoice
+// — a different SecureStore key, a different shape (map, not a single id).
+let cachedGenderTags: Record<string, VoiceGender> | undefined;
 
 export async function listRussianVoices(): Promise<Speech.Voice[]> {
   const voices = await Speech.getAvailableVoicesAsync();
@@ -73,6 +80,43 @@ export async function setVoicePreference(identifier: string | null): Promise<voi
   } catch {
     // no-op on platforms without a working SecureStore (web preview only) —
     // matches client.ts's setToken
+  }
+}
+
+// expo-speech's Voice type has no gender field at all ({identifier, name,
+// quality, language} — confirmed by reading Speech.types.d.ts directly, not
+// assumed) — Android's TTS engine exposes nothing programmatically usable
+// here (see isLikelyLocalVoice's comment for the same class of gap on the
+// local/network signal). Manual, user-driven tagging is the only reliable
+// option; this is pure local storage for that tagging, no attempt at
+// automatic classification.
+export async function getVoiceGenderTags(): Promise<Record<string, VoiceGender>> {
+  if (cachedGenderTags) return cachedGenderTags;
+  try {
+    const raw = await SecureStore.getItemAsync(VOICE_GENDER_TAGS_KEY);
+    // Cast (not just `JSON.parse(raw)`) on purpose — JSON.parse returns
+    // `any`, and assigning an `any`-typed value back to this module-level
+    // `let` doesn't narrow away `| undefined` the way assigning a concrete
+    // type does (TS resets an `any` assignment to the full declared type,
+    // undefined included, since cachedGenderTags is also reassigned from
+    // setVoiceGender below) — confirmed by tsc: without this cast the
+    // `return cachedGenderTags` below fails to compile.
+    cachedGenderTags = raw ? (JSON.parse(raw) as Record<string, VoiceGender>) : {};
+  } catch {
+    cachedGenderTags = {};
+  }
+  return cachedGenderTags;
+}
+
+export async function setVoiceGender(identifier: string, gender: VoiceGender): Promise<void> {
+  const tags = await getVoiceGenderTags();
+  const updated = { ...tags, [identifier]: gender };
+  cachedGenderTags = updated;
+  try {
+    await SecureStore.setItemAsync(VOICE_GENDER_TAGS_KEY, JSON.stringify(updated));
+  } catch {
+    // no-op on platforms without a working SecureStore (web preview only) —
+    // matches setVoicePreference's own catch above.
   }
 }
 

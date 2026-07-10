@@ -10,7 +10,7 @@ import type { VoiceState } from '../hooks/useVoiceChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { useSleepTimer } from '../hooks/useSleepTimer';
 import { AvatarFace } from '../components/AvatarFace';
-import { OlgaLayeredAvatar } from '../components/OlgaLayeredAvatar';
+import { LayeredAvatar, type AvatarId } from '../components/LayeredAvatar';
 import { ConversationPeek } from '../components/ConversationPeek';
 import { VoiceControlDock } from '../components/VoiceControlDock';
 import { amoled } from '../theme/amoled';
@@ -50,12 +50,13 @@ export function HomeScreen() {
   // whole screen, not just the active recording/speaking states.
   useKeepAwake();
 
-  const { assistantName } = useAuth();
+  const { assistantName, avatarId } = useAuth();
+  const displayAvatarId: AvatarId = avatarId === 'male' ? 'male' : 'olga';
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  // Ошибка загрузки любого слоя OlgaLayeredAvatar — падаем на AvatarFace
+  // Ошибка загрузки любого слоя LayeredAvatar — падаем на AvatarFace
   // на остаток сессии, без retry-петли. См. spec, «Обработка ошибок».
   const [assetsFailed, setAssetsFailed] = useState(false);
   const { state, transcript, reply, error, forceFinalize, pauseConversation } = useVoiceChat(sessionId);
@@ -124,7 +125,9 @@ export function HomeScreen() {
           <View style={styles.identityLeft}>
             <View style={styles.onlineDot} />
             <View>
-              <Text style={styles.identityName}>{assistantName || 'Ольга'}</Text>
+              <Text style={styles.identityName}>
+                {assistantName || (displayAvatarId === 'male' ? 'Максим' : 'Ольга')}
+              </Text>
               <Text style={styles.identityPresence}>{PRESENCE_LABEL[state]}</Text>
             </View>
           </View>
@@ -149,7 +152,8 @@ export function HomeScreen() {
             {assetsFailed ? (
               <AvatarFace state={state} />
             ) : (
-              <OlgaLayeredAvatar
+              <LayeredAvatar
+                avatarId={displayAvatarId}
                 state={state}
                 sleeping={sleeping}
                 disabled={disabled}
