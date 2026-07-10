@@ -5,6 +5,7 @@ import { useKeepAwake } from 'expo-keep-awake';
 import { StatusBar } from 'expo-status-bar';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../api/client';
+import { log } from '../logging/remoteLogger';
 import type { VoiceState } from '../hooks/useVoiceChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { useSleepTimer } from '../hooks/useSleepTimer';
@@ -99,6 +100,20 @@ export function HomeScreen() {
   // сессию — без неё ей физически нечего показывать.
   const historyDisabled = !sessionId;
 
+  // Settings/History navigation had zero diagnostic visibility before this —
+  // a real-device report of the app freezing/not responding to input had no
+  // way to tell whether a navigation attempt reached this handler at all.
+  // Purely additive (no behavior change), same reasoning as forceFinalize's
+  // new no-op log in useVoiceChat.ts.
+  function openSettings() {
+    log('debug', 'app', 'settings opened', { state, sleeping });
+    setShowSettings(true);
+  }
+  function openHistory() {
+    log('debug', 'app', 'history opened', { state, sleeping, hasSession: !!sessionId });
+    setShowHistory(true);
+  }
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       <StatusBar style="light" />
@@ -115,7 +130,7 @@ export function HomeScreen() {
           </View>
           <Pressable
             style={styles.profileButton}
-            onPress={() => setShowSettings(true)}
+            onPress={openSettings}
             accessibilityLabel="Профиль"
           >
             <Text style={styles.profileGlyph}>👤</Text>
@@ -149,8 +164,8 @@ export function HomeScreen() {
 
         <VoiceControlDock
           state={state}
-          onSettingsPress={() => setShowSettings(true)}
-          onHistoryPress={() => setShowHistory(true)}
+          onSettingsPress={openSettings}
+          onHistoryPress={openHistory}
           onMicPress={forceFinalize}
           onMicLongPress={() => void pauseConversation()}
           historyDisabled={historyDisabled}
