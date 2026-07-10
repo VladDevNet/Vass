@@ -55,7 +55,7 @@ export function HomeScreen() {
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  // Ошибка загрузки любого слоя OlgaLayeredAvatar — падаем на AvatarFace
+  // Ошибка загрузки любого слоя LayeredAvatar — падаем на AvatarFace
   // на остаток сессии, без retry-петли. См. spec, «Обработка ошибок».
   const [assetsFailed, setAssetsFailed] = useState(false);
   const { state, transcript, reply, error, forceFinalize, pauseConversation } = useVoiceChat(sessionId);
