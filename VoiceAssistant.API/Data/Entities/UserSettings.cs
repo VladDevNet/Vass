@@ -8,6 +8,7 @@ public class UserSettings
 
     public string? DisplayName { get; set; }
     public string? AssistantName { get; set; }
+    public string? AvatarId { get; set; }
     public string InterfaceLanguage { get; set; } = "uk";
     public string? OpenAiApiKey { get; set; }
     public string? AnthropicApiKey { get; set; }

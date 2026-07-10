@@ -25,6 +25,7 @@ public class SettingsController : ControllerBase
     public record SettingsResponse(
         string? DisplayName,
         string? AssistantName,
+        string? AvatarId,
         string InterfaceLanguage,
         string? OpenAiApiKey,
         string? AnthropicApiKey,
@@ -35,6 +36,7 @@ public class SettingsController : ControllerBase
     public record SettingsUpdateRequest(
         string? DisplayName,
         string? AssistantName,
+        string? AvatarId,
         string? InterfaceLanguage,
         string? OpenAiApiKey,
         string? AnthropicApiKey,
@@ -51,6 +53,7 @@ public class SettingsController : ControllerBase
         return Ok(new SettingsResponse(
             settings?.DisplayName,
             settings?.AssistantName,
+            settings?.AvatarId,
             settings?.InterfaceLanguage ?? "uk",
             MaskKey(settings?.OpenAiApiKey),
             MaskKey(settings?.AnthropicApiKey),
@@ -84,6 +87,7 @@ public class SettingsController : ControllerBase
 
         settings.DisplayName = req.DisplayName;
         settings.AssistantName = req.AssistantName;
+        settings.AvatarId = req.AvatarId;
         if (req.InterfaceLanguage is not null)
             settings.InterfaceLanguage = req.InterfaceLanguage;
 
@@ -107,6 +111,7 @@ public class SettingsController : ControllerBase
         return Ok(new SettingsResponse(
             settings.DisplayName,
             settings.AssistantName,
+            settings.AvatarId,
             settings.InterfaceLanguage,
             MaskKey(settings.OpenAiApiKey),
             MaskKey(settings.AnthropicApiKey),
