@@ -8,6 +8,8 @@ public class ChatSession
     public string Mode { get; set; } = "dialog"; // dialog, lesson, situation
     public string? Title { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public string? MediumTermSummary { get; set; }
+    public int? LastSummarizedMessageId { get; set; }
 
     public ICollection<Message> Messages { get; set; } = [];
 }
