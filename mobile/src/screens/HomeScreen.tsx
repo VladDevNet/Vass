@@ -10,7 +10,7 @@ import type { VoiceState } from '../hooks/useVoiceChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { useSleepTimer } from '../hooks/useSleepTimer';
 import { AvatarFace } from '../components/AvatarFace';
-import { LayeredAvatar } from '../components/LayeredAvatar';
+import { LayeredAvatar, type AvatarId } from '../components/LayeredAvatar';
 import { ConversationPeek } from '../components/ConversationPeek';
 import { VoiceControlDock } from '../components/VoiceControlDock';
 import { amoled } from '../theme/amoled';
@@ -50,7 +50,8 @@ export function HomeScreen() {
   // whole screen, not just the active recording/speaking states.
   useKeepAwake();
 
-  const { assistantName } = useAuth();
+  const { assistantName, avatarId } = useAuth();
+  const displayAvatarId: AvatarId = avatarId === 'male' ? 'male' : 'olga';
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -124,7 +125,9 @@ export function HomeScreen() {
           <View style={styles.identityLeft}>
             <View style={styles.onlineDot} />
             <View>
-              <Text style={styles.identityName}>{assistantName || 'Ольга'}</Text>
+              <Text style={styles.identityName}>
+                {assistantName || (displayAvatarId === 'male' ? 'Максим' : 'Ольга')}
+              </Text>
               <Text style={styles.identityPresence}>{PRESENCE_LABEL[state]}</Text>
             </View>
           </View>
@@ -150,7 +153,7 @@ export function HomeScreen() {
               <AvatarFace state={state} />
             ) : (
               <LayeredAvatar
-                avatarId="olga"
+                avatarId={displayAvatarId}
                 state={state}
                 sleeping={sleeping}
                 disabled={disabled}
