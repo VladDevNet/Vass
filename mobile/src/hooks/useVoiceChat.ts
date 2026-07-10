@@ -1155,6 +1155,18 @@ export function useVoiceChat(sessionId: number | null) {
     } else if ((state === 'idle' || state === 'recording') && !firstSegmentInFlightRef.current) {
       firstSegmentInFlightRef.current = true;
       void sendSegment(false);
+    } else {
+      // Reached during 'thinking' (nothing to interrupt yet — no TTS has
+      // started, and shadow-capture already listens for a continuation on
+      // its own) or a firstSegmentInFlightRef re-entry. Previously a
+      // completely silent no-op with zero trace either way — a real-device
+      // report of "tapped and nothing happened" during this session was
+      // impossible to distinguish from the tap never reaching this handler
+      // at all. Logged now so the next occurrence is diagnosable.
+      log('debug', 'turn', 'tap ignored — nothing to do in this state', {
+        state,
+        firstSegmentInFlight: firstSegmentInFlightRef.current,
+      });
     }
   }, [state, sendSegment, resumeConversation]);
 
