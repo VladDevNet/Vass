@@ -190,6 +190,7 @@ export interface DeviceLink {
 export interface Settings {
   displayName: string | null;
   assistantName: string | null;
+  avatarId: string | null;
   interfaceLanguage: string;
   openAiApiKey: string | null;
   anthropicApiKey: string | null;
@@ -239,6 +240,16 @@ export const api = {
     await request<Settings>('/settings', {
       method: 'PUT',
       body: JSON.stringify({ ...current, displayName, assistantName: assistantName.trim() || null }),
+    });
+  },
+
+  // Тот же round-trip-всего-объекта паттерн, что updateNames — см. Settings'
+  // комментарий выше про то, почему PUT нельзя слать частично.
+  updateAvatarId: async (avatarId: string): Promise<void> => {
+    const current = await request<Settings>('/settings');
+    await request<Settings>('/settings', {
+      method: 'PUT',
+      body: JSON.stringify({ ...current, avatarId }),
     });
   },
 

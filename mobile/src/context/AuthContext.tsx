@@ -19,6 +19,11 @@ interface AuthContextValue {
   // generic label" (see HomeScreen's reply bubble).
   displayName: string | null;
   assistantName: string | null;
+  // 'olga' | 'male' — держится как string, не AvatarId-union: этот файл не
+  // импортирует компонент аватара, чтобы не тянуть зависимость от UI-слоя
+  // в контекст. Резолюция дефолта/неизвестных значений — на стороне
+  // потребителей (HomeScreen.tsx, ProfileScreen.tsx), не здесь.
+  avatarId: string | null;
   refreshProfile: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
@@ -33,12 +38,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [assistantName, setAssistantName] = useState<string | null>(null);
+  const [avatarId, setAvatarId] = useState<string | null>(null);
 
   async function refreshProfile() {
     try {
       const settings = await api.getSettings();
       setDisplayName(settings.displayName);
       setAssistantName(settings.assistantName);
+      setAvatarId(settings.avatarId);
     } catch {
       // Best-effort — worst case the onboarding prompt just asks again
       // next time, same as if the name were genuinely never set.
@@ -59,6 +66,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(null);
       setDisplayName(null);
       setAssistantName(null);
+      setAvatarId(null);
     });
 
     (async () => {
@@ -99,6 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setDisplayName(null);
     setAssistantName(null);
+    setAvatarId(null);
   }
 
   return (
@@ -108,6 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         displayName,
         assistantName,
+        avatarId,
         refreshProfile,
         login,
         register,
