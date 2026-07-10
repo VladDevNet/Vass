@@ -10,7 +10,7 @@ import type { VoiceState } from '../hooks/useVoiceChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { useSleepTimer } from '../hooks/useSleepTimer';
 import { AvatarFace } from '../components/AvatarFace';
-import { OlgaLayeredAvatar } from '../components/OlgaLayeredAvatar';
+import { LayeredAvatar } from '../components/LayeredAvatar';
 import { ConversationPeek } from '../components/ConversationPeek';
 import { VoiceControlDock } from '../components/VoiceControlDock';
 import { amoled } from '../theme/amoled';
@@ -149,7 +149,8 @@ export function HomeScreen() {
             {assetsFailed ? (
               <AvatarFace state={state} />
             ) : (
-              <OlgaLayeredAvatar
+              <LayeredAvatar
+                avatarId="olga"
                 state={state}
                 sleeping={sleeping}
                 disabled={disabled}

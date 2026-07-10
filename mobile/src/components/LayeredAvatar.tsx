@@ -5,14 +5,45 @@ import { haloByState } from '../theme/amoled';
 
 const AVATAR_SIZE = 320;
 
-interface OlgaLayeredAvatarProps {
+export type AvatarId = 'olga' | 'male';
+
+interface AvatarAssetSet {
+  base: number;
+  eyesClosedOverlay: number;
+  mouthOpenSmallOverlay: number;
+  mouthOpenBigOverlay: number;
+  // Мужской набор без бровей-оверлея — thinking у него отличается только
+  // цветом halo, см. docs/designs/male_avatar_asset_plan.md's State Mapping
+  // и docs/superpowers/specs/2026-07-10-male-avatar-and-voice-gender-design.md.
+  browsThinkingOverlay?: number;
+}
+
+const AVATAR_ASSETS: Record<AvatarId, AvatarAssetSet> = {
+  olga: {
+    base: require('../../assets/avatar/olga_base.png'),
+    eyesClosedOverlay: require('../../assets/avatar/olga_eyes_closed_overlay.png'),
+    mouthOpenSmallOverlay: require('../../assets/avatar/olga_mouth_open_small_overlay.png'),
+    mouthOpenBigOverlay: require('../../assets/avatar/olga_mouth_open_big_overlay.png'),
+    browsThinkingOverlay: require('../../assets/avatar/olga_brows_thinking_overlay.png'),
+  },
+  male: {
+    base: require('../../assets/avatar/male_base.png'),
+    eyesClosedOverlay: require('../../assets/avatar/male_eyes_closed_overlay.png'),
+    mouthOpenSmallOverlay: require('../../assets/avatar/male_mouth_open_small_overlay.png'),
+    mouthOpenBigOverlay: require('../../assets/avatar/male_mouth_open_big_overlay.png'),
+  },
+};
+
+interface LayeredAvatarProps {
+  avatarId: AvatarId;
   state: VoiceState;
   sleeping: boolean;
   disabled?: boolean;
   onLoadError?: () => void;
 }
 
-export function OlgaLayeredAvatar({ state, sleeping, disabled, onLoadError }: OlgaLayeredAvatarProps) {
+export function LayeredAvatar({ avatarId, state, sleeping, disabled, onLoadError }: LayeredAvatarProps) {
+  const assets = AVATAR_ASSETS[avatarId];
   const mouthSmall = useRef(new Animated.Value(0)).current;
   const mouthBig = useRef(new Animated.Value(0)).current;
   const blink = useRef(new Animated.Value(0)).current; // 0 = открыты, 1 = закрыты
@@ -72,7 +103,7 @@ export function OlgaLayeredAvatar({ state, sleeping, disabled, onLoadError }: Ol
           активным (см. HomeScreen.tsx) — проблема была чисто визуальная. */}
       <HaloGlow color={halo.color} intensity={sleeping ? halo.intensity * 0.25 : halo.intensity} size={AVATAR_SIZE} />
       <Image
-        source={require('../../assets/avatar/olga_base.png')}
+        source={assets.base}
         style={[
           styles.portrait,
           sleeping && styles.sleepingPortrait,
@@ -81,27 +112,18 @@ export function OlgaLayeredAvatar({ state, sleeping, disabled, onLoadError }: Ol
         onError={onLoadError}
       />
       {sleeping ? (
-        <Image source={require('../../assets/avatar/olga_eyes_closed_overlay.png')} style={styles.portrait} />
+        <Image source={assets.eyesClosedOverlay} style={styles.portrait} />
       ) : (
-        <Animated.Image
-          source={require('../../assets/avatar/olga_eyes_closed_overlay.png')}
-          style={[styles.portrait, { opacity: blink }]}
-        />
+        <Animated.Image source={assets.eyesClosedOverlay} style={[styles.portrait, { opacity: blink }]} />
       )}
       {state === 'speaking' && (
         <>
-          <Animated.Image
-            source={require('../../assets/avatar/olga_mouth_open_small_overlay.png')}
-            style={[styles.portrait, { opacity: mouthSmall }]}
-          />
-          <Animated.Image
-            source={require('../../assets/avatar/olga_mouth_open_big_overlay.png')}
-            style={[styles.portrait, { opacity: mouthBig }]}
-          />
+          <Animated.Image source={assets.mouthOpenSmallOverlay} style={[styles.portrait, { opacity: mouthSmall }]} />
+          <Animated.Image source={assets.mouthOpenBigOverlay} style={[styles.portrait, { opacity: mouthBig }]} />
         </>
       )}
-      {state === 'thinking' && (
-        <Image source={require('../../assets/avatar/olga_brows_thinking_overlay.png')} style={styles.portrait} />
+      {state === 'thinking' && assets.browsThinkingOverlay && (
+        <Image source={assets.browsThinkingOverlay} style={styles.portrait} />
       )}
     </View>
   );
