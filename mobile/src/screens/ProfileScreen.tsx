@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,11 +14,15 @@ import { useAuth } from '../context/AuthContext';
 import { api } from '../api/client';
 import {
   getResolvedVoiceId,
+  getVoiceGenderTags,
   isLikelyLocalVoice,
   listRussianVoices,
   previewVoice,
+  setVoiceGender,
   setVoicePreference,
+  type VoiceGender,
 } from '../tts/systemSpeech';
+import type { AvatarId } from '../components/LayeredAvatar';
 
 interface ProfileScreenProps {
   mode: 'onboarding' | 'settings';
@@ -29,7 +34,7 @@ interface ProfileScreenProps {
 }
 
 export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
-  const { displayName, assistantName, refreshProfile, logout } = useAuth();
+  const { displayName, assistantName, avatarId, refreshProfile, logout } = useAuth();
   const [name, setName] = useState(displayName ?? '');
   const [assistantNameInput, setAssistantNameInput] = useState(assistantName ?? '');
   const [savingName, setSavingName] = useState(false);
@@ -40,6 +45,9 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
   const [voicesError, setVoicesError] = useState<string | null>(null);
 
+  const [genderTags, setGenderTags] = useState<Record<string, VoiceGender>>({});
+  const [avatarSwitchError, setAvatarSwitchError] = useState<string | null>(null);
+
   const [deviceCode, setDeviceCode] = useState<string | null>(null);
   const [isGeneratingCode, setIsGeneratingCode] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -48,10 +56,15 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
     let cancelled = false;
     (async () => {
       try {
-        const [list, resolved] = await Promise.all([listRussianVoices(), getResolvedVoiceId()]);
+        const [list, resolved, tags] = await Promise.all([
+          listRussianVoices(),
+          getResolvedVoiceId(),
+          getVoiceGenderTags(),
+        ]);
         if (cancelled) return;
         setVoices(list);
         setSelectedVoiceId(resolved);
+        setGenderTags(tags);
       } catch (err) {
         if (!cancelled) setVoicesError(err instanceof Error ? err.message : String(err));
       }
@@ -86,6 +99,33 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
     previewVoice(voice.identifier);
   }
 
+  function handleTagVoiceGender(identifier: string, gender: VoiceGender) {
+    setGenderTags((prev) => ({ ...prev, [identifier]: gender }));
+    void setVoiceGender(identifier, gender);
+  }
+
+  async function handleSelectAvatar(id: AvatarId) {
+    setAvatarSwitchError(null);
+    try {
+      await api.updateAvatarId(id);
+      await refreshProfile();
+    } catch (err) {
+      setAvatarSwitchError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    // Переключение голоса — best-effort поверх уже успешно сохранённого
+    // аватара: если голосов нужного пола ещё нет, аватар всё равно
+    // переключился, просто голос не трогаем (см. spec — «группа пустая с
+    // подсказкой», не блокирующая ошибка).
+    const targetGender: VoiceGender = id === 'male' ? 'male' : 'female';
+    const match = (voices ?? []).find((v) => genderTags[v.identifier] === targetGender);
+    if (match) {
+      setSelectedVoiceId(match.identifier);
+      void setVoicePreference(match.identifier);
+      previewVoice(match.identifier);
+    }
+  }
+
   async function handleShowDeviceCode() {
     setLinkError(null);
     setIsGeneratingCode(true);
@@ -110,6 +150,49 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
   const localVoices = voices?.filter((v) => isLikelyLocalVoice(v.identifier)) ?? [];
   const displayVoices = voices === undefined ? undefined : localVoices.length > 0 ? localVoices : voices;
   const showingNetworkVoices = displayVoices?.some((v) => !isLikelyLocalVoice(v.identifier)) ?? false;
+
+  const maleVoices = displayVoices?.filter((v) => genderTags[v.identifier] === 'male') ?? [];
+  const femaleVoices = displayVoices?.filter((v) => genderTags[v.identifier] === 'female') ?? [];
+  const untaggedVoices = displayVoices?.filter((v) => !genderTags[v.identifier]) ?? [];
+
+  function renderVoiceGroup(label: string, groupVoices: Voice[]) {
+    if (groupVoices.length === 0) return null;
+    return (
+      <View key={label}>
+        <Text style={styles.voiceGroupLabel}>{label}</Text>
+        {groupVoices.map((voice, index) => {
+          const selected = voice.identifier === selectedVoiceId;
+          const needsNetwork = !isLikelyLocalVoice(voice.identifier);
+          const tag = genderTags[voice.identifier];
+          return (
+            <View key={voice.identifier} style={[styles.voiceRow, selected && styles.voiceRowSelected]}>
+              <Pressable style={styles.voiceRowMain} onPress={() => handleSelectVoice(voice)}>
+                <Text style={[styles.voiceName, selected && styles.voiceNameSelected]}>
+                  Голос {index + 1}
+                  {needsNetwork ? ' 🌐' : ''}
+                </Text>
+                {selected && <Text style={styles.voiceCheck}>✓</Text>}
+              </Pressable>
+              <View style={styles.genderToggle}>
+                <Pressable
+                  style={[styles.genderButton, tag === 'male' && styles.genderButtonActive]}
+                  onPress={() => handleTagVoiceGender(voice.identifier, 'male')}
+                >
+                  <Text style={[styles.genderButtonText, tag === 'male' && styles.genderButtonTextActive]}>М</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.genderButton, tag === 'female' && styles.genderButtonActive]}
+                  onPress={() => handleTagVoiceGender(voice.identifier, 'female')}
+                >
+                  <Text style={[styles.genderButtonText, tag === 'female' && styles.genderButtonTextActive]}>Ж</Text>
+                </Pressable>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    );
+  }
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -150,6 +233,27 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
 
       <View style={styles.divider} />
 
+      <Text style={styles.label}>Аватар ассистента</Text>
+      <View style={styles.avatarPickerRow}>
+        <Pressable
+          style={[styles.avatarOption, (avatarId ?? 'olga') !== 'male' && styles.avatarOptionSelected]}
+          onPress={() => handleSelectAvatar('olga')}
+        >
+          <Image source={require('../../assets/avatar/olga_base.png')} style={styles.avatarThumb} />
+          <Text style={styles.hint}>Ольга</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.avatarOption, avatarId === 'male' && styles.avatarOptionSelected]}
+          onPress={() => handleSelectAvatar('male')}
+        >
+          <Image source={require('../../assets/avatar/male_base.png')} style={styles.avatarThumb} />
+          <Text style={styles.hint}>Максим</Text>
+        </Pressable>
+      </View>
+      {avatarSwitchError && <Text style={styles.error}>{avatarSwitchError}</Text>}
+
+      <View style={styles.divider} />
+
       <Text style={styles.label}>Голос ассистента</Text>
       <Text style={styles.hint}>
         У голосов нет названий — нажмите, чтобы послушать и выбрать (так понятно, мужской он или женский)
@@ -162,23 +266,9 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
       {voices?.length === 0 && (
         <Text style={styles.hint}>На устройстве не найдено русских голосов.</Text>
       )}
-      {displayVoices?.map((voice, index) => {
-        const selected = voice.identifier === selectedVoiceId;
-        const needsNetwork = !isLikelyLocalVoice(voice.identifier);
-        return (
-          <Pressable
-            key={voice.identifier}
-            style={[styles.voiceRow, selected && styles.voiceRowSelected]}
-            onPress={() => handleSelectVoice(voice)}
-          >
-            <Text style={[styles.voiceName, selected && styles.voiceNameSelected]}>
-              Голос {index + 1}
-              {needsNetwork ? ' 🌐' : ''}
-            </Text>
-            {selected && <Text style={styles.voiceCheck}>✓</Text>}
-          </Pressable>
-        );
-      })}
+      {renderVoiceGroup('Мужские голоса', maleVoices)}
+      {renderVoiceGroup('Женские голоса', femaleVoices)}
+      {renderVoiceGroup('Не размечено', untaggedVoices)}
 
       {mode === 'settings' && (
         <>
@@ -311,6 +401,68 @@ const styles = StyleSheet.create({
     color: '#4a6fa5',
     fontSize: 18,
     fontWeight: '700',
+  },
+  avatarPickerRow: {
+    flexDirection: 'row',
+    gap: 16,
+    marginBottom: 12,
+  },
+  avatarOption: {
+    flex: 1,
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#ccc',
+  },
+  avatarOptionSelected: {
+    borderColor: '#4a6fa5',
+    backgroundColor: '#f0f4fa',
+  },
+  avatarThumb: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    marginBottom: 8,
+  },
+  voiceGroupLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#666',
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  voiceRowMain: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  genderToggle: {
+    flexDirection: 'row',
+    gap: 6,
+    marginLeft: 12,
+  },
+  genderButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#ccc',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  genderButtonActive: {
+    borderColor: '#4a6fa5',
+    backgroundColor: '#4a6fa5',
+  },
+  genderButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#666',
+  },
+  genderButtonTextActive: {
+    color: '#fff',
   },
   doneLink: {
     marginTop: 24,
