@@ -58,6 +58,7 @@ builder.Services.AddSingleton<AudioAnalysisService>();
 builder.Services.AddSingleton<SpeakerIdService>();
 builder.Services.AddSingleton<SpeakerPendingStore>();
 builder.Services.AddScoped<SpeakerRegistryService>();
+builder.Services.AddScoped<ConversationMemoryService>();
 
 // Controllers
 builder.Services.AddControllers();
