@@ -22,6 +22,7 @@ public class ChatController : ControllerBase
     private readonly CompanionPromptService _tutor;
     private readonly AudioAnalysisService _audioAnalysis;
     private readonly SpeakerRegistryService _speakerRegistry;
+    private readonly ConversationMemoryService _conversationMemory;
     private readonly IConfiguration _config;
     private readonly ILogger<ChatController> _logger;
     private readonly string _audioPath;
@@ -30,7 +31,8 @@ public class ChatController : ControllerBase
 
     public ChatController(AppDbContext db, UserManager<User> userManager,
         GeminiService gemini, CompanionPromptService tutor,
-        AudioAnalysisService audioAnalysis, SpeakerRegistryService speakerRegistry, PiperTtsService ttsService,
+        AudioAnalysisService audioAnalysis, SpeakerRegistryService speakerRegistry, ConversationMemoryService conversationMemory,
+        PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
         _db = db;
@@ -39,6 +41,7 @@ public class ChatController : ControllerBase
         _tutor = tutor;
         _audioAnalysis = audioAnalysis;
         _speakerRegistry = speakerRegistry;
+        _conversationMemory = conversationMemory;
         _ttsService = ttsService;
         _config = config;
         _logger = logger;
@@ -350,7 +353,7 @@ public class ChatController : ControllerBase
             m.Content
         )).ToList();
 
-        var systemPrompt = _tutor.GetSystemPrompt(settings?.CustomSystemPrompt, settings?.DisplayName, settings?.AssistantName);
+        var systemPrompt = _tutor.GetSystemPrompt(settings?.CustomSystemPrompt, settings?.DisplayName, settings?.AssistantName, session.MediumTermSummary);
 
         if (speakerResult?.KnownName != null)
         {
@@ -445,6 +448,7 @@ public class ChatController : ControllerBase
         await _db.SaveChangesAsync();
 
         await AwaitInstructionUpdateAsync(instructionUpdateTask);
+        await _conversationMemory.CheckAndUpdateAsync(session, geminiKey, HttpContext.RequestAborted);
 
         // Log stats to server logs
         _logger.LogInformation("VoiceAssistant Performance Stats - User: {UserEmail}, Session: {SessionId}, Convert: {ConvertMs}ms, Transcribe: {TranscribeMs}ms, SpeakerId: {SpeakerIdMs}ms, LLM (First Token): {LlmFirstMs}ms, LLM (Total): {LlmTotalMs}ms",
