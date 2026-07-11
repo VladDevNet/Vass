@@ -27,7 +27,11 @@ public partial class SettingsController : ControllerBase
     // field isn't read anywhere server-side today (it's a holdover from the
     // pre-mobile-pivot web UI), so there's no real "supported languages"
     // list to validate against yet, just garbage/oversized input to reject.
-    [GeneratedRegex(@"^[a-z]{2}(-[A-Z]{2})?$")]
+    // \A/\z (not ^/$) — $ alone still matches immediately before a single
+    // trailing newline, which would let e.g. "en-US\n" (6 chars) through
+    // this check only to violate InterfaceLanguage's own HasMaxLength(5) on
+    // save (same gotcha as ChatController's SafeAudioFileNamePattern).
+    [GeneratedRegex(@"\A[a-z]{2}(-[A-Z]{2})?\z")]
     private static partial Regex InterfaceLanguagePattern();
 
     // Reinjected into every future Gemini system prompt (see

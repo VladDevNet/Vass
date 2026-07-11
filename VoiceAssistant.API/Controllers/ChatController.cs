@@ -127,6 +127,15 @@ public class ChatController : ControllerBase
     private const long MaxAudioSize = 5 * 1024 * 1024; // 5MB
     private const long MaxImageSize = 10 * 1024 * 1024; // 10MB
 
+    // [RequestSizeLimit] below bounds the WHOLE request body (multipart
+    // boundary + Content-Disposition/Content-Type headers, not just the file
+    // part) -- setting it to exactly MaxAudioSize rejects a legitimate file
+    // AT that size, since the surrounding multipart overhead pushes the
+    // total over the limit (confirmed empirically during SEC-07 review).
+    // MaxAudioSize itself, checked against file.Length below, remains the
+    // real enforced ceiling on file content.
+    private const long MaxAudioRequestBodySize = MaxAudioSize + 64 * 1024;
+
     // TTS synthesizes whatever text it's given — an unbounded string is free
     // CPU-burning fuel for any authenticated caller (PROJECT-AUDIT-2026-07-10
     // SEC-07). 2000 chars is generous for a single spoken utterance (the
@@ -589,7 +598,7 @@ public class ChatController : ControllerBase
     // SEC-07: "upload endpoints rely on model binding before checking file
     // length").
     [HttpPost("upload-audio")]
-    [RequestSizeLimit(MaxAudioSize)]
+    [RequestSizeLimit(MaxAudioRequestBodySize)]
     public async Task<IActionResult> UploadAudio(IFormFile file)
     {
         if (file.Length == 0 || file.Length > MaxAudioSize)
@@ -621,7 +630,7 @@ public class ChatController : ControllerBase
     // think. Used to give real conversational patience instead of a fixed silence cutoff.
     // Nothing here gets persisted — the snapshot is a scratch file, deleted immediately after.
     [HttpPost("check-utterance")]
-    [RequestSizeLimit(MaxAudioSize)]
+    [RequestSizeLimit(MaxAudioRequestBodySize)]
     public async Task<IActionResult> CheckUtterance(IFormFile audio)
     {
         if (audio.Length == 0 || audio.Length > MaxAudioSize)
