@@ -42,6 +42,7 @@ public class ChatControllerTests
     [InlineData("3fa85f64-5717-4562-b3fc-2c963f66afa6")]
     [InlineData("")]
     [InlineData("3fa85f64-5717-4562-b3fc-2c963f66afa6.webm.exe")]
+    [InlineData("3fa85f64-5717-4562-b3fc-2c963f66afa6.webm\n")]
     public void TryResolveSafeAudioPath_WrongShape_ReturnsFalse(string input)
     {
         var ok = ChatController.TryResolveSafeAudioPath(AudioRoot, input, out _);
