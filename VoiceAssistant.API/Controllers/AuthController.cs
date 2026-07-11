@@ -5,6 +5,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using VoiceAssistant.API.Data;
@@ -32,6 +33,7 @@ public class AuthController : ControllerBase
     public record RegisterRequest(string Email, string Password, string? NativeLang);
     public record LoginRequest(string Email, string Password);
 
+    [EnableRateLimiting("auth")]
     [HttpPost("register")]
     public async Task<IActionResult> Register([FromBody] RegisterRequest req)
     {
@@ -49,6 +51,7 @@ public class AuthController : ControllerBase
         return Ok(new { token = GenerateToken(user) });
     }
 
+    [EnableRateLimiting("auth")]
     [HttpPost("login")]
     public async Task<IActionResult> Login([FromBody] LoginRequest req)
     {
@@ -72,6 +75,17 @@ public class AuthController : ControllerBase
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
 
+        // At most one outstanding code per user — otherwise an old code the
+        // user thinks they've abandoned (e.g. after tapping "generate" twice)
+        // would stay redeemable until its own 10-minute expiry.
+        var activeCodes = await _db.DeviceLinkCodes
+            .Where(d => d.UserId == userId && !d.Used && d.ExpiresAt > DateTime.UtcNow)
+            .ToListAsync();
+        foreach (var previous in activeCodes)
+        {
+            previous.Used = true;
+        }
+
         string code;
         do
         {
@@ -87,6 +101,7 @@ public class AuthController : ControllerBase
 
     public record RedeemDeviceLinkRequest(string Code);
 
+    [EnableRateLimiting("device-link-redeem")]
     [HttpPost("device-link/redeem")]
     public async Task<IActionResult> RedeemDeviceLink([FromBody] RedeemDeviceLinkRequest req)
     {
