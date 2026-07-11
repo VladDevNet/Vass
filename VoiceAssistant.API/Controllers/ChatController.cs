@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -53,6 +54,32 @@ public class ChatController : ControllerBase
         _audioPath = Path.GetFullPath(Path.IsPathRooted(audioPath)
             ? audioPath
             : Path.Combine(env.ContentRootPath, audioPath));
+    }
+
+    // upload-audio (below) only ever generates "{guid}.webm" — /chat/send's
+    // AudioFileName is a request-body string from an authenticated but
+    // otherwise unverified caller, so it's treated as untrusted input, not a
+    // free-form path. Format is checked first (structurally rules out ".."
+    // and absolute paths on its own), then Path.GetFullPath + containment is
+    // a second, independent layer, not a substitute (PROJECT-AUDIT-2026-07-10
+    // SEC-04). Full ownership tracking (a real upload/attachment entity) is a
+    // larger change left for later — this closes the path-traversal risk.
+    private static readonly Regex SafeAudioFileNamePattern =
+        new(@"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.webm$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // Static and parameterized on audioRootPath (not reading _audioPath
+    // directly) so it's testable without constructing a full ChatController.
+    public static bool TryResolveSafeAudioPath(string audioRootPath, string fileName, out string filePath)
+    {
+        filePath = "";
+        if (!SafeAudioFileNamePattern.IsMatch(fileName)) return false;
+
+        var candidate = Path.GetFullPath(Path.Combine(audioRootPath, fileName));
+        var relative = Path.GetRelativePath(audioRootPath, candidate);
+        if (relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative)) return false;
+
+        filePath = candidate;
+        return true;
     }
 
     public record SendRequest(int SessionId, string Message, string? AudioFileName = null);
@@ -262,8 +289,11 @@ public class ChatController : ControllerBase
         if (string.IsNullOrWhiteSpace(messageText) && !string.IsNullOrEmpty(req.AudioFileName))
         {
             attemptedTranscription = true;
-            var filePath = Path.Combine(_audioPath, req.AudioFileName);
-            if (!System.IO.File.Exists(filePath)) { Response.StatusCode = 400; return; }
+            if (!TryResolveSafeAudioPath(_audioPath, req.AudioFileName, out var filePath) || !System.IO.File.Exists(filePath))
+            {
+                Response.StatusCode = 400;
+                return;
+            }
 
             // Convert webm → wav (Gemini doesn't support webm)
             var sw = Stopwatch.StartNew();
