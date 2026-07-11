@@ -192,10 +192,27 @@ static bool NeedsMigration(string? rawValue, byte[] key)
     try
     {
         ApiKeyEncryption.DecryptStrict(rawValue, key);
-        return false;
+        return false; // already valid ciphertext under the current key
     }
-    catch (FormatException) { return true; }
-    catch (CryptographicException) { return true; }
+    catch (FormatException)
+    {
+        return true; // not base64 at all -- definitely legacy plaintext
+    }
+    catch (CryptographicException)
+    {
+        // Valid-length base64 whose GCM tag doesn't verify under this key.
+        // Ambiguous: could be legacy plaintext that coincidentally decodes,
+        // OR real ciphertext from a DIFFERENT key (e.g. Encryption:Key
+        // changed since the last deploy). Silently treating this as "needs
+        // migration" would re-encrypt it under the new key, permanently
+        // destroying the original with no way to recover it (review
+        // finding). Refuse to guess.
+        throw new InvalidOperationException(
+            "A UserSettings API key value is valid-length base64 but does not decrypt under the configured " +
+            "Encryption:Key. Refusing to auto-migrate: this is ambiguous between legacy plaintext and ciphertext " +
+            "encrypted under a DIFFERENT key, and guessing wrong would permanently destroy the value. If " +
+            "Encryption:Key changed, restore the original key before starting this version.");
+    }
 }
 
 // Must run before anything that reads Connection.RemoteIpAddress (rate

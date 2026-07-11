@@ -26,8 +26,21 @@ public static class ApiKeyEncryption
     private const int NonceSize = 12;
     private const int TagSize = 16;
 
-    public static byte[] DeriveKey(string configuredSecret) =>
-        SHA256.HashData(Encoding.UTF8.GetBytes(configuredSecret));
+    // A blank secret (not just a missing/null one -- ${ENCRYPTION_KEY} in
+    // docker-compose.yml expands to "" if the operator forgets to set it,
+    // NOT to a missing key) would silently derive the well-known, publicly
+    // computable SHA256("") -- "encrypting" under it protects nothing while
+    // looking like it worked. Fail loudly instead (review finding).
+    public static byte[] DeriveKey(string configuredSecret)
+    {
+        if (string.IsNullOrWhiteSpace(configuredSecret) || configuredSecret.Length < 16)
+        {
+            throw new InvalidOperationException(
+                "Encryption:Key must be set to a real secret at least 16 characters long -- refusing to derive an " +
+                "encryption key from a blank or too-short value, which would protect nothing.");
+        }
+        return SHA256.HashData(Encoding.UTF8.GetBytes(configuredSecret));
+    }
 
     public static string? Encrypt(string? plaintext, byte[] key)
     {

@@ -12,8 +12,8 @@ public class ApiKeyEncryptionTests
     [Fact]
     public void DeriveKey_SameInput_ProducesSameKey()
     {
-        var key1 = ApiKeyEncryption.DeriveKey("some-secret");
-        var key2 = ApiKeyEncryption.DeriveKey("some-secret");
+        var key1 = ApiKeyEncryption.DeriveKey("some-secret-long-enough");
+        var key2 = ApiKeyEncryption.DeriveKey("some-secret-long-enough");
 
         Assert.Equal(key1, key2);
         Assert.Equal(32, key1.Length); // AES-256
@@ -23,6 +23,23 @@ public class ApiKeyEncryptionTests
     public void DeriveKey_DifferentInput_ProducesDifferentKey()
     {
         Assert.NotEqual(Key, OtherKey);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("short")]
+    public void DeriveKey_BlankOrTooShort_Throws(string configuredSecret)
+    {
+        // A blank secret must never silently derive the well-known
+        // SHA256("") key -- see PROJECT-AUDIT-2026-07-10 SEC-03 review.
+        Assert.Throws<InvalidOperationException>(() => ApiKeyEncryption.DeriveKey(configuredSecret));
+    }
+
+    [Fact]
+    public void DeriveKey_Null_Throws()
+    {
+        Assert.ThrowsAny<Exception>(() => ApiKeyEncryption.DeriveKey(null!));
     }
 
     [Fact]
