@@ -55,9 +55,9 @@ export function LayeredAvatar({ avatarId, state, sleeping, disabled, onLoadError
     if (state === 'speaking') {
       const loop = Animated.loop(
         Animated.sequence([
-          Animated.timing(mouthSmall, { toValue: 1, duration: 130, useNativeDriver: true }),
+          Animated.timing(mouthSmall, { toValue: 1, duration: 260, useNativeDriver: true }),
           Animated.timing(mouthSmall, { toValue: 0, duration: 0, useNativeDriver: true }),
-          Animated.timing(mouthBig, { toValue: 1, duration: 130, useNativeDriver: true }),
+          Animated.timing(mouthBig, { toValue: 1, duration: 260, useNativeDriver: true }),
           Animated.timing(mouthBig, { toValue: 0, duration: 0, useNativeDriver: true }),
         ])
       );
