@@ -10,6 +10,7 @@ services:
       - Jwt__Secret=${JWT_SECRET}
       - Jwt__Issuer=Vass
       - Jwt__Audience=Vass
+      - Encryption__Key=${ENCRYPTION_KEY}
       - Piper__BaseUrl=http://tts:5001
       - SpeakerId__BaseUrl=http://speaker-id:5003
     volumes:

@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -128,6 +129,73 @@ var app = builder.Build();
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.Migrate();
+    await MigrateLegacyApiKeysAsync(db, scope.ServiceProvider.GetRequiredService<IConfiguration>());
+}
+
+// One-time, idempotent: re-saves any UserSettings row whose key fields
+// predate ApiKeyEncryptionConverter (PROJECT-AUDIT-2026-07-10 SEC-03) through
+// the same converter, encrypting them. Detects "still legacy plaintext" via
+// a raw ADO.NET read (bypassing EF Core's own lenient, always-succeeds
+// Decrypt) and DecryptStrict, which throws for anything that isn't real
+// ciphertext under this key -- that's what "not yet migrated" means here.
+// Safe to run on every startup: already-encrypted rows decrypt cleanly under
+// DecryptStrict and are skipped.
+async Task MigrateLegacyApiKeysAsync(AppDbContext db, IConfiguration configuration)
+{
+    var key = ApiKeyEncryption.DeriveKey(configuration["Encryption:Key"]!);
+
+    var idsNeedingMigration = new List<int>();
+    await db.Database.OpenConnectionAsync();
+    try
+    {
+        await using var command = db.Database.GetDbConnection().CreateCommand();
+        command.CommandText = "SELECT \"Id\", \"OpenAiApiKey\", \"AnthropicApiKey\", \"GeminiApiKey\" FROM \"UserSettings\"";
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var id = reader.GetInt32(0);
+            var openAi = reader.IsDBNull(1) ? null : reader.GetString(1);
+            var anthropic = reader.IsDBNull(2) ? null : reader.GetString(2);
+            var gemini = reader.IsDBNull(3) ? null : reader.GetString(3);
+            if (NeedsMigration(openAi, key) || NeedsMigration(anthropic, key) || NeedsMigration(gemini, key))
+            {
+                idsNeedingMigration.Add(id);
+            }
+        }
+    }
+    finally
+    {
+        await db.Database.CloseConnectionAsync();
+    }
+
+    if (idsNeedingMigration.Count == 0) return;
+
+    var toMigrate = await db.UserSettings.Where(s => idsNeedingMigration.Contains(s.Id)).ToListAsync();
+    foreach (var settings in toMigrate)
+    {
+        // Already holds the correct plaintext -- EF Core's lenient Decrypt
+        // returned it as-is on load since it wasn't real ciphertext yet.
+        // Explicitly marking modified forces a write despite the *logical*
+        // value looking unchanged, so the encrypting converter runs on save.
+        var entry = db.Entry(settings);
+        entry.Property(s => s.OpenAiApiKey).IsModified = true;
+        entry.Property(s => s.AnthropicApiKey).IsModified = true;
+        entry.Property(s => s.GeminiApiKey).IsModified = true;
+    }
+    await db.SaveChangesAsync();
+    app.Logger.LogInformation("Encrypted {Count} UserSettings row(s) with legacy plaintext API keys", toMigrate.Count);
+}
+
+static bool NeedsMigration(string? rawValue, byte[] key)
+{
+    if (string.IsNullOrEmpty(rawValue)) return false;
+    try
+    {
+        ApiKeyEncryption.DecryptStrict(rawValue, key);
+        return false;
+    }
+    catch (FormatException) { return true; }
+    catch (CryptographicException) { return true; }
 }
 
 // Must run before anything that reads Connection.RemoteIpAddress (rate

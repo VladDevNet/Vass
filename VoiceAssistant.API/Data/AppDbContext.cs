@@ -6,7 +6,12 @@ namespace VoiceAssistant.API.Data;
 
 public class AppDbContext : IdentityDbContext<User>
 {
-    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+    private readonly byte[] _apiKeyEncryptionKey;
+
+    public AppDbContext(DbContextOptions<AppDbContext> options, IConfiguration configuration) : base(options)
+    {
+        _apiKeyEncryptionKey = ApiKeyEncryption.DeriveKey(configuration["Encryption:Key"]!);
+    }
 
     public DbSet<ChatSession> ChatSessions => Set<ChatSession>();
     public DbSet<Message> Messages => Set<Message>();
@@ -49,6 +54,13 @@ public class AppDbContext : IdentityDbContext<User>
             e.Property(s => s.AssistantName).HasMaxLength(100);
             e.Property(s => s.AvatarId).HasMaxLength(20);
             e.Property(s => s.FullTranslation).HasDefaultValue(false);
+            // PROJECT-AUDIT-2026-07-10 SEC-03: encrypted at rest, transparent
+            // to every existing caller. See ApiKeyEncryptionConverter and
+            // Program.cs's one-time startup migration for pre-existing rows.
+            var keyConverter = new ApiKeyEncryptionConverter(_apiKeyEncryptionKey);
+            e.Property(s => s.OpenAiApiKey).HasConversion(keyConverter);
+            e.Property(s => s.AnthropicApiKey).HasConversion(keyConverter);
+            e.Property(s => s.GeminiApiKey).HasConversion(keyConverter);
         });
 
         builder.Entity<SpeakerProfile>(e =>
