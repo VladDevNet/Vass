@@ -14,19 +14,34 @@ using VoiceAssistant.API.Services;
 var builder = WebApplication.CreateBuilder(args);
 
 // Database
-builder.Services.AddDbContext<AppDbContext>(options =>
+//
+// Registered as a factory only, with the usual scoped AppDbContext derived
+// from it below -- NOT `AddDbContext` + `AddDbContextFactory` side by side.
+// Both register DbContextOptions<AppDbContext> via TryAdd, so whichever call
+// comes first silently wins that registration's lifetime; the loser ends up
+// a Singleton (the factory) captively depending on a Scoped service, which
+// throws "Cannot consume scoped service 'DbContextOptions<AppDbContext>'
+// from singleton 'IDbContextFactory<AppDbContext>'" the moment
+// ASP.NET Core's Development-environment DI validation runs at
+// `builder.Build()` -- i.e. every local `dotnet run`. Confirmed empirically
+// during REL-01 review by actually running the built binary. This pattern
+// (factory + a derived AddScoped) is EF Core's own documented way to get
+// both a normal scoped DbContext AND an independent-instance factory from
+// one configuration.
+builder.Services.AddDbContextFactory<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
+builder.Services.AddScoped<AppDbContext>(sp =>
+    sp.GetRequiredService<IDbContextFactory<AppDbContext>>().CreateDbContext());
 
 // A scoped DbContext must never have more than one operation in flight at a
 // time. ChatController.MaybeUpdateCustomInstructionsAsync deliberately runs
 // concurrently with the rest of Send() (started but not immediately awaited,
 // so the response isn't held up by its own Gemini side-call) -- it needs an
-// independent context instance, not the request's shared scoped one, or its
-// SaveChangesAsync can race the main flow's own and throw "A second
+// independent context instance, not the request's shared scoped one (above),
+// or its SaveChangesAsync can race the main flow's own and throw "A second
 // operation was started on this context before a previous operation
-// completed" (PROJECT-AUDIT-2026-07-10 REL-01).
-builder.Services.AddDbContextFactory<AppDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
+// completed" (PROJECT-AUDIT-2026-07-10 REL-01). It gets one via the same
+// IDbContextFactory<AppDbContext> registered above.
 
 // Identity
 builder.Services.AddIdentity<User, IdentityRole>(options =>
