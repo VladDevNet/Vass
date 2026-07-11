@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -128,6 +129,90 @@ var app = builder.Build();
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.Migrate();
+    await MigrateLegacyApiKeysAsync(db, scope.ServiceProvider.GetRequiredService<IConfiguration>());
+}
+
+// One-time, idempotent: re-saves any UserSettings row whose key fields
+// predate ApiKeyEncryptionConverter (PROJECT-AUDIT-2026-07-10 SEC-03) through
+// the same converter, encrypting them. Detects "still legacy plaintext" via
+// a raw ADO.NET read (bypassing EF Core's own lenient, always-succeeds
+// Decrypt) and DecryptStrict, which throws for anything that isn't real
+// ciphertext under this key -- that's what "not yet migrated" means here.
+// Safe to run on every startup: already-encrypted rows decrypt cleanly under
+// DecryptStrict and are skipped.
+async Task MigrateLegacyApiKeysAsync(AppDbContext db, IConfiguration configuration)
+{
+    var key = ApiKeyEncryption.DeriveKey(configuration["Encryption:Key"]!);
+
+    var idsNeedingMigration = new List<int>();
+    await db.Database.OpenConnectionAsync();
+    try
+    {
+        await using var command = db.Database.GetDbConnection().CreateCommand();
+        command.CommandText = "SELECT \"Id\", \"OpenAiApiKey\", \"AnthropicApiKey\", \"GeminiApiKey\" FROM \"UserSettings\"";
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var id = reader.GetInt32(0);
+            var openAi = reader.IsDBNull(1) ? null : reader.GetString(1);
+            var anthropic = reader.IsDBNull(2) ? null : reader.GetString(2);
+            var gemini = reader.IsDBNull(3) ? null : reader.GetString(3);
+            if (NeedsMigration(openAi, key) || NeedsMigration(anthropic, key) || NeedsMigration(gemini, key))
+            {
+                idsNeedingMigration.Add(id);
+            }
+        }
+    }
+    finally
+    {
+        await db.Database.CloseConnectionAsync();
+    }
+
+    if (idsNeedingMigration.Count == 0) return;
+
+    var toMigrate = await db.UserSettings.Where(s => idsNeedingMigration.Contains(s.Id)).ToListAsync();
+    foreach (var settings in toMigrate)
+    {
+        // Already holds the correct plaintext -- EF Core's lenient Decrypt
+        // returned it as-is on load since it wasn't real ciphertext yet.
+        // Explicitly marking modified forces a write despite the *logical*
+        // value looking unchanged, so the encrypting converter runs on save.
+        var entry = db.Entry(settings);
+        entry.Property(s => s.OpenAiApiKey).IsModified = true;
+        entry.Property(s => s.AnthropicApiKey).IsModified = true;
+        entry.Property(s => s.GeminiApiKey).IsModified = true;
+    }
+    await db.SaveChangesAsync();
+    app.Logger.LogInformation("Encrypted {Count} UserSettings row(s) with legacy plaintext API keys", toMigrate.Count);
+}
+
+static bool NeedsMigration(string? rawValue, byte[] key)
+{
+    if (string.IsNullOrEmpty(rawValue)) return false;
+    try
+    {
+        ApiKeyEncryption.DecryptStrict(rawValue, key);
+        return false; // already valid ciphertext under the current key
+    }
+    catch (FormatException)
+    {
+        return true; // not base64 at all -- definitely legacy plaintext
+    }
+    catch (CryptographicException)
+    {
+        // Valid-length base64 whose GCM tag doesn't verify under this key.
+        // Ambiguous: could be legacy plaintext that coincidentally decodes,
+        // OR real ciphertext from a DIFFERENT key (e.g. Encryption:Key
+        // changed since the last deploy). Silently treating this as "needs
+        // migration" would re-encrypt it under the new key, permanently
+        // destroying the original with no way to recover it (review
+        // finding). Refuse to guess.
+        throw new InvalidOperationException(
+            "A UserSettings API key value is valid-length base64 but does not decrypt under the configured " +
+            "Encryption:Key. Refusing to auto-migrate: this is ambiguous between legacy plaintext and ciphertext " +
+            "encrypted under a DIFFERENT key, and guessing wrong would permanently destroy the value. If " +
+            "Encryption:Key changed, restore the original key before starting this version.");
+    }
 }
 
 // Must run before anything that reads Connection.RemoteIpAddress (rate
