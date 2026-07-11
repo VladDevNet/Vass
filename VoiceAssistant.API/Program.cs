@@ -84,6 +84,13 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
     options.KnownIPNetworks.Clear();
     options.KnownProxies.Clear();
+    // Two real hops in production (confirmed against the actual VPS config):
+    // the external Caddy proxy sets X-Forwarded-For to the real client, then
+    // nginx (Caddy -> localhost:4001 -> this container) appends its own
+    // loopback-perceived address on top. ForwardLimit's default of 1 only
+    // unwinds the nearest hop (nginx's own), landing on 127.0.0.1 instead of
+    // the client. Must unwind both to reach the real value.
+    options.ForwardLimit = 2;
 });
 
 // Rate limiting for anonymous auth endpoints (PROJECT-AUDIT-2026-07-10 SEC-01).
