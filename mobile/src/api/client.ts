@@ -158,6 +158,7 @@ export interface ChatSession {
 }
 
 export interface ChatMessage {
+  id: number;
   role: string;
   content: string;
   createdAt: string;
@@ -172,6 +173,7 @@ export interface SessionDetail {
   mode: string;
   title: string;
   messages: ChatMessage[];
+  hasMore: boolean;
 }
 
 export interface DeviceLink {
@@ -216,7 +218,11 @@ export const api = {
 
   getSessions: () => request<ChatSession[]>('/chat/sessions'),
 
-  getSession: (id: number) => request<SessionDetail>(`/chat/sessions/${id}`),
+  getSession: (id: number, before?: number, limit = 30) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (before !== undefined) params.set('before', String(before));
+    return request<SessionDetail>(`/chat/sessions/${id}?${params.toString()}`);
+  },
 
   // Elderly-friendly login: generated on an already-logged-in device,
   // redeemed on a brand-new one — see VoiceAssistant.API/Controllers/AuthController.cs.

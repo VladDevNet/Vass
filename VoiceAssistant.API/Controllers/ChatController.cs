@@ -191,22 +191,35 @@ public class ChatController : ControllerBase
         return NoContent();
     }
 
+    // Paginated: `before` (a message Id) walks backward from the newest message
+    // (omit for the first page), `limit` caps page size. A long-lived session
+    // (one user already has 599+ messages) can't be sent whole on every open of
+    // the history screen — the client renders newest-first and loads older
+    // pages on demand as the user scrolls up.
     [HttpGet("sessions/{id:int}")]
-    public async Task<IActionResult> GetSession(int id)
+    public async Task<IActionResult> GetSession(int id, [FromQuery] int? before = null, [FromQuery] int limit = 30)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
-        var session = await _db.ChatSessions
-            .Include(s => s.Messages.OrderBy(m => m.CreatedAt))
-            .FirstOrDefaultAsync(s => s.Id == id && s.UserId == userId);
+        var session = await _db.ChatSessions.FirstOrDefaultAsync(s => s.Id == id && s.UserId == userId);
 
         if (session == null) return NotFound();
+
+        var query = _db.Messages.Where(m => m.ChatSessionId == id);
+        if (before.HasValue)
+        {
+            query = query.Where(m => m.Id < before.Value);
+        }
+
+        var page = await query.OrderByDescending(m => m.Id).Take(limit).ToListAsync();
+        page.Reverse(); // chronological order, matching the non-paginated response this replaces
 
         return Ok(new
         {
             session.Id,
             session.Mode,
             session.Title,
-            Messages = session.Messages.Select(m => new { m.Role, m.Content, m.CreatedAt, m.AudioFileName })
+            Messages = page.Select(m => new { m.Id, m.Role, m.Content, m.CreatedAt, m.AudioFileName }),
+            HasMore = page.Count == limit
         });
     }
 

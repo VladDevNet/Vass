@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { api, type ChatMessage } from '../api/client';
 
@@ -8,19 +8,29 @@ interface ChatHistoryScreenProps {
   onDone: () => void;
 }
 
+const PAGE_SIZE = 30;
+
 export function ChatHistoryScreen({ sessionId, onDone }: ChatHistoryScreenProps) {
   const { assistantName } = useAuth();
+  // Newest-first — FlatList's `inverted` flips rendering so index 0 (newest)
+  // lands at the bottom on open, and scrolling toward the END of this array
+  // (oldest) is what visually reads as scrolling up, same as any chat app.
   const [messages, setMessages] = useState<ChatMessage[] | undefined>(undefined);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setMessages(undefined);
     setError(null);
+    setHasMore(true);
     api
-      .getSession(sessionId)
+      .getSession(sessionId, undefined, PAGE_SIZE)
       .then((session) => {
-        if (!cancelled) setMessages(session.messages);
+        if (cancelled) return;
+        setMessages([...session.messages].reverse());
+        setHasMore(session.hasMore);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -29,6 +39,23 @@ export function ChatHistoryScreen({ sessionId, onDone }: ChatHistoryScreenProps)
       cancelled = true;
     };
   }, [sessionId]);
+
+  const loadMore = useCallback(() => {
+    if (loadingMore || !hasMore || !messages || messages.length === 0) return;
+    setLoadingMore(true);
+    const oldestId = messages[messages.length - 1].id;
+    api
+      .getSession(sessionId, oldestId, PAGE_SIZE)
+      .then((session) => {
+        // Empty page: backend's hasMore heuristic (page.Count === limit) can
+        // occasionally over-predict at the exact tail — stop regardless of
+        // what hasMore says once a page comes back with nothing new.
+        setHasMore(session.hasMore && session.messages.length > 0);
+        setMessages((prev) => [...(prev ?? []), ...[...session.messages].reverse()]);
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setLoadingMore(false));
+  }, [sessionId, messages, hasMore, loadingMore]);
 
   return (
     <View style={styles.screen}>
@@ -40,23 +67,29 @@ export function ChatHistoryScreen({ sessionId, onDone }: ChatHistoryScreenProps)
         <View style={styles.backLink} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.container}>
-        {error && <Text style={styles.error}>{error}</Text>}
-        {messages === undefined && !error && <ActivityIndicator style={styles.loading} />}
-        {messages?.length === 0 && <Text style={styles.hint}>Сообщений пока нет.</Text>}
-        {messages?.map((message, index) => {
-          const isUser = message.role === 'user';
-          return (
-            <View
-              key={index}
-              style={[styles.bubble, !isUser && styles.bubbleReply]}
-            >
-              <Text style={styles.bubbleLabel}>{isUser ? 'Вы' : assistantName ?? 'Ассистент'}</Text>
-              <Text style={styles.bubbleText}>{message.content}</Text>
-            </View>
-          );
-        })}
-      </ScrollView>
+      {error && <Text style={styles.error}>{error}</Text>}
+      {messages === undefined && !error && <ActivityIndicator style={styles.loading} />}
+      {messages?.length === 0 && <Text style={styles.hint}>Сообщений пока нет.</Text>}
+      {messages !== undefined && messages.length > 0 && (
+        <FlatList
+          inverted
+          data={messages}
+          keyExtractor={(message) => String(message.id)}
+          contentContainerStyle={styles.container}
+          onEndReached={loadMore}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={loadingMore ? <ActivityIndicator style={styles.loadingMore} /> : null}
+          renderItem={({ item: message }) => {
+            const isUser = message.role === 'user';
+            return (
+              <View style={[styles.bubble, !isUser && styles.bubbleReply]}>
+                <Text style={styles.bubbleLabel}>{isUser ? 'Вы' : assistantName ?? 'Ассистент'}</Text>
+                <Text style={styles.bubbleText}>{message.content}</Text>
+              </View>
+            );
+          }}
+        />
+      )}
     </View>
   );
 }
@@ -93,6 +126,9 @@ const styles = StyleSheet.create({
   },
   loading: {
     marginTop: 24,
+  },
+  loadingMore: {
+    marginVertical: 16,
   },
   hint: {
     fontSize: 15,
