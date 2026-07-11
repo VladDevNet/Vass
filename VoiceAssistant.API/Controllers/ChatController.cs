@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -53,6 +54,34 @@ public class ChatController : ControllerBase
         _audioPath = Path.GetFullPath(Path.IsPathRooted(audioPath)
             ? audioPath
             : Path.Combine(env.ContentRootPath, audioPath));
+    }
+
+    // upload-audio (below) only ever generates "{guid}.webm" — /chat/send's
+    // AudioFileName is a request-body string from an authenticated but
+    // otherwise unverified caller, so it's treated as untrusted input, not a
+    // free-form path. Format is checked first (structurally rules out ".."
+    // and absolute paths on its own), then Path.GetFullPath + containment is
+    // a second, independent layer, not a substitute (PROJECT-AUDIT-2026-07-10
+    // SEC-04). Full ownership tracking (a real upload/attachment entity) is a
+    // larger change left for later — this closes the path-traversal risk.
+    // \A/\z (not ^/$) — $ alone still matches immediately before a single
+    // trailing newline, which isn't exploitable here but is needlessly loose.
+    private static readonly Regex SafeAudioFileNamePattern =
+        new(@"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.webm\z", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // Static and parameterized on audioRootPath (not reading _audioPath
+    // directly) so it's testable without constructing a full ChatController.
+    public static bool TryResolveSafeAudioPath(string audioRootPath, string fileName, out string filePath)
+    {
+        filePath = "";
+        if (!SafeAudioFileNamePattern.IsMatch(fileName)) return false;
+
+        var candidate = Path.GetFullPath(Path.Combine(audioRootPath, fileName));
+        var relative = Path.GetRelativePath(audioRootPath, candidate);
+        if (relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative)) return false;
+
+        filePath = candidate;
+        return true;
     }
 
     public record SendRequest(int SessionId, string Message, string? AudioFileName = null);
@@ -178,11 +207,15 @@ public class ChatController : ControllerBase
 
         foreach (var msg in session.Messages)
         {
-            if (!string.IsNullOrEmpty(msg.AudioFileName))
+            // Re-validated here too, not just at the one write site that
+            // currently persists AudioFileName — this is the actual
+            // File.Delete sink, so it shouldn't have to trust that every
+            // past or future write path got the check right.
+            if (!string.IsNullOrEmpty(msg.AudioFileName) &&
+                TryResolveSafeAudioPath(_audioPath, msg.AudioFileName, out var filePath) &&
+                System.IO.File.Exists(filePath))
             {
-                var filePath = Path.Combine(_audioPath, msg.AudioFileName);
-                if (System.IO.File.Exists(filePath))
-                    System.IO.File.Delete(filePath);
+                System.IO.File.Delete(filePath);
             }
         }
 
@@ -258,12 +291,24 @@ public class ChatController : ControllerBase
         // prompt-leak case specifically, which is the exact scenario a real
         // production 400 was traced back to.
         var attemptedTranscription = false;
+        // Only ever set from a value that has already passed
+        // TryResolveSafeAudioPath below — req.AudioFileName itself must never
+        // reach Message.AudioFileName unvalidated, since DeleteSession later
+        // does an unguarded Path.Combine + File.Delete on whatever is stored
+        // there (PROJECT-AUDIT-2026-07-10 SEC-04 review, round 2: validating
+        // only the transcription branch left this reachable by sending a
+        // non-blank Message alongside an arbitrary AudioFileName).
+        string? validatedAudioFileName = null;
 
         if (string.IsNullOrWhiteSpace(messageText) && !string.IsNullOrEmpty(req.AudioFileName))
         {
             attemptedTranscription = true;
-            var filePath = Path.Combine(_audioPath, req.AudioFileName);
-            if (!System.IO.File.Exists(filePath)) { Response.StatusCode = 400; return; }
+            if (!TryResolveSafeAudioPath(_audioPath, req.AudioFileName, out var filePath) || !System.IO.File.Exists(filePath))
+            {
+                Response.StatusCode = 400;
+                return;
+            }
+            validatedAudioFileName = req.AudioFileName;
 
             // Convert webm → wav (Gemini doesn't support webm)
             var sw = Stopwatch.StartNew();
@@ -328,7 +373,7 @@ public class ChatController : ControllerBase
         }
 
         // Save user message
-        session.Messages.Add(new Message { Role = "user", Content = messageText, AudioFileName = req.AudioFileName });
+        session.Messages.Add(new Message { Role = "user", Content = messageText, AudioFileName = validatedAudioFileName });
         await _db.SaveChangesAsync();
 
         // Check (in parallel, doesn't block the response) whether the user asked the
