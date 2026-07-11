@@ -66,6 +66,21 @@ public class ChatControllerConcurrencyTests
                 await seedDb.Database.EnsureCreatedAsync();
             }
 
+            // Pre-compiles both query shapes used below (expression tree +
+            // shaper generation is one-time, synchronous, CPU-bound work --
+            // under real parallel load competing for scarce cores it can take
+            // well over 100ms on its own, eating into the interceptor's delay
+            // margin and letting the "second" operation below start only
+            // after the first has already released its critical section).
+            // Confirmed via REL-01 review: without this, the test failed
+            // 13/13 times under 5-8-way parallel `dotnet test` contention.
+            await using (var warmDb = new AppDbContext(plainOptions, BuildConfig()))
+            {
+                warmDb.ChatSessions.Add(new ChatSession { UserId = "warmup", Mode = "dialog", Title = "t" });
+                await warmDb.SaveChangesAsync();
+                await warmDb.UserSettings.ToListAsync();
+            }
+
             var options = new DbContextOptionsBuilder<AppDbContext>()
                 .UseSqlite($"Data Source={dbPath};Foreign Keys=False")
                 .AddInterceptors(new DelayInterceptor(TimeSpan.FromMilliseconds(200)))
