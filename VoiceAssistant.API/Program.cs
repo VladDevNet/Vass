@@ -1,6 +1,9 @@
 using System.Text;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using VoiceAssistant.API.Data;
@@ -70,6 +73,54 @@ builder.Services.AddCors(options =>
         policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
 });
 
+// The api container publishes no ports (see docker-compose.yml) — nginx is
+// the ONLY thing that can reach it, so X-Forwarded-For on the immediate
+// connection is always nginx's, never spoofable by a caller bypassing the
+// proxy. Without this, Connection.RemoteIpAddress is nginx's fixed internal
+// container IP for every request, collapsing the rate limiter below into one
+// shared bucket for the whole app instead of one per real attacker.
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+    // Two real hops in production (confirmed against the actual VPS config):
+    // the external Caddy proxy sets X-Forwarded-For to the real client, then
+    // nginx (Caddy -> localhost:4001 -> this container) appends its own
+    // loopback-perceived address on top. ForwardLimit's default of 1 only
+    // unwinds the nearest hop (nginx's own), landing on 127.0.0.1 instead of
+    // the client. Must unwind both to reach the real value.
+    options.ForwardLimit = 2;
+});
+
+// Rate limiting for anonymous auth endpoints (PROJECT-AUDIT-2026-07-10 SEC-01).
+// Partitioned per client IP, since these endpoints have no user identity yet.
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    options.AddPolicy("auth", httpContext => RateLimitPartition.GetFixedWindowLimiter(
+        partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        factory: _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        }));
+
+    // device-link/redeem guards a 6-digit code (1,000,000 possibilities) valid
+    // for 10 minutes — the limit must make brute-forcing it within that window
+    // infeasible, not just "rate limited eventually."
+    options.AddPolicy("device-link-redeem", httpContext => RateLimitPartition.GetFixedWindowLimiter(
+        partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        factory: _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
+            Window = TimeSpan.FromMinutes(10),
+            QueueLimit = 0
+        }));
+});
+
 var app = builder.Build();
 
 // Auto-migrate on startup
@@ -79,9 +130,14 @@ var app = builder.Build();
     db.Database.Migrate();
 }
 
+// Must run before anything that reads Connection.RemoteIpAddress (rate
+// limiting below, and anything else added later) — it rewrites that value
+// from the forwarded header, so ordering here is not cosmetic.
+app.UseForwardedHeaders();
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 app.MapControllers();
 app.MapGet("/api/health", () => Results.Ok("healthy"));
 
