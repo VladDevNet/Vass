@@ -1,6 +1,7 @@
 using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -72,6 +73,19 @@ builder.Services.AddCors(options =>
         policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
 });
 
+// The api container publishes no ports (see docker-compose.yml) — nginx is
+// the ONLY thing that can reach it, so X-Forwarded-For on the immediate
+// connection is always nginx's, never spoofable by a caller bypassing the
+// proxy. Without this, Connection.RemoteIpAddress is nginx's fixed internal
+// container IP for every request, collapsing the rate limiter below into one
+// shared bucket for the whole app instead of one per real attacker.
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+});
+
 // Rate limiting for anonymous auth endpoints (PROJECT-AUDIT-2026-07-10 SEC-01).
 // Partitioned per client IP, since these endpoints have no user identity yet.
 builder.Services.AddRateLimiter(options =>
@@ -109,6 +123,10 @@ var app = builder.Build();
     db.Database.Migrate();
 }
 
+// Must run before anything that reads Connection.RemoteIpAddress (rate
+// limiting below, and anything else added later) — it rewrites that value
+// from the forwarded header, so ordering here is not cosmetic.
+app.UseForwardedHeaders();
 app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();

@@ -20,14 +20,16 @@ public class AuthController : ControllerBase
     private readonly UserManager<User> _userManager;
     private readonly AppDbContext _db;
     private readonly IConfiguration _config;
+    private readonly ILogger<AuthController> _logger;
 
     private static readonly TimeSpan DeviceLinkCodeLifetime = TimeSpan.FromMinutes(10);
 
-    public AuthController(UserManager<User> userManager, AppDbContext db, IConfiguration config)
+    public AuthController(UserManager<User> userManager, AppDbContext db, IConfiguration config, ILogger<AuthController> logger)
     {
         _userManager = userManager;
         _db = db;
         _config = config;
+        _logger = logger;
     }
 
     public record RegisterRequest(string Email, string Password, string? NativeLang);
@@ -57,7 +59,10 @@ public class AuthController : ControllerBase
     {
         var user = await _userManager.FindByEmailAsync(req.Email);
         if (user == null || !await _userManager.CheckPasswordAsync(user, req.Password))
+        {
+            _logger.LogWarning("Failed login attempt for {Email} from {RemoteIp}", req.Email, HttpContext.Connection.RemoteIpAddress);
             return Unauthorized(new { error = "Invalid credentials" });
+        }
 
         user.LastActiveAt = DateTime.UtcNow;
         await _userManager.UpdateAsync(user);
@@ -77,14 +82,12 @@ public class AuthController : ControllerBase
 
         // At most one outstanding code per user — otherwise an old code the
         // user thinks they've abandoned (e.g. after tapping "generate" twice)
-        // would stay redeemable until its own 10-minute expiry.
-        var activeCodes = await _db.DeviceLinkCodes
+        // would stay redeemable until its own 10-minute expiry. A single
+        // atomic UPDATE (not load-then-save) so this can't lose a concurrent
+        // write from a second in-flight request.
+        await _db.DeviceLinkCodes
             .Where(d => d.UserId == userId && !d.Used && d.ExpiresAt > DateTime.UtcNow)
-            .ToListAsync();
-        foreach (var previous in activeCodes)
-        {
-            previous.Used = true;
-        }
+            .ExecuteUpdateAsync(setters => setters.SetProperty(d => d.Used, true));
 
         string code;
         do
@@ -107,7 +110,10 @@ public class AuthController : ControllerBase
     {
         var link = await _db.DeviceLinkCodes.FirstOrDefaultAsync(d => d.Code == req.Code);
         if (link == null || link.Used || link.ExpiresAt <= DateTime.UtcNow)
+        {
+            _logger.LogWarning("Failed device-link redeem attempt from {RemoteIp}", HttpContext.Connection.RemoteIpAddress);
             return BadRequest(new { error = "Код недействителен или истёк" });
+        }
 
         link.Used = true;
         await _db.SaveChangesAsync();
