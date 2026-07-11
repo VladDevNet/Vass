@@ -331,18 +331,21 @@ public class ChatController : ControllerBase
 
             messageText = transcription;
 
-            // Speaker identification paused: real short phone-mic clips scored too close
-            // to noise-floor similarity in testing (~0.18-0.28, near the ~0.16 seen between
-            // different synthetic voices) to trust yet, and it costs 400ms-2s per turn for
-            // an unproven payoff. Infrastructure (service, DB table, matching logic) is
-            // still in place — flip this back on once it's worth revisiting.
-            // if (!string.IsNullOrWhiteSpace(transcription))
-            // {
-            //     sw.Restart();
-            //     speakerResult = await _speakerRegistry.IdentifyAsync(wavPath, transcription, geminiKey);
-            //     sw.Stop();
-            //     speakerIdMs = sw.ElapsedMilliseconds;
-            // }
+            // Disabled by default via Features:SpeakerIdentificationEnabled (see
+            // SpeakerRegistryService — PROJECT-AUDIT-2026-07-10 SEC-02, no tenant
+            // isolation yet) — IdentifyAsync no-ops immediately when that's unset,
+            // so this call is always cheap while off. Independently ALSO not worth
+            // enabling yet even once isolation is added: real short phone-mic clips
+            // scored too close to noise-floor similarity in testing (~0.18-0.28,
+            // near the ~0.16 seen between different synthetic voices) to trust, at
+            // 400ms-2s cost per turn for an unproven payoff.
+            if (!string.IsNullOrWhiteSpace(transcription))
+            {
+                sw.Restart();
+                speakerResult = await _speakerRegistry.IdentifyAsync(wavPath, transcription, geminiKey);
+                sw.Stop();
+                speakerIdMs = sw.ElapsedMilliseconds;
+            }
         }
 
         if (string.IsNullOrWhiteSpace(messageText))

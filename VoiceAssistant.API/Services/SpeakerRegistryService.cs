@@ -6,6 +6,16 @@ namespace VoiceAssistant.API.Services;
 
 public record SpeakerIdResult(string? KnownName, bool ShouldAskForName, bool JustRegistered);
 
+// PROJECT-AUDIT-2026-07-10 SEC-02: SpeakerProfile has no UserId and
+// SpeakerPendingStore is a process-wide singleton — IdentifyAsync below
+// scans and clusters across ALL users' voices with no tenant isolation
+// at all. Safe today only because it's gated behind Features:
+// SpeakerIdentificationEnabled, which defaults to false when absent from
+// config. Do NOT flip that flag on without first adding a UserId/household
+// scope to SpeakerProfile, a composite index, filtering every query in
+// this file by it, and making SpeakerPendingStore per-user instead of
+// global — enabling as-is would mix names/voices/transcripts across
+// unrelated accounts.
 public class SpeakerRegistryService
 {
     // NOTE: real short conversational clips (phone mic, varying distance) score
@@ -21,19 +31,26 @@ public class SpeakerRegistryService
     private readonly SpeakerPendingStore _pending;
     private readonly GeminiService _gemini;
     private readonly ILogger<SpeakerRegistryService> _logger;
+    private readonly bool _enabled;
 
     public SpeakerRegistryService(AppDbContext db, SpeakerIdService speakerId, SpeakerPendingStore pending,
-        GeminiService gemini, ILogger<SpeakerRegistryService> logger)
+        GeminiService gemini, IConfiguration config, ILogger<SpeakerRegistryService> logger)
     {
         _db = db;
         _speakerId = speakerId;
         _pending = pending;
         _gemini = gemini;
         _logger = logger;
+        _enabled = config.GetValue("Features:SpeakerIdentificationEnabled", false);
     }
 
     public async Task<SpeakerIdResult> IdentifyAsync(string wavPath, string transcript, string? geminiKey)
     {
+        if (!_enabled)
+        {
+            return new SpeakerIdResult(null, false, false);
+        }
+
         var result = await _speakerId.GetEmbeddingAsync(wavPath);
         if (result == null)
         {
