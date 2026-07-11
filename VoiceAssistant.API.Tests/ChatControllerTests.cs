@@ -57,4 +57,83 @@ public class ChatControllerTests
 
         Assert.False(ok);
     }
+
+    [Fact]
+    public void TryDetectImageMimeType_Jpeg_ReturnsTrue()
+    {
+        byte[] content = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46];
+
+        var ok = ChatController.TryDetectImageMimeType(content, out var mimeType);
+
+        Assert.True(ok);
+        Assert.Equal("image/jpeg", mimeType);
+    }
+
+    [Fact]
+    public void TryDetectImageMimeType_Png_ReturnsTrue()
+    {
+        byte[] content = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00];
+
+        var ok = ChatController.TryDetectImageMimeType(content, out var mimeType);
+
+        Assert.True(ok);
+        Assert.Equal("image/png", mimeType);
+    }
+
+    [Fact]
+    public void TryDetectImageMimeType_Gif_ReturnsTrue()
+    {
+        byte[] content = "GIF89a"u8.ToArray();
+
+        var ok = ChatController.TryDetectImageMimeType(content, out var mimeType);
+
+        Assert.True(ok);
+        Assert.Equal("image/gif", mimeType);
+    }
+
+    [Fact]
+    public void TryDetectImageMimeType_WebP_ReturnsTrue()
+    {
+        // RIFF <4-byte size, contents irrelevant here> WEBP
+        byte[] content = [.."RIFF"u8.ToArray(), 0x00, 0x00, 0x00, 0x00, .."WEBP"u8.ToArray()];
+
+        var ok = ChatController.TryDetectImageMimeType(content, out var mimeType);
+
+        Assert.True(ok);
+        Assert.Equal("image/webp", mimeType);
+    }
+
+    [Fact]
+    public void TryDetectImageMimeType_RiffButNotWebp_ReturnsFalse()
+    {
+        // A real RIFF container (e.g. a WAV file) that isn't WEBP must not match.
+        byte[] content = [.."RIFF"u8.ToArray(), 0x00, 0x00, 0x00, 0x00, .."WAVE"u8.ToArray()];
+
+        var ok = ChatController.TryDetectImageMimeType(content, out _);
+
+        Assert.False(ok);
+    }
+
+    [Theory]
+    [InlineData(new byte[] { })]
+    [InlineData(new byte[] { 0x01, 0x02 })]
+    public void TryDetectImageMimeType_EmptyOrTooShort_ReturnsFalse(byte[] content)
+    {
+        var ok = ChatController.TryDetectImageMimeType(content, out _);
+
+        Assert.False(ok);
+    }
+
+    [Fact]
+    public void TryDetectImageMimeType_SpoofedNonImageContent_ReturnsFalse()
+    {
+        // e.g. a PDF or script renamed to "photo.jpg" with a forged
+        // Content-Type: image/jpeg -- the bytes themselves must fail.
+        byte[] content = "%PDF-1.4 some content that is not an image at all"u8.ToArray();
+
+        var ok = ChatController.TryDetectImageMimeType(content, out var mimeType);
+
+        Assert.False(ok);
+        Assert.Equal("", mimeType);
+    }
 }

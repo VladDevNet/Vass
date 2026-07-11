@@ -84,11 +84,67 @@ public class ChatController : ControllerBase
         return true;
     }
 
+    // Content-Type on a multipart file part is a client-supplied string field,
+    // not a verified fact about the bytes — any part can claim "image/jpeg"
+    // regardless of what it actually contains (PROJECT-AUDIT-2026-07-10
+    // SEC-07). The magic-byte signature is what's actually true about the
+    // file, and what gets forwarded to Gemini's inline_data.mime_type instead
+    // of trusting the caller's claim.
+    private static readonly (byte[] Signature, string MimeType)[] ImageSignatures =
+    [
+        (new byte[] { 0xFF, 0xD8, 0xFF }, "image/jpeg"),
+        (new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }, "image/png"),
+        (new byte[] { 0x47, 0x49, 0x46, 0x38 }, "image/gif"),
+    ];
+
+    public static bool TryDetectImageMimeType(byte[] content, out string mimeType)
+    {
+        foreach (var (signature, mime) in ImageSignatures)
+        {
+            if (content.Length >= signature.Length && content.AsSpan(0, signature.Length).SequenceEqual(signature))
+            {
+                mimeType = mime;
+                return true;
+            }
+        }
+
+        // WebP: "RIFF" (bytes 0-3), 4-byte size (bytes 4-7), "WEBP" (bytes 8-11).
+        if (content.Length >= 12 &&
+            content.AsSpan(0, 4).SequenceEqual("RIFF"u8) &&
+            content.AsSpan(8, 4).SequenceEqual("WEBP"u8))
+        {
+            mimeType = "image/webp";
+            return true;
+        }
+
+        mimeType = "";
+        return false;
+    }
+
     public record SendRequest(int SessionId, string Message, string? AudioFileName = null);
     public record CreateSessionRequest(string? Mode, string? Title);
 
     private const long MaxAudioSize = 5 * 1024 * 1024; // 5MB
     private const long MaxImageSize = 10 * 1024 * 1024; // 10MB
+
+    // [RequestSizeLimit] below bounds the WHOLE request body (multipart
+    // boundary + Content-Disposition/Content-Type headers, not just the file
+    // part) -- setting it to exactly MaxAudioSize rejects a legitimate file
+    // AT that size, since the surrounding multipart overhead pushes the
+    // total over the limit (confirmed empirically during SEC-07 review).
+    // MaxAudioSize itself, checked against file.Length below, remains the
+    // real enforced ceiling on file content.
+    private const long MaxAudioRequestBodySize = MaxAudioSize + 64 * 1024;
+
+    // TTS synthesizes whatever text it's given — an unbounded string is free
+    // CPU-burning fuel for any authenticated caller (PROJECT-AUDIT-2026-07-10
+    // SEC-07). 2000 chars is generous for a single spoken utterance (the
+    // streaming path already sends one sentence at a time — see PR #55).
+    private const int MaxTtsTextLength = 2000;
+
+    // Human-readable chat session title, same class of field as
+    // DisplayName/AssistantName below in SettingsController.
+    private const int MaxSessionTitleLength = 200;
 
     public record TtsRequest(string Text, string? Voice = null);
 
@@ -96,6 +152,8 @@ public class ChatController : ControllerBase
     public async Task<IActionResult> GenerateTts([FromBody] TtsRequest req)
     {
         if (string.IsNullOrWhiteSpace(req.Text)) return BadRequest();
+        if (req.Text.Length > MaxTtsTextLength)
+            return BadRequest(new { error = $"Text too long (max {MaxTtsTextLength} characters)" });
 
         var sw = Stopwatch.StartNew();
         var audioBytes = await _ttsService.GenerateSpeechAsync(req.Text);
@@ -116,6 +174,7 @@ public class ChatController : ControllerBase
     public async Task GenerateTtsStream([FromBody] TtsRequest req)
     {
         if (string.IsNullOrWhiteSpace(req.Text)) { Response.StatusCode = 400; return; }
+        if (req.Text.Length > MaxTtsTextLength) { Response.StatusCode = 400; return; }
 
         Response.ContentType = "application/octet-stream";
 
@@ -187,6 +246,9 @@ public class ChatController : ControllerBase
     [HttpPatch("sessions/{id:int}")]
     public async Task<IActionResult> RenameSession(int id, [FromBody] RenameSessionRequest req)
     {
+        if (req.Title.Length > MaxSessionTitleLength)
+            return BadRequest(new { error = $"Заголовок слишком длинный (максимум {MaxSessionTitleLength} символов)" });
+
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
         var session = await _db.ChatSessions.FirstOrDefaultAsync(s => s.Id == id && s.UserId == userId);
         if (session == null) return NotFound();
@@ -530,7 +592,13 @@ public class ChatController : ControllerBase
         await Response.Body.FlushAsync();
     }
 
+    // Rejects an oversized request body before model binding buffers the
+    // whole thing into an IFormFile — the file.Length check below is a
+    // second, independent layer, not a substitute (PROJECT-AUDIT-2026-07-10
+    // SEC-07: "upload endpoints rely on model binding before checking file
+    // length").
     [HttpPost("upload-audio")]
+    [RequestSizeLimit(MaxAudioRequestBodySize)]
     public async Task<IActionResult> UploadAudio(IFormFile file)
     {
         if (file.Length == 0 || file.Length > MaxAudioSize)
@@ -562,6 +630,7 @@ public class ChatController : ControllerBase
     // think. Used to give real conversational patience instead of a fixed silence cutoff.
     // Nothing here gets persisted — the snapshot is a scratch file, deleted immediately after.
     [HttpPost("check-utterance")]
+    [RequestSizeLimit(MaxAudioRequestBodySize)]
     public async Task<IActionResult> CheckUtterance(IFormFile audio)
     {
         if (audio.Length == 0 || audio.Length > MaxAudioSize)
@@ -638,8 +707,12 @@ public class ChatController : ControllerBase
         if (file.Length == 0 || file.Length > MaxImageSize)
             return BadRequest(new { error = "File must be between 1 byte and 10MB" });
 
-        if (!file.ContentType.StartsWith("image/"))
-            return BadRequest(new { error = "Only image files are allowed" });
+        using var ms = new MemoryStream();
+        await file.CopyToAsync(ms);
+        var bytes = ms.ToArray();
+
+        if (!TryDetectImageMimeType(bytes, out var detectedMimeType))
+            return BadRequest(new { error = "Only JPEG, PNG, GIF, or WebP images are allowed" });
 
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
         var settings = await _db.UserSettings.FirstOrDefaultAsync(s => s.UserId == userId);
@@ -650,9 +723,7 @@ public class ChatController : ControllerBase
         if (string.IsNullOrWhiteSpace(key))
             return BadRequest(new { error = "Gemini API key is not configured" });
 
-        using var ms = new MemoryStream();
-        await file.CopyToAsync(ms);
-        var base64 = Convert.ToBase64String(ms.ToArray());
+        var base64 = Convert.ToBase64String(bytes);
 
         using var http = new HttpClient();
         http.Timeout = TimeSpan.FromSeconds(30);
@@ -665,7 +736,7 @@ public class ChatController : ControllerBase
                 {
                     parts = new object[]
                     {
-                        new { inline_data = new { mime_type = file.ContentType, data = base64 } },
+                        new { inline_data = new { mime_type = detectedMimeType, data = base64 } },
                         new { text = "Extract ALL text from this image exactly as written. Preserve line breaks and formatting. Return ONLY the extracted text, nothing else." }
                     }
                 }

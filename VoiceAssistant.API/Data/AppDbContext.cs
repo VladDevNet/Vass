@@ -35,6 +35,8 @@ public class AppDbContext : IdentityDbContext<User>
             e.HasOne(s => s.User).WithMany(u => u.ChatSessions)
                 .HasForeignKey(s => s.UserId).OnDelete(DeleteBehavior.Cascade);
             e.Property(s => s.Mode).HasMaxLength(20);
+            // Matches ChatController.MaxSessionTitleLength (PROJECT-AUDIT-2026-07-10 SEC-07).
+            e.Property(s => s.Title).HasMaxLength(200);
         });
 
         builder.Entity<Message>(e =>
@@ -53,6 +55,8 @@ public class AppDbContext : IdentityDbContext<User>
             e.Property(s => s.DisplayName).HasMaxLength(100);
             e.Property(s => s.AssistantName).HasMaxLength(100);
             e.Property(s => s.AvatarId).HasMaxLength(20);
+            // Matches SettingsController.MaxCustomSystemPromptLength (PROJECT-AUDIT-2026-07-10 SEC-07).
+            e.Property(s => s.CustomSystemPrompt).HasMaxLength(4000);
             e.Property(s => s.FullTranslation).HasDefaultValue(false);
             // PROJECT-AUDIT-2026-07-10 SEC-03: encrypted at rest, transparent
             // to every existing caller. See ApiKeyEncryptionConverter and

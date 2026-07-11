@@ -38,6 +38,15 @@ public class ClientLogsController : ControllerBase
     // threshold (see remoteLogger.ts) stays well under this in practice.
     private const int MaxEntriesPerBatch = 500;
 
+    // Message/DataJson are intentionally NOT HasMaxLength at the DB level
+    // (see ClientLogEntry.cs) -- these request-layer caps are what actually
+    // bound worst-case storage per batch (500 entries x these limits),
+    // without the truncation/500 risk a DB-level cap would carry
+    // (PROJECT-AUDIT-2026-07-10 SEC-07). Data gets more headroom since it
+    // can legitimately carry a serialized stack trace or state dump.
+    private const int MaxMessageLength = 4000;
+    private const int MaxDataLength = 20000;
+
     [HttpPost("batch")]
     public async Task<IActionResult> PostBatch([FromBody] BatchRequest req)
     {
@@ -57,6 +66,7 @@ public class ClientLogsController : ControllerBase
             // Category into something else silently corrupts it) rather than
             // trust every field is already within bounds.
             if (entry.RunId.Length > 40 || entry.Level.Length > 10 || entry.Category.Length > 20) continue;
+            if (entry.Message.Length > MaxMessageLength || entry.Data?.Length > MaxDataLength) continue;
 
             _db.ClientLogEntries.Add(new ClientLogEntry
             {
