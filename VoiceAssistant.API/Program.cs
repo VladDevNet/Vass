@@ -17,6 +17,17 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
 
+// A scoped DbContext must never have more than one operation in flight at a
+// time. ChatController.MaybeUpdateCustomInstructionsAsync deliberately runs
+// concurrently with the rest of Send() (started but not immediately awaited,
+// so the response isn't held up by its own Gemini side-call) -- it needs an
+// independent context instance, not the request's shared scoped one, or its
+// SaveChangesAsync can race the main flow's own and throw "A second
+// operation was started on this context before a previous operation
+// completed" (PROJECT-AUDIT-2026-07-10 REL-01).
+builder.Services.AddDbContextFactory<AppDbContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
+
 // Identity
 builder.Services.AddIdentity<User, IdentityRole>(options =>
 {

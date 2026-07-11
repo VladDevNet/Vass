@@ -18,6 +18,7 @@ namespace VoiceAssistant.API.Controllers;
 public class ChatController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly IDbContextFactory<AppDbContext> _dbContextFactory;
     private readonly UserManager<User> _userManager;
     private readonly GeminiService _gemini;
     private readonly CompanionPromptService _tutor;
@@ -30,13 +31,14 @@ public class ChatController : ControllerBase
 
     private readonly PiperTtsService _ttsService;
 
-    public ChatController(AppDbContext db, UserManager<User> userManager,
+    public ChatController(AppDbContext db, IDbContextFactory<AppDbContext> dbContextFactory, UserManager<User> userManager,
         GeminiService gemini, CompanionPromptService tutor,
         AudioAnalysisService audioAnalysis, SpeakerRegistryService speakerRegistry, ConversationMemoryService conversationMemory,
         PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
         _db = db;
+        _dbContextFactory = dbContextFactory;
         _userManager = userManager;
         _gemini = gemini;
         _tutor = tutor;
@@ -445,7 +447,10 @@ public class ChatController : ControllerBase
         // assistant to remember a persistent behavior preference ("говори медленнее",
         // "давай на ты", etc.) so future turns' system prompts reflect it. Awaited at
         // the very end of this action — the client already moves on once it sees
-        // [DONE], so this adds no perceived latency.
+        // [DONE], so this adds no perceived latency. Genuinely runs concurrently with
+        // the rest of this method (including the _db.SaveChangesAsync below for the
+        // assistant message) until awaited, so it uses its own DbContext instance
+        // internally rather than the shared _db (PROJECT-AUDIT-2026-07-10 REL-01).
         var instructionUpdateTask = MaybeUpdateCustomInstructionsAsync(userId, messageText, settings?.CustomSystemPrompt, geminiKey, HttpContext.RequestAborted);
 
         // Build conversation history: this session is persistent and never rotates
@@ -879,18 +884,25 @@ public class ChatController : ControllerBase
             return;
         }
 
-        var settings = await _db.UserSettings.FirstOrDefaultAsync(s => s.UserId == userId);
+        // This method runs concurrently with the rest of Send() (see the
+        // instructionUpdateTask comment at the call site) -- it must not
+        // share the request's scoped _db with the main flow's own
+        // SaveChangesAsync, or the two can race on the same DbContext
+        // instance (PROJECT-AUDIT-2026-07-10 REL-01).
+        await using var db = await _dbContextFactory.CreateDbContextAsync(ct);
+
+        var settings = await db.UserSettings.FirstOrDefaultAsync(s => s.UserId == userId);
         if (settings == null)
         {
             settings = new Data.Entities.UserSettings { UserId = userId, CustomSystemPrompt = result };
-            _db.UserSettings.Add(settings);
+            db.UserSettings.Add(settings);
         }
         else
         {
             settings.CustomSystemPrompt = result;
             settings.UpdatedAt = DateTime.UtcNow;
         }
-        await _db.SaveChangesAsync();
+        await db.SaveChangesAsync();
         _logger.LogInformation("Updated custom instructions for user {UserId}: {Instructions}", userId, result);
     }
 
