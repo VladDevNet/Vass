@@ -4,10 +4,13 @@ namespace VoiceAssistant.API.Data.Entities;
 // asynchronously (see mobile/src/logging/remoteLogger.ts) — for
 // development-stage debugging of the voice loop (VAD/TTS/turn-taking)
 // against a real device without needing adb logcat access. Message/Data are
-// deliberately unbounded text, not varchar(n): a length cap here would
-// silently truncate or 500 on a long stack trace/payload for no real
-// benefit (see SettingsController's DisplayName precedent for why an
-// unenforced cap is worse than none).
+// deliberately unbounded text at the DB level, not varchar(n): a length cap
+// here would silently truncate or 500 on a long stack trace/payload for no
+// real benefit (see SettingsController's DisplayName precedent for why an
+// unenforced cap is worse than none). Bounded instead at the request layer
+// (ClientLogsController's MaxMessageLength/MaxDataLength) -- reject-and-skip
+// an oversized entry there, rather than let a DB constraint corrupt or
+// crash on it here.
 public class ClientLogEntry
 {
     public long Id { get; set; }

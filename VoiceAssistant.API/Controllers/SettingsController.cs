@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -11,10 +12,29 @@ namespace VoiceAssistant.API.Controllers;
 [ApiController]
 [Route("api/v1/settings")]
 [Authorize]
-public class SettingsController : ControllerBase
+public partial class SettingsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly CompanionPromptService _tutor;
+
+    // Mirrors mobile/src/components/LayeredAvatar.tsx's AvatarId union
+    // ('olga' | 'male') — the client already falls back to 'olga' for any
+    // other value, so null (unset) is allowed but a garbage string is not
+    // (PROJECT-AUDIT-2026-07-10 SEC-07).
+    private static readonly HashSet<string> ValidAvatarIds = ["olga", "male"];
+
+    // Structural check only (2-letter code, optional region subtag) — this
+    // field isn't read anywhere server-side today (it's a holdover from the
+    // pre-mobile-pivot web UI), so there's no real "supported languages"
+    // list to validate against yet, just garbage/oversized input to reject.
+    [GeneratedRegex(@"^[a-z]{2}(-[A-Z]{2})?$")]
+    private static partial Regex InterfaceLanguagePattern();
+
+    // Reinjected into every future Gemini system prompt (see
+    // CompanionPromptService.BuildSystemPrompt) — generous enough for
+    // legitimate accumulated instructions, bounded against someone pasting
+    // an arbitrarily large blob that inflates the cost of every future turn.
+    private const int MaxCustomSystemPromptLength = 4000;
 
     public SettingsController(AppDbContext db, CompanionPromptService tutor)
     {
@@ -75,6 +95,12 @@ public class SettingsController : ControllerBase
             return BadRequest(new { error = "Имя слишком длинное (максимум 100 символов)" });
         if (req.AssistantName?.Length > 100)
             return BadRequest(new { error = "Имя ассистента слишком длинное (максимум 100 символов)" });
+        if (req.AvatarId is not null && !ValidAvatarIds.Contains(req.AvatarId))
+            return BadRequest(new { error = "Недопустимый AvatarId" });
+        if (req.InterfaceLanguage is not null && !InterfaceLanguagePattern().IsMatch(req.InterfaceLanguage))
+            return BadRequest(new { error = "Недопустимый код языка" });
+        if (req.CustomSystemPrompt?.Length > MaxCustomSystemPromptLength)
+            return BadRequest(new { error = $"Инструкции слишком длинные (максимум {MaxCustomSystemPromptLength} символов)" });
 
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
         var settings = await _db.UserSettings.FirstOrDefaultAsync(s => s.UserId == userId);
