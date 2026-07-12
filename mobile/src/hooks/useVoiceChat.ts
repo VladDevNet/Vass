@@ -9,7 +9,7 @@ import {
   useAudioRecorder,
 } from 'expo-audio';
 import { File } from 'expo-file-system';
-import { api, sendMessage } from '../api/client';
+import { api, sendMessage, type ExternalActionEvent } from '../api/client';
 import { getReminderDeviceContext, scheduleAndAcknowledgeReminder } from '../reminders/localReminders';
 import {
   createStreamingSpeech,
@@ -253,6 +253,18 @@ export function useVoiceChat(sessionId: number | null) {
   const recorderLiveRef = useRef(false);
   // Same idea, for the shadow (continuation) recorder.
   const shadowRecorderLiveRef = useRef(false);
+  // Native prepare/stop are asynchronous and must never overlap. Production
+  // logs confirmed the exact race: stop observed live=false while prepare
+  // was still in flight, then prepare completed and left the native recorder
+  // prepared forever; every later prepare failed with "already prepared".
+  // Chain both operations so a stop requested during prepare runs immediately
+  // after it and sees the committed live flag.
+  const shadowOperationRef = useRef<Promise<void>>(Promise.resolve());
+  const enqueueShadowOperation = useCallback(<T,>(operation: () => Promise<T>): Promise<T> => {
+    const result = shadowOperationRef.current.then(operation, operation);
+    shadowOperationRef.current = result.then(() => undefined, () => undefined);
+    return result;
+  }, []);
   // Wall-clock Date.now() of the shadow recorder's last successful arm —
   // an INDEPENDENT signal from useVad's own (VAD-tick-driven) timing state,
   // used as a last-resort sanity check in commitShadowContinuation. Exists
@@ -419,29 +431,14 @@ export function useVoiceChat(sessionId: number | null) {
   // continuation commit (see its own comment), unlike the main recorder
   // which only ever arms once per turn.
   //
-  // Known, accepted narrow gap (independent review, not empirically
-  // confirmed — flagged as lower-confidence, unlike pausedRef's other four
-  // confirmed instances elsewhere in this file): if pauseConversation's own
-  // stopShadowRecorderIfLive() call races AHEAD of this function's own
-  // prepareToRecordAsync() below (same shape as the main recorder's races),
-  // it can find nothing live yet to stop, and this function has no
-  // symmetric pausedRef recheck of its own before setting
-  // shadowRecorderLiveRef.current = true. Deliberately NOT fixed the same
-  // way as the main recorder: skipping record()/the liveRef write here
-  // without also stopping the now-prepared native object risks a DIFFERENT
-  // bug (prepareToRecordAsync() called again on an object already prepared
-  // — the exact AudioRecorderAlreadyPreparedException this file's own
-  // comments elsewhere warn about), and it's unclear from the JS-level API
-  // alone whether an unstarted prepare needs its own explicit teardown call
-  // to avoid that. Consequence is degraded, not deadlocked: shadow-capture
-  // (mid-reply continuation detection) silently stops re-arming for the
-  // rest of the session, but the core turn loop and pause/resume themselves
-  // are unaffected. Revisit if ever actually observed on a real device.
-  const armShadowRecorder = useCallback(async () => {
-    if (!mountedRef.current || shadowRecorderLiveRef.current) return;
+  const armShadowRecorder = useCallback(() => enqueueShadowOperation(async () => {
+    if (!mountedRef.current || shadowRecorderLiveRef.current || stateRef.current !== 'thinking' || pausedRef.current) return;
     try {
       await shadowRecorder.prepareToRecordAsync();
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || stateRef.current !== 'thinking' || pausedRef.current) {
+        await shadowRecorder.stop();
+        return;
+      }
       shadowRecorder.record();
       shadowRecorderLiveRef.current = true;
       shadowArmedAtRef.current = Date.now();
@@ -456,19 +453,20 @@ export function useVoiceChat(sessionId: number | null) {
       if (!mountedRef.current) return;
       log('error', 'shadow', 'arm failed', { error: err instanceof Error ? err.message : String(err) });
     }
-  }, [shadowRecorder]);
+  }), [enqueueShadowOperation, shadowRecorder]);
 
-  const stopShadowRecorderIfLive = useCallback(async (): Promise<string | null> => {
-    if (!shadowRecorderLiveRef.current) return null;
-    shadowRecorderLiveRef.current = false;
-    try {
-      await shadowRecorder.stop();
-      return shadowRecorder.uri || null;
-    } catch (err) {
-      log('warn', 'shadow', 'stop failed', { error: err instanceof Error ? err.message : String(err) });
-      return null;
-    }
-  }, [shadowRecorder]);
+  const stopShadowRecorderIfLive = useCallback((): Promise<string | null> =>
+    enqueueShadowOperation(async () => {
+      if (!shadowRecorderLiveRef.current) return null;
+      shadowRecorderLiveRef.current = false;
+      try {
+        await shadowRecorder.stop();
+        return shadowRecorder.uri || null;
+      } catch (err) {
+        log('warn', 'shadow', 'stop failed', { error: err instanceof Error ? err.message : String(err) });
+        return null;
+      }
+    }), [enqueueShadowOperation, shadowRecorder]);
 
   // Arms the shadow recorder for the whole 'thinking' phase, discards it (no
   // commit) the moment we leave 'thinking' any other way. Fires once per
@@ -680,6 +678,7 @@ export function useVoiceChat(sessionId: number | null) {
       // closure ran by then; a property access doesn't have that problem.
       const streamingHolder: { current: StreamingSpeech | null } = { current: null };
       let sentenceBuffer = '';
+      const pendingExternalActionHolder: { current: ExternalActionEvent | null } = { current: null };
 
       const handleChunk = (chunk: string) => {
         if (myGeneration !== segmentGenerationRef.current || bargedInRef.current) {
@@ -768,8 +767,8 @@ export function useVoiceChat(sessionId: number | null) {
             return;
           }
           executedExternalActionsRef.current.add(actionKey);
-          await executeExternalAction(action);
-          log('info', 'external-action', 'action opened', { type: action.type });
+          pendingExternalActionHolder.current = action;
+          log('info', 'external-action', 'action queued until speech completes', { type: action.type });
         };
 
         if (fromShadow) {
@@ -911,6 +910,14 @@ export function useVoiceChat(sessionId: number | null) {
               }
             }
           }
+        }
+        const pendingExternalAction = pendingExternalActionHolder.current;
+        if (pendingExternalAction &&
+            myGeneration === segmentGenerationRef.current &&
+            myTurn === turnGenerationRef.current &&
+            !bargedInRef.current) {
+          await executeExternalAction(pendingExternalAction);
+          log('info', 'external-action', 'action opened after speech', { type: pendingExternalAction.type });
         }
         log('info', 'turn', 'finalize done', { totalMs: Date.now() - turnStartedAt });
       } catch (err) {

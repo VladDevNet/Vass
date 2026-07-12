@@ -53,6 +53,10 @@ public class FakeGeminiHandler : HttpMessageHandler
         {
             replyText = "NONE";
         }
+        else if (ReadAllText(body).Contains("Подбери конкретный ролик", StringComparison.Ordinal))
+        {
+            replyText = "Нашёл подходящий ролик: https://www.youtube.com/watch?v=bWGXT5wjkd4";
+        }
 
         return new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -80,5 +84,24 @@ public class FakeGeminiHandler : HttpMessageHandler
             .GetProperty("parts")[0]
             .GetProperty("text")
             .GetString() ?? "";
+    }
+
+    private static string ReadAllText(string body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (!document.RootElement.TryGetProperty("contents", out var contents)) return "";
+            return string.Join(
+                '\n',
+                contents
+                    .EnumerateArray()
+                    .SelectMany(content => content.GetProperty("parts").EnumerateArray())
+                    .Select(part => part.GetProperty("text").GetString()));
+        }
+        catch (JsonException)
+        {
+            return "";
+        }
     }
 }

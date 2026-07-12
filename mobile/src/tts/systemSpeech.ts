@@ -26,6 +26,12 @@ const MAX_CHUNK_LENGTH = Math.min(Speech.maxSpeechInputLength - 100, 3500);
 // chunks still get a meaningful safety net.
 const MAX_CHUNK_SPEECH_MS_PER_CHAR = 100;
 const MIN_CHUNK_SPEECH_MS = 30_000;
+// Android TTS normally reports onStart within well under a second (confirmed
+// by production logs). After returning from YouTube we observed utterances
+// that produced neither onStart nor sound and only hit the old 30s duration
+// timeout. Fail fast into the network-TTS fallback instead of showing
+// `speaking` silently for half a minute.
+const MAX_CHUNK_START_MS = 5_000;
 
 // undefined = not looked up yet this session, null = no Russian voice found.
 let cachedRussianVoice: string | null | undefined;
@@ -307,7 +313,13 @@ function consumeExpectedStop(): boolean {
 // device. Rejecting instead lets speakChunkSafely's caller re-throw, which
 // triggers useVoiceChat's existing network-TTS fallback — same recovery
 // path as any other on-device TTS failure.
-function speakChunk(text: string, voice: string, chunkIndex: number, totalChunks: number): Promise<void> {
+function speakChunk(
+  text: string,
+  voice: string,
+  chunkIndex: number,
+  totalChunks: number,
+  onPlaybackStart: () => void
+): Promise<void> {
   return new Promise((resolve, reject) => {
     Speech.speak(text, {
       language: 'ru-RU',
@@ -319,7 +331,10 @@ function speakChunk(text: string, voice: string, chunkIndex: number, totalChunks
       // reply appearing on screen and being audibly spoken, which the
       // existing 'speaking reply' log (fired BEFORE Speech.speak() is even
       // called) can't distinguish from native TTS engine startup latency.
-      onStart: () => log('debug', 'tts', 'chunk playback started', { chunkIndex, totalChunks }),
+      onStart: () => {
+        onPlaybackStart();
+        log('debug', 'tts', 'chunk playback started', { chunkIndex, totalChunks });
+      },
       onDone: () => resolve(),
       onStopped: () => {
         if (consumeExpectedStop()) {
@@ -344,32 +359,46 @@ function speakChunk(text: string, voice: string, chunkIndex: number, totalChunks
   });
 }
 
-// Wraps speakChunk with the per-chunk safety-timeout protection described
-// above MIN_CHUNK_SPEECH_MS — shared by every chunk createStreamingSpeech's
-// pump loop speaks. Returns true if the timeout fired: the caller should
-// stop entirely rather than move on to the next sentence — if this one
-// chunk's already-generous window wasn't enough, something is wrong with
-// the engine for this whole utterance, not just this one piece.
+// Wraps speakChunk with two independent watchdogs: one for an utterance that
+// never starts at all, and one for playback that starts but never finishes.
+// Both reject so useVoiceChat's existing network-TTS fallback actually runs.
 async function speakChunkSafely(
   text: string,
   voice: string,
   chunkIndex: number,
   totalChunks: number
-): Promise<boolean> {
-  let timedOut = false;
+): Promise<void> {
   const timeoutMs = Math.max(MIN_CHUNK_SPEECH_MS, text.length * MAX_CHUNK_SPEECH_MS_PER_CHAR);
-  const timeoutId = setTimeout(() => {
-    timedOut = true;
-    log('warn', 'tts', 'chunk speech safety timeout hit', { chunkIndex, totalChunks, timeoutMs });
+  let startTimeoutId: ReturnType<typeof setTimeout> | undefined;
+  let finishTimeoutId: ReturnType<typeof setTimeout> | undefined;
+  const stopForTimeout = (message: string, reject: (reason: Error) => void) => {
+    log('warn', 'tts', message, { chunkIndex, totalChunks, timeoutMs });
     markExpectedStop();
     Speech.stop();
-  }, timeoutMs);
+    reject(new Error(message));
+  };
+
+  const startDeadline = new Promise<never>((_, reject) => {
+    startTimeoutId = setTimeout(
+      () => stopForTimeout('chunk playback did not start', reject),
+      MAX_CHUNK_START_MS
+    );
+  });
+  const finishDeadline = new Promise<never>((_, reject) => {
+    finishTimeoutId = setTimeout(
+      () => stopForTimeout('chunk speech safety timeout hit', reject),
+      timeoutMs
+    );
+  });
+  const playback = speakChunk(text, voice, chunkIndex, totalChunks, () => {
+    if (startTimeoutId) clearTimeout(startTimeoutId);
+  });
   try {
-    await speakChunk(text, voice, chunkIndex, totalChunks);
+    await Promise.race([playback, startDeadline, finishDeadline]);
   } finally {
-    clearTimeout(timeoutId);
+    if (startTimeoutId) clearTimeout(startTimeoutId);
+    if (finishTimeoutId) clearTimeout(finishTimeoutId);
   }
-  return timedOut;
 }
 
 export interface StreamingSpeech {
@@ -436,6 +465,13 @@ export function createStreamingSpeech(
   onBeforeFirstSpeech?: () => Promise<void>,
   startPaused = false
 ): StreamingSpeech {
+  if (activeStreaming) {
+    log('warn', 'tts', 'replacing a still-active streaming speech pipeline');
+    markExpectedStop();
+    activeStreaming.abort();
+    Speech.stop();
+    activeStreaming = null;
+  }
   const queue: string[] = [];
   let finished = false;
   let aborted = false;
@@ -533,8 +569,7 @@ export function createStreamingSpeech(
         if (aborted) return;
         // -1: no fixed total in streaming mode, unlike the array-based loop
         // this replaces — more sentences can always still be coming.
-        const timedOut = await speakChunkSafely(chunk, voice!, spokenCount++, -1);
-        if (timedOut) return;
+        await speakChunkSafely(chunk, voice!, spokenCount++, -1);
         if (paused) {
           interrupted = true;
           break;

@@ -56,4 +56,41 @@ public class ExternalActionServiceTests
             new ExternalActionCommand(ExternalActionTypes.YouTubeSearch, Query: "лекции по истории"),
             action);
     }
+
+    [Fact]
+    public void ResolveFromContext_LaunchFollowUp_UsesLatestProposedVideo()
+    {
+        var action = ExternalActionService.ResolveFromContext(
+            "Запускай. Посмотрим.",
+            [
+                new GeminiMessage("assistant", "Первое: https://www.youtube.com/watch?v=bWGXT5wjkd4"),
+                new GeminiMessage("user", "Хорошо")
+            ]);
+
+        Assert.Equal(
+            new ExternalActionCommand(ExternalActionTypes.YouTubeWatch, VideoId: "bWGXT5wjkd4"),
+            action);
+    }
+
+    [Fact]
+    public void ResolveFromContext_SecondSelection_UsesSecondVideo()
+    {
+        var action = ExternalActionService.ResolveFromContext(
+            "Давай второе",
+            [new GeminiMessage(
+                "assistant",
+                "1. https://youtu.be/bWGXT5wjkd4 2. https://www.youtube.com/watch?v=dQw4w9WgXcQ")]);
+
+        Assert.Equal("dQw4w9WgXcQ", action?.VideoId);
+    }
+
+    [Fact]
+    public void ResolveFromContext_OrdinaryReply_DoesNotOpenPriorLink()
+    {
+        var action = ExternalActionService.ResolveFromContext(
+            "Расскажи подробнее",
+            [new GeminiMessage("assistant", "https://www.youtube.com/watch?v=bWGXT5wjkd4")]);
+
+        Assert.Null(action);
+    }
 }

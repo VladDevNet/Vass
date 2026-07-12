@@ -133,6 +133,31 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Fact]
+    public async Task Send_LaunchFollowUp_UsesVideoFromPreviousAssistantReply()
+    {
+        var client = await CreateAuthenticatedClientAsync();
+        var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
+        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>())
+            .EnumerateArray().First().GetProperty("id").GetInt32();
+
+        var discoveryResponse = await client.PostAsJsonAsync("/api/v1/chat/send",
+            new ChatController.SendRequest(sessionId, "Подбери конкретный ролик", SupportsExternalActions: false));
+        discoveryResponse.EnsureSuccessStatusCode();
+
+        var launchResponse = await client.PostAsJsonAsync("/api/v1/chat/send",
+            new ChatController.SendRequest(sessionId, "Запускай. Посмотрим.", SupportsExternalActions: true));
+        launchResponse.EnsureSuccessStatusCode();
+        var raw = await launchResponse.Content.ReadAsStringAsync();
+        var actionLine = raw.Split('\n')
+            .First(line => line.StartsWith("data: ") && line.Contains("externalAction", StringComparison.Ordinal));
+        using var actionJson = JsonDocument.Parse(actionLine[6..]);
+        var action = actionJson.RootElement.GetProperty("externalAction");
+
+        Assert.Equal(ExternalActionTypes.YouTubeWatch, action.GetProperty("type").GetString());
+        Assert.Equal("bWGXT5wjkd4", action.GetProperty("videoId").GetString());
+    }
+
+    [Fact]
     public async Task Send_EmptyMessageNoAudio_ReturnsBadRequest()
     {
         var client = await CreateAuthenticatedClientAsync();

@@ -22,6 +22,18 @@ public class ExternalActionService
         @"^[A-Za-z0-9_-]{11}$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
+    private static readonly Regex YouTubeUrlPattern = new(
+        @"(?:youtube\.com/watch\?(?:[^\s#]*&)?v=|youtu\.be/)(?<id>[A-Za-z0-9_-]{11})(?:[^A-Za-z0-9_-]|$)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly Regex LaunchFollowUpPattern = new(
+        @"\b(запускай|запусти|включай|включи|проигрывай|проиграй|открывай|открой|давай\s+(?:его|это|перв(?:ое|ый)|втор(?:ое|ой))|play\s+it)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly Regex SecondSelectionPattern = new(
+        @"\b(втор(?:ое|ой|ую)|номер\s*2|2[- ]?(?:е|й|ю))\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
     private readonly GeminiService _gemini;
     private readonly ILogger<ExternalActionService> _logger;
 
@@ -33,9 +45,16 @@ public class ExternalActionService
 
     public async Task<ExternalActionCommand?> ClassifyAsync(
         string message,
+        IReadOnlyList<GeminiMessage> recentConversation,
         string? geminiApiKey,
         CancellationToken cancellationToken)
     {
+        var contextualAction = ResolveFromContext(message, recentConversation);
+        if (contextualAction is not null) return contextualAction;
+
+        var contextText = string.Join(
+            '\n',
+            recentConversation.TakeLast(6).Select(item => $"{item.Role}: {item.Content}"));
         var prompt = $$"""
             Классифицируй команду пользователя для мобильного голосового ассистента.
             Верни только JSON одного из видов:
@@ -48,11 +67,18 @@ public class ExternalActionService
             - open_vass: пользователь просит вернуться, развернуть или открыть Vass полностью;
             - youtube_search: пользователь просит найти, открыть или включить видео/музыку в YouTube;
             - youtube_watch: только если в сообщении уже есть конкретная YouTube-ссылка или video id;
+            - если пользователь говорит «запускай», «включай», «открой его» и
+              в недавнем контексте есть предложенная YouTube-ссылка, верни её videoId;
             - для обычного разговора всегда chat;
             - не придумывай videoId и не добавляй URL;
             - query содержит только поисковую фразу, без слов «открой», «найди», «YouTube».
 
-            Сообщение пользователя:
+            Недавний контекст:
+            ---
+            {{contextText}}
+            ---
+
+            Последнее сообщение пользователя:
             ---
             {{message}}
             ---
@@ -84,6 +110,27 @@ public class ExternalActionService
             _logger.LogWarning(ex, "External action classification failed");
             return null;
         }
+    }
+
+    public static ExternalActionCommand? ResolveFromContext(
+        string message,
+        IReadOnlyList<GeminiMessage> recentConversation)
+    {
+        var directId = ExtractVideoIds(message).FirstOrDefault();
+        if (directId is not null)
+            return new ExternalActionCommand(ExternalActionTypes.YouTubeWatch, VideoId: directId);
+
+        if (!LaunchFollowUpPattern.IsMatch(message)) return null;
+
+        foreach (var item in recentConversation.Reverse())
+        {
+            var ids = ExtractVideoIds(item.Content).Distinct(StringComparer.Ordinal).ToList();
+            if (ids.Count == 0) continue;
+            var index = SecondSelectionPattern.IsMatch(message) && ids.Count > 1 ? 1 : 0;
+            return new ExternalActionCommand(ExternalActionTypes.YouTubeWatch, VideoId: ids[index]);
+        }
+
+        return null;
     }
 
     public static ExternalActionCommand? Parse(string raw)
@@ -149,4 +196,7 @@ public class ExternalActionService
         root.TryGetProperty(propertyName, out var element) && element.ValueKind == JsonValueKind.String
             ? element.GetString()
             : null;
+
+    private static IEnumerable<string> ExtractVideoIds(string text) =>
+        YouTubeUrlPattern.Matches(text).Select(match => match.Groups["id"].Value);
 }

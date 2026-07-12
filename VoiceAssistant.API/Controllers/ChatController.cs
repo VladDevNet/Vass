@@ -470,8 +470,18 @@ public class ChatController : ControllerBase
         session.Messages.Add(userMessage);
         await _db.SaveChangesAsync();
 
+        var externalActionContext = session.Messages
+            .Where(item => item.Id != userMessage.Id)
+            .OrderBy(item => item.CreatedAt)
+            .TakeLast(6)
+            .Select(item => new GeminiMessage(item.Role, item.Content))
+            .ToList();
         var externalActionTask = req.SupportsExternalActions
-            ? _externalActions.ClassifyAsync(messageText, geminiKey, HttpContext.RequestAborted)
+            ? _externalActions.ClassifyAsync(
+                messageText,
+                externalActionContext,
+                geminiKey,
+                HttpContext.RequestAborted)
             : Task.FromResult<ExternalActionCommand?>(null);
 
         var reminderInterpretation = await _reminders.TryCreateAsync(
