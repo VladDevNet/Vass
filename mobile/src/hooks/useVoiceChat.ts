@@ -6,6 +6,7 @@ import {
   setAudioModeAsync,
   useAudioRecorder,
 } from 'expo-audio';
+import { File } from 'expo-file-system';
 import { api, sendMessage } from '../api/client';
 import {
   createStreamingSpeech,
@@ -834,7 +835,25 @@ export function useVoiceChat(sessionId: number | null) {
             // a transient engine error); trading a little precision for
             // simplicity here is a proportionate call, not a shortcut.
             const audioUri = await api.synthesizeSpeech(fullReply);
-            await playToCompletion(audioUri, playerRef);
+            try {
+              await playToCompletion(audioUri, playerRef);
+            } finally {
+              // PROJECT-AUDIT-2026-07-10 MOB-02: synthesizeSpeech writes a
+              // new tts-{timestamp}.wav to the cache dir every call and
+              // never cleaned it up -- harmless for one turn, but this
+              // fallback path can fire repeatedly in a long conversation.
+              // Deleted only after the player has fully released the file
+              // (playToCompletion always resolves, never rejects, so this
+              // finally block runs after every attempt regardless of how
+              // playback ended).
+              try {
+                new File(audioUri).delete();
+              } catch (err) {
+                log('warn', 'tts', 'failed to delete cached TTS file after playback', {
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              }
+            }
           }
         }
         log('info', 'turn', 'finalize done', { totalMs: Date.now() - turnStartedAt });
