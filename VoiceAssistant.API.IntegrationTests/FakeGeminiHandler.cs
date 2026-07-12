@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using VoiceAssistant.API.Controllers;
 
 namespace VoiceAssistant.API.IntegrationTests;
 
@@ -13,22 +14,29 @@ namespace VoiceAssistant.API.IntegrationTests;
 //
 // ChatController.Send() fires up to three concurrent StreamResponseAsync
 // calls per turn: the main reply (maxOutputTokens: 2048, the default), a
-// "does this need a preamble" check (maxOutputTokens: 30), and a background
-// "did the user ask to remember something" check (maxOutputTokens: 200).
+// "does this need a preamble" check (maxOutputTokens: ChatController.PreambleCheckMaxTokens),
+// and a background "did the user ask to remember something" check
+// (maxOutputTokens: ChatController.CustomInstructionCheckMaxTokens).
 // Distinguishing by that field keeps the two background checks harmless
 // no-ops (they short-circuit on the literal string "NONE") while still
-// exercising the real main-reply path.
+// exercising the real main-reply path. Referencing ChatController's own
+// public consts (PROJECT-AUDIT-2026-07-10 QA-01) instead of repeating the
+// literals here means a future change to either number fails to compile
+// instead of silently reducing test fidelity.
 public class FakeGeminiHandler : HttpMessageHandler
 {
     public const string DefaultReplyText = "Привет! Это тестовый ответ ассистента.";
+
+    private static readonly string PreambleCheckMarker = $"\"maxOutputTokens\":{ChatController.PreambleCheckMaxTokens}";
+    private static readonly string CustomInstructionCheckMarker = $"\"maxOutputTokens\":{ChatController.CustomInstructionCheckMaxTokens}";
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
 
         var replyText = DefaultReplyText;
-        if (body.Contains("\"maxOutputTokens\":30", StringComparison.Ordinal) ||
-            body.Contains("\"maxOutputTokens\":200", StringComparison.Ordinal))
+        if (body.Contains(PreambleCheckMarker, StringComparison.Ordinal) ||
+            body.Contains(CustomInstructionCheckMarker, StringComparison.Ordinal))
         {
             replyText = "NONE";
         }

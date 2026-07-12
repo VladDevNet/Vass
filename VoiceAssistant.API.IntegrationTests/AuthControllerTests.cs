@@ -7,6 +7,12 @@ using Xunit;
 
 namespace VoiceAssistant.API.IntegrationTests;
 
+// register/login share Program.cs's "auth" rate-limit policy (10 requests/
+// minute per client IP -- TestServer gives every in-process request the same
+// loopback address, so all [Fact]s in this class share one bucket, since
+// xUnit runs facts within a class sequentially by default). This class's
+// current tests use 8/10. Adding more register/login calls without checking
+// this budget risks a flaky 429 instead of the expected status code.
 public class AuthControllerTests : IClassFixture<TestWebApplicationFactory>
 {
     private readonly HttpClient _client;

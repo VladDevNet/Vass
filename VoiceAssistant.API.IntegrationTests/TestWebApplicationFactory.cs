@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
@@ -117,7 +118,19 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>, IAsyncL
 
     async Task IAsyncLifetime.DisposeAsync()
     {
-        try { if (File.Exists(_dbPath)) File.Delete(_dbPath); } catch { }
         await base.DisposeAsync();
+
+        // Microsoft.Data.Sqlite pools physical connections by default -- the OS
+        // file handle can outlive DbContext/host disposal above, silently
+        // failing the File.Delete below on Windows (confirmed empirically: a
+        // 100%-reproducible leak of vass-it-*.db files across repeated local
+        // runs, since the swallowed IOException never surfaced). ClearPool
+        // releases this database's specific pooled connection first.
+        using (var conn = new SqliteConnection($"Data Source={_dbPath}"))
+        {
+            SqliteConnection.ClearPool(conn);
+        }
+
+        try { if (File.Exists(_dbPath)) File.Delete(_dbPath); } catch { }
     }
 }
