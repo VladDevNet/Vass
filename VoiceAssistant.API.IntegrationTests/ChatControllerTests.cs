@@ -28,7 +28,7 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Fact]
-    public async Task GetSessions_Authenticated_CreatesAndReturnsSession()
+    public async Task GetSessions_Authenticated_ReturnsSessionCreatedAtRegistration()
     {
         var client = await CreateAuthenticatedClientAsync();
 
@@ -36,8 +36,34 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        var first = body.EnumerateArray().First();
-        Assert.True(first.GetProperty("id").GetInt32() > 0);
+        var sessions = body.EnumerateArray().ToList();
+        Assert.Single(sessions);
+        var id = sessions[0].GetProperty("id").GetInt32();
+        Assert.True(id > 0);
+
+        // GetSessions is a pure read (PROJECT-AUDIT-2026-07-10 section 6) --
+        // calling it again must return the SAME session, not create another.
+        var second = await client.GetFromJsonAsync<JsonElement>("/api/v1/chat/sessions");
+        var secondSessions = second.EnumerateArray().ToList();
+        Assert.Single(secondSessions);
+        Assert.Equal(id, secondSessions[0].GetProperty("id").GetInt32());
+    }
+
+    [Fact]
+    public async Task GetSessions_NoSessions_ReturnsEmptyArray()
+    {
+        var client = await CreateAuthenticatedClientAsync();
+        var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
+        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>()).EnumerateArray().First().GetProperty("id").GetInt32();
+
+        var deleteResponse = await client.DeleteAsync($"/api/v1/chat/sessions/{sessionId}");
+        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+
+        var response = await client.GetAsync("/api/v1/chat/sessions");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Empty(body.EnumerateArray());
     }
 
     [Fact]

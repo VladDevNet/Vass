@@ -46,6 +46,16 @@ public class AuthController : ControllerBase
             NativeLang = req.NativeLang ?? "uk"
         };
 
+        // UserManager and _db share one connection per request (both resolve
+        // the same scoped AppDbContext -- see Program.cs's
+        // AddEntityFrameworkStores<AppDbContext>()), so this transaction
+        // covers CreateAsync's own SaveChanges too: if the ChatSession insert
+        // below fails, the user row rolls back with it instead of leaving an
+        // orphaned account with no session and no way to ever get one (since
+        // GetSessions no longer creates one lazily -- PROJECT-AUDIT-2026-07-10
+        // section 6).
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+
         var result = await _userManager.CreateAsync(user, req.Password);
         if (!result.Succeeded)
             return BadRequest(new { errors = result.Errors.Select(e => e.Description) });
@@ -53,9 +63,10 @@ public class AuthController : ControllerBase
         // Single implicit session per user (companion pattern, not
         // multi-conversation chat) -- created once here instead of lazily on
         // ChatController.GetSessions' first call, which used to make that a
-        // GET with a side effect (PROJECT-AUDIT-2026-07-10 section 6).
+        // GET with a side effect.
         _db.ChatSessions.Add(new ChatSession { UserId = user.Id, Title = "Общение" });
         await _db.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         return Ok(new { token = GenerateToken(user) });
     }
