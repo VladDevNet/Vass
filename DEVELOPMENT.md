@@ -152,6 +152,8 @@ Expo / React Native / TypeScript, in `mobile/`. See `docs/react-native/architect
 | --- | --- | --- |
 | `POST` | `/api/v1/client-logs/batch` | Ingests a batch of log entries from the mobile client (`mobile/src/logging/remoteLogger.ts`) — fire-and-forget, development-stage debugging tooling for diagnosing the voice loop against a real device |
 
+Entries are retained for 30 days (`ClientLogRetentionService`, PROJECT-AUDIT-2026-07-10 DATA-01) — a background service checked once on startup and every 24h thereafter, deleting anything older by its server-received timestamp.
+
 ### Health
 
 Two separate endpoints (PROJECT-AUDIT-2026-07-10 REL-03):
