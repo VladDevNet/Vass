@@ -173,18 +173,27 @@ Secondary features:
 
 ### Health
 
-`GET /api/health` returns a plain `"healthy"` body. This is what the Docker healthcheck and any external monitoring should hit — note that a bare `/health` (no `/api` prefix) is **not** reachable through the public nginx port; it falls through to the SPA catch-all and silently returns `index.html`.
+Two separate endpoints (PROJECT-AUDIT-2026-07-10 REL-03) — note that a bare `/health` (no `/api` prefix) is **not** reachable through the public nginx port; it falls through to the SPA catch-all and silently returns `index.html`.
+
+- `GET /api/health` — liveness. Always returns a plain `"healthy"` body if the process is up; no dependency checks. This is what the Docker healthcheck and `docker-compose.yml`'s `depends_on: condition: service_healthy` gates point at — deliberately cheap so a slow/degraded dependency never makes Docker restart an otherwise-healthy container.
+- `GET /api/health/ready` — readiness. Checks real DB connectivity, that the audio volume is actually writable, and Gemini configuration presence (never a paid API call) — any of those failing returns HTTP 503 with `"status":"not_ready"`. TTS is checked too but reported as its own `checks.tts` field (`"ok"`/`"degraded"`) without affecting the overall status. This is what **external** uptime monitoring should point at instead of `/api/health`, since liveness alone can't tell you the user-facing chat flow actually works.
 
 ## Streaming Events
 
-`POST /api/v1/chat/send` writes SSE-style lines:
+`POST /api/v1/chat/send` writes SSE-style lines. Happy path (PROJECT-AUDIT-2026-07-10 REL-02 -- note `stats` and `[DONE]` were reordered from an earlier version of this doc: the assistant reply is saved and `stats` is sent BEFORE `[DONE]`, since some clients stop reading the instant they see it):
 
 ```text
 data: {"transcription":"..."}
 data: {"preamble":"..."}
 data: {"text":"..."}
-data: [DONE]
 data: {"stats":{"convertMs":0,"transcribeMs":0,"speakerIdMs":0,"llmFirstTokenMs":0,"llmTotalMs":0,"translationMs":0}}
+data: [DONE]
+```
+
+On an AI/provider infrastructure failure (missing key, non-2xx from Gemini, connection error -- PROJECT-AUDIT-2026-07-10 REL-04), the stream instead ends with a single error event and no `[DONE]`:
+
+```text
+data: {"error":"...","retryable":true}
 ```
 
 `preamble` is an optional short "hold on, let me think/search" phrase, spoken if a fast side-call decides the real response will take a while (search grounding, complex reasoning). The frontend parses these events in `frontend/js/api.js`.
@@ -269,7 +278,9 @@ Startup currently runs:
 db.Database.Migrate();
 ```
 
-Convenient during development; take a `pg_dump` backup before any migration that drops columns/tables in production — `Program.cs` applies migrations unconditionally on every container start.
+Convenient during development; `Program.cs` applies migrations unconditionally on every container start, including in production.
+
+**Deploying to production**: use `scripts/deploy.sh` rather than pulling/rebuilding by hand — it takes a `pg_dump` backup first (aborting before touching anything if the backup looks wrong), then pulls/rebuilds/restarts, then polls `GET /api/health/ready` as a post-deploy smoke test before reporting success (PROJECT-AUDIT-2026-07-10 OPS-01). Backups land in `backups/pre-deploy-<timestamp>.sql` on the VPS.
 
 Useful commands:
 
