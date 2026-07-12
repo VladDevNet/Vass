@@ -126,7 +126,6 @@ Expo / React Native / TypeScript, in `mobile/`. See `docs/react-native/architect
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/api/v1/chat/sessions` | Returns the single current dialog session |
-| `POST` | `/api/v1/chat/sessions` | Creates or returns the existing dialog session |
 | `GET` | `/api/v1/chat/sessions/{id}` | Loads messages (paginated) |
 | `PATCH` | `/api/v1/chat/sessions/{id}` | Renames a session |
 | `DELETE` | `/api/v1/chat/sessions/{id}` | Deletes session and linked audio files |
