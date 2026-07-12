@@ -128,6 +128,16 @@ builder.Services.AddSingleton<SpeakerPendingStore>();
 builder.Services.AddScoped<SpeakerRegistryService>();
 builder.Services.AddScoped<ConversationMemoryService>();
 
+// Skipped under the integration-test host, same reason as the auto-migrate
+// block below -- there's no value in a 24h-interval background timer
+// running against the test's own short-lived Sqlite database, and
+// ClientLogRetentionService.CleanupExpiredEntriesAsync has its own direct
+// unit test coverage instead (PROJECT-AUDIT-2026-07-10 DATA-01, QA-01).
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+    builder.Services.AddHostedService<ClientLogRetentionService>();
+}
+
 // Controllers
 builder.Services.AddControllers();
 
