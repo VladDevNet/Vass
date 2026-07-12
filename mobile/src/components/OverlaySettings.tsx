@@ -17,6 +17,7 @@ const EMPTY_STATUS: OverlayStatus = {
 export function OverlaySettings({ avatarId }: { avatarId: OverlayAvatarId }) {
   const [status, setStatus] = useState<OverlayStatus>(EMPTY_STATUS);
   const [showDisclosure, setShowDisclosure] = useState(false);
+  const [showRestrictedSettingsHelp, setShowRestrictedSettingsHelp] = useState(false);
   const [waitingForPermission, setWaitingForPermission] = useState(false);
   const waitingForPermissionRef = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -46,6 +47,7 @@ export function OverlaySettings({ avatarId }: { avatarId: OverlayAvatarId }) {
       }
       await VassOverlay.start({ state: 'idle', avatarId, enabled: true }, AppState.currentState === 'active');
       setShowDisclosure(false);
+      setShowRestrictedSettingsHelp(false);
       setPermissionWait(false);
       await new Promise((resolve) => setTimeout(resolve, 250));
       await refreshStatus();
@@ -66,7 +68,10 @@ export function OverlaySettings({ avatarId }: { avatarId: OverlayAvatarId }) {
       void (async () => {
         const next = await refreshStatus();
         if (waitingForPermissionRef.current && next.permissionGranted) await startOverlay();
-        if (waitingForPermissionRef.current && !next.permissionGranted) setPermissionWait(false);
+        if (waitingForPermissionRef.current && !next.permissionGranted) {
+          setPermissionWait(false);
+          setShowRestrictedSettingsHelp(true);
+        }
       })();
     });
     return () => subscription.remove();
@@ -79,6 +84,7 @@ export function OverlaySettings({ avatarId }: { avatarId: OverlayAvatarId }) {
       try {
         await VassOverlay.stop();
         setShowDisclosure(false);
+        setShowRestrictedSettingsHelp(false);
         setPermissionWait(false);
         await refreshStatus();
       } finally {
@@ -90,17 +96,28 @@ export function OverlaySettings({ avatarId }: { avatarId: OverlayAvatarId }) {
     if (status.permissionGranted) {
       await startOverlay();
     } else {
+      setShowRestrictedSettingsHelp(false);
       setShowDisclosure(true);
     }
   }
 
   async function openPermissionSettings() {
     setError(null);
+    setShowRestrictedSettingsHelp(false);
     setPermissionWait(true);
     try {
       await VassOverlay.requestOverlayPermission();
     } catch (err) {
       setPermissionWait(false);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function openAppDetails() {
+    setError(null);
+    try {
+      await VassOverlay.openAppDetails();
+    } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }
@@ -161,6 +178,23 @@ export function OverlaySettings({ avatarId }: { avatarId: OverlayAvatarId }) {
         </View>
       )}
 
+      {showRestrictedSettingsHelp && (
+        <View style={styles.restrictedHelp}>
+          <Text style={styles.disclosureTitle}>Android заблокировал разрешение</Text>
+          <Text style={styles.disclosureText}>
+            Для APK, установленного вручную, Android требует ещё один шаг. Откройте карточку Vass,
+            нажмите меню ⋮ справа сверху и выберите «Разрешить ограниченные настройки». После этого
+            вернитесь сюда и включите режим ещё раз.
+          </Text>
+          <Pressable style={styles.primaryButton} onPress={() => void openAppDetails()}>
+            <Text style={styles.primaryButtonText}>Открыть карточку Vass</Text>
+          </Pressable>
+          <Pressable style={styles.cancelButton} onPress={() => setShowRestrictedSettingsHelp(false)}>
+            <Text style={styles.cancelText}>Закрыть</Text>
+          </Pressable>
+        </View>
+      )}
+
       {error && <Text style={styles.error}>{error}</Text>}
     </View>
   );
@@ -188,6 +222,12 @@ const styles = StyleSheet.create({
     lineHeight: 19,
   },
   disclosure: {
+    marginTop: 18,
+    paddingTop: 18,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+  },
+  restrictedHelp: {
     marginTop: 18,
     paddingTop: 18,
     borderTopWidth: 1,

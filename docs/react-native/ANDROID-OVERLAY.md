@@ -42,6 +42,8 @@ EXPO_PUBLIC_API_URL=https://vass.it-consult.services \
 - установить release APK поверх текущей версии и войти в аккаунт;
 - открыть Настройки → «Поверх других приложений»;
 - проверить disclosure, notification permission и системный overlay grant;
+- при sideload-блокировке открыть карточку Vass → меню `⋮` → «Разрешить
+  ограниченные настройки», затем повторить overlay grant;
 - свернуть Vass поверх браузера и YouTube: круг виден, touch вне круга проходит;
 - перетащить к обоим краям, повернуть экран, вернуть portrait и проверить позиции;
 - double tap открывает существующий Vass, без второго task;

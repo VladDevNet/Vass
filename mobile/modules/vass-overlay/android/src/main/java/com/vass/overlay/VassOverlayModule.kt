@@ -50,6 +50,17 @@ class VassOverlayModule : Module() {
       null
     }
 
+    AsyncFunction("openAppDetails") {
+      val context = requireContext()
+      context.startActivity(
+        Intent(
+          Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+          Uri.parse("package:${context.packageName}"),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+      )
+      null
+    }
+
     AsyncFunction("start") { snapshot: Map<String, Any?>, appVisible: Boolean ->
       val context = requireContext()
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
