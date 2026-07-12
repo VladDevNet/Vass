@@ -1189,7 +1189,16 @@ export function useVoiceChat(sessionId: number | null) {
     }
   }, [state, sendSegment, resumeConversation]);
 
-  return { state, transcript, reply, error, forceFinalize, pauseConversation };
+  // Exposed for useGreeting.ts: true only once armMic() has actually
+  // succeeded (rearmRecorderOnly() → recorder.prepareToRecordAsync() +
+  // record()), which itself only completes after mic permission is
+  // granted -- unlike `state === 'idle'`, which is true from this hook's
+  // very first render (useState<VoiceState>('idle')'s initial value),
+  // well before the permission dialog has even been shown. Monotonic
+  // (never reset back to false once armed), matching what a caller
+  // actually wants to know: "has the mic genuinely been armed at least
+  // once this session."
+  return { state, transcript, reply, error, forceFinalize, pauseConversation, micArmed };
 }
 
 // Generous cap on how long a synthesized reply could plausibly run — a

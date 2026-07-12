@@ -650,6 +650,27 @@ export function hasSpeechToResume(): boolean {
 // sounding "Так-так.").
 const BACKCHANNEL_PHRASES = ['Хорошо.', 'Минутку.', 'Понятно.', 'Секунду.', 'Дайте подумать.'];
 
+// Warm opening phrases for useGreeting.ts — spoken once when the app first
+// becomes ready to listen, and again on returning to the foreground after
+// being backgrounded. Deliberately generic enough to fit either moment,
+// matching frontend/js/yolo.js's own GREETING_FILLERS, which shared one
+// pool for both "YOLO start" and "focus-return" (commit 2b28a10) — unlike
+// BACKCHANNEL_PHRASES above, which are specifically about turn-taking, not
+// a fresh conversation.
+//
+// Deliberately gender-neutral (no adjective agreeing with the speaker,
+// e.g. NOT "Рада"/"Готова", which are grammatically feminine-only) — this
+// assistant supports a male voice/persona (LayeredAvatar's "male" avatar,
+// AssistantName "Максим" — see HomeScreen.tsx and the VoiceGender tagging
+// above) as well as a female one, and a mis-gendered greeting would be
+// wrong every time that voice is active. Same constraint BACKCHANNEL_PHRASES
+// already satisfies by accident; here it's deliberate.
+const GREETING_PHRASES = [
+  'Здравствуйте! Я на связи, слушаю вас.',
+  'Добрый день! Можно начинать — я слушаю.',
+  'Привет! Всё готово, говорите.',
+];
+
 // Speaks one short phrase, resolving on ANY stop — done, engine-initiated,
 // or explicitly stopped — never rejecting. Deliberately separate from
 // speakChunk above despite the near-identical Speech.speak() call:
@@ -704,6 +725,25 @@ export function speakBackchannel(): void {
       await speakBackchannelPhrase(phrase, voice);
     } catch (err) {
       log('debug', 'tts', 'backchannel filler failed (non-critical)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  })();
+}
+
+// Fire-and-forget, same shape as speakBackchannel above (and the same
+// reason it doesn't participate in expectedStop tracking — see
+// speakBackchannelPhrase's own comment) — called by useGreeting.ts on app
+// open and on returning from the background.
+export function speakGreeting(): void {
+  void (async () => {
+    try {
+      const voice = await getRussianVoice();
+      if (!voice) return; // no Russian voice on this device — silently skip
+      const phrase = GREETING_PHRASES[Math.floor(Math.random() * GREETING_PHRASES.length)];
+      await speakBackchannelPhrase(phrase, voice);
+    } catch (err) {
+      log('debug', 'tts', 'greeting failed (non-critical)', {
         error: err instanceof Error ? err.message : String(err),
       });
     }

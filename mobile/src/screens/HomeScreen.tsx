@@ -9,6 +9,7 @@ import { log } from '../logging/remoteLogger';
 import type { VoiceState } from '../hooks/useVoiceChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { useSleepTimer } from '../hooks/useSleepTimer';
+import { useGreeting } from '../hooks/useGreeting';
 import { AvatarFace } from '../components/AvatarFace';
 import { LayeredAvatar, type AvatarId } from '../components/LayeredAvatar';
 import { ConversationPeek } from '../components/ConversationPeek';
@@ -59,9 +60,17 @@ export function HomeScreen() {
   // Ошибка загрузки любого слоя LayeredAvatar — падаем на AvatarFace
   // на остаток сессии, без retry-петли. См. spec, «Обработка ошибок».
   const [assetsFailed, setAssetsFailed] = useState(false);
-  const { state, transcript, reply, error, forceFinalize, pauseConversation } = useVoiceChat(sessionId);
+  const { state, transcript, reply, error, forceFinalize, pauseConversation, micArmed } = useVoiceChat(sessionId);
 
   const sleeping = useSleepTimer(state === 'idle', SLEEP_AFTER_MS);
+  // micArmed, not just state === 'idle' -- see useVoiceChat.ts's own
+  // comment on why: state is 'idle' from the very first render, before mic
+  // permission has even been requested, which used to let the cold-start
+  // greeting's "fires once" guard latch true well before the OS permission
+  // dialog could even appear (found in review -- that dialog's own
+  // background/foreground churn then masqueraded as a real focus-return,
+  // greeting twice on a fresh install).
+  useGreeting(micArmed && state === 'idle' && !!sessionId);
 
   useEffect(() => {
     let cancelled = false;
