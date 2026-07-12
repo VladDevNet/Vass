@@ -50,6 +50,13 @@ public class AuthController : ControllerBase
         if (!result.Succeeded)
             return BadRequest(new { errors = result.Errors.Select(e => e.Description) });
 
+        // Single implicit session per user (companion pattern, not
+        // multi-conversation chat) -- created once here instead of lazily on
+        // ChatController.GetSessions' first call, which used to make that a
+        // GET with a side effect (PROJECT-AUDIT-2026-07-10 section 6).
+        _db.ChatSessions.Add(new ChatSession { UserId = user.Id, Title = "Общение" });
+        await _db.SaveChangesAsync();
+
         return Ok(new { token = GenerateToken(user) });
     }
 
