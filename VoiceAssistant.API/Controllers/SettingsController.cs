@@ -87,8 +87,26 @@ public partial class SettingsController : ControllerBase
         ));
     }
 
-    [HttpPut]
-    public async Task<IActionResult> Update([FromBody] SettingsUpdateRequest req)
+    // PATCH, not PUT: every field is optional and independently applied only
+    // if the caller actually sent it -- omitted/null fields are left exactly
+    // as they are server-side (PROJECT-AUDIT-2026-07-10 API-01). This is what
+    // actually closes the lost-update risk the audit describes (mobile used
+    // to GET the whole object, then PUT the whole object back to change one
+    // field, silently clobbering anything changed concurrently -- e.g. by
+    // ChatController's own "запомни, говори медленнее" voice-command write to
+    // CustomSystemPrompt racing a mobile-initiated name change). Two callers
+    // PATCHing DIFFERENT fields can no longer clobber each other, since
+    // neither request touches the other's field at all.
+    //
+    // For the string fields below (DisplayName/AssistantName/
+    // CustomSystemPrompt), an EMPTY string is the explicit "clear this field"
+    // signal, distinct from null/omitted ("don't touch") -- same convention
+    // the API-key fields already used before this change. AvatarId/
+    // InterfaceLanguage don't support an explicit-clear signal: nothing
+    // needs to un-set them today, and doing so would mean special-casing
+    // "" past their allowlist/regex validation for no real benefit.
+    [HttpPatch]
+    public async Task<IActionResult> Patch([FromBody] SettingsUpdateRequest req)
     {
         // DisplayName/AssistantName are HasMaxLength(100) at the DB level —
         // without this check, exceeding it surfaces as a raw 500 from a
@@ -115,23 +133,38 @@ public partial class SettingsController : ControllerBase
             _db.UserSettings.Add(settings);
         }
 
-        settings.DisplayName = req.DisplayName;
-        settings.AssistantName = req.AssistantName;
-        settings.AvatarId = req.AvatarId;
+        if (req.DisplayName is not null)
+            settings.DisplayName = req.DisplayName == "" ? null : req.DisplayName;
+        if (req.AssistantName is not null)
+            settings.AssistantName = req.AssistantName == "" ? null : req.AssistantName;
+        if (req.AvatarId is not null)
+            settings.AvatarId = req.AvatarId;
         if (req.InterfaceLanguage is not null)
             settings.InterfaceLanguage = req.InterfaceLanguage;
 
-        // Only update keys if a new value is provided (not masked)
-        if (req.OpenAiApiKey is not null && !req.OpenAiApiKey.Contains("..."))
+        // Only update keys if a new value is provided and it isn't just the
+        // masked placeholder being echoed back unchanged -- an EXACT match
+        // against what MaskKey would currently produce, not the previous
+        // Contains("...") substring check, which could misfire on a real key
+        // that happens to contain the literal characters "..."
+        // (PROJECT-AUDIT-2026-07-10 API-01). Known, accepted limitation: if a
+        // caller's INTENDED new key happens to be byte-for-byte identical to
+        // the current masked placeholder (e.g. literally typing "sk-...abcd"
+        // as a new value), this silently treats it as unchanged rather than
+        // saving that literal string as the new key -- astronomically
+        // unlikely for a real provider key format, not worth the complexity
+        // of a separate "did the caller send exactly this?" signal.
+        if (req.OpenAiApiKey is not null && req.OpenAiApiKey != MaskKey(settings.OpenAiApiKey))
             settings.OpenAiApiKey = req.OpenAiApiKey == "" ? null : req.OpenAiApiKey;
 
-        if (req.AnthropicApiKey is not null && !req.AnthropicApiKey.Contains("..."))
+        if (req.AnthropicApiKey is not null && req.AnthropicApiKey != MaskKey(settings.AnthropicApiKey))
             settings.AnthropicApiKey = req.AnthropicApiKey == "" ? null : req.AnthropicApiKey;
 
-        if (req.GeminiApiKey is not null && !req.GeminiApiKey.Contains("..."))
+        if (req.GeminiApiKey is not null && req.GeminiApiKey != MaskKey(settings.GeminiApiKey))
             settings.GeminiApiKey = req.GeminiApiKey == "" ? null : req.GeminiApiKey;
 
-        settings.CustomSystemPrompt = req.CustomSystemPrompt;
+        if (req.CustomSystemPrompt is not null)
+            settings.CustomSystemPrompt = req.CustomSystemPrompt == "" ? null : req.CustomSystemPrompt;
         if (req.FullTranslation is not null)
             settings.FullTranslation = req.FullTranslation.Value;
         settings.UpdatedAt = DateTime.UtcNow;

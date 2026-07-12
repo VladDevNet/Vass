@@ -182,13 +182,7 @@ export interface DeviceLink {
 }
 
 // Mirrors VoiceAssistant.API/Controllers/SettingsController.cs's
-// SettingsResponse exactly — PUT /settings unconditionally overwrites
-// displayName/assistantName/customSystemPrompt with whatever's in the
-// request body (only the API-key fields have an explicit "already-masked,
-// don't change" guard), so updateNames below must round-trip the full
-// object rather than send just the fields it cares about — otherwise a
-// mobile-only update would silently wipe e.g. a customSystemPrompt set
-// earlier via the "запомни, говори медленнее" voice-command feature.
+// SettingsResponse exactly.
 export interface Settings {
   displayName: string | null;
   assistantName: string | null;
@@ -199,6 +193,21 @@ export interface Settings {
   geminiApiKey: string | null;
   customSystemPrompt: string | null;
   fullTranslation: boolean;
+}
+
+// PATCH /settings (PROJECT-AUDIT-2026-07-10 API-01): every field is optional
+// and independently applied server-side only if actually sent — omitting a
+// field leaves it untouched, so updateNames/updateAvatarId below send only
+// what they're changing instead of the old GET-then-PUT-whole-object
+// round-trip (which used to silently clobber anything changed concurrently,
+// e.g. a customSystemPrompt set moments earlier via the "запомни, говори
+// медленнее" voice-command feature). An empty string explicitly clears a
+// field to null; omitting it (or sending undefined, which JSON.stringify
+// drops from the body entirely) leaves it alone.
+interface SettingsPatch {
+  displayName?: string;
+  assistantName?: string;
+  avatarId?: string;
 }
 
 export const api = {
@@ -236,28 +245,20 @@ export const api = {
 
   getSettings: () => request<Settings>('/settings'),
 
-  // See the Settings interface's comment — sends back everything currently
-  // in settings, not just the changed fields, since the endpoint doesn't
-  // guard displayName/assistantName/customSystemPrompt the way it guards
-  // API keys. Both names save together (one screen, one button) so this is
-  // a single round-trip rather than two.
-  updateNames: async (displayName: string, assistantName: string): Promise<void> => {
-    const current = await request<Settings>('/settings');
-    await request<Settings>('/settings', {
-      method: 'PUT',
-      body: JSON.stringify({ ...current, displayName, assistantName: assistantName.trim() || null }),
-    });
-  },
+  // Both names save together (one screen, one button), so still a single
+  // round-trip — but now sends ONLY these two fields (see SettingsPatch),
+  // no preceding GET needed either.
+  updateNames: (displayName: string, assistantName: string): Promise<Settings> =>
+    request<Settings>('/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ displayName, assistantName: assistantName.trim() } satisfies SettingsPatch),
+    }),
 
-  // Тот же round-trip-всего-объекта паттерн, что updateNames — см. Settings'
-  // комментарий выше про то, почему PUT нельзя слать частично.
-  updateAvatarId: async (avatarId: string): Promise<void> => {
-    const current = await request<Settings>('/settings');
-    await request<Settings>('/settings', {
-      method: 'PUT',
-      body: JSON.stringify({ ...current, avatarId }),
-    });
-  },
+  updateAvatarId: (avatarId: string): Promise<Settings> =>
+    request<Settings>('/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ avatarId } satisfies SettingsPatch),
+    }),
 
   // Uploads a just-recorded clip (from expo-audio's recorder.uri) ahead of
   // sendMessage. Multipart, not JSON — bypasses request()'s Content-Type.
