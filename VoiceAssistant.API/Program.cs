@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Pgvector.EntityFrameworkCore;
 using VoiceAssistant.API.Controllers;
 using VoiceAssistant.API.Data;
 using VoiceAssistant.API.Data.Entities;
@@ -31,7 +32,7 @@ var builder = WebApplication.CreateBuilder(args);
 // both a normal scoped DbContext AND an independent-instance factory from
 // one configuration.
 builder.Services.AddDbContextFactory<AppDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("Default")));
+    options.UseNpgsql(builder.Configuration.GetConnectionString("Default"), npgsql => npgsql.UseVector()));
 builder.Services.AddScoped<AppDbContext>(sp =>
     sp.GetRequiredService<IDbContextFactory<AppDbContext>>().CreateDbContext());
 
@@ -129,6 +130,7 @@ builder.Services.AddSingleton<SpeakerIdService>();
 builder.Services.AddSingleton<SpeakerPendingStore>();
 builder.Services.AddScoped<SpeakerRegistryService>();
 builder.Services.AddScoped<ConversationMemoryService>();
+builder.Services.AddScoped<LongTermMemoryService>();
 
 // Skipped under the integration-test host, same reason as the auto-migrate
 // block below -- there's no value in a 24h-interval background timer

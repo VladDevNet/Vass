@@ -66,8 +66,8 @@ if [ "$BACKUP_SIZE" -lt 1000 ]; then
 fi
 echo "    OK ($BACKUP_SIZE bytes)"
 
-echo "==> Pulling latest main and rebuilding api + admin..."
-ssh "$HOST" "cd '$REMOTE_DIR' && git pull && docker compose build api admin"
+echo "==> Pulling latest main and rebuilding api + admin + database runtime..."
+ssh "$HOST" "cd '$REMOTE_DIR' && git pull && docker compose build api admin db"
 
 echo "==> Restarting api, admin, and nginx containers..."
 ssh "$HOST" "cd '$REMOTE_DIR' && docker compose up -d api admin nginx"

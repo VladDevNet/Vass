@@ -23,6 +23,9 @@ public class GeminiApiException(string message, bool isRetryable) : Exception(me
 
 public class GeminiService
 {
+    public const string EmbeddingModel = "gemini-embedding-2";
+    public const int EmbeddingDimensions = 768;
+
     private readonly string _defaultApiKey;
     private readonly ILogger<GeminiService> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -38,6 +41,82 @@ public class GeminiService
     // chance of succeeding. Everything else (4xx auth/validation errors) is a
     // configuration problem retrying won't fix.
     public static bool IsRetryableStatusCode(int statusCode) => statusCode == 429 || statusCode >= 500;
+
+    public async Task<float[]> GenerateEmbeddingAsync(
+        string text,
+        string? apiKey = null,
+        CancellationToken cancellationToken = default)
+    {
+        var key = string.IsNullOrWhiteSpace(apiKey) ? _defaultApiKey : apiKey;
+        if (string.IsNullOrWhiteSpace(key))
+            throw new GeminiApiException("Ошибка: отсутствует API-ключ Gemini.", isRetryable: false);
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            model = $"models/{EmbeddingModel}",
+            content = new { parts = new[] { new { text } } },
+            output_dimensionality = EmbeddingDimensions
+        });
+        var url = $"https://generativelanguage.googleapis.com/v1beta/models/{EmbeddingModel}:embedContent?key={key}";
+
+        using var http = _httpClientFactory.CreateClient();
+        http.Timeout = TimeSpan.FromSeconds(30);
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json")
+        };
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await http.SendAsync(request, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to connect to Gemini embeddings API");
+            throw new GeminiApiException("Ошибка соединения с сервером embeddings.", isRetryable: true);
+        }
+
+        using (response)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError("Gemini embeddings API error {Status}: {Body}", response.StatusCode, body);
+                throw new GeminiApiException($"Ошибка API embeddings: {(int)response.StatusCode}",
+                    IsRetryableStatusCode((int)response.StatusCode));
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                var values = document.RootElement
+                    .GetProperty("embedding")
+                    .GetProperty("values")
+                    .EnumerateArray()
+                    .Select(value => value.GetSingle())
+                    .ToArray();
+
+                if (values.Length != EmbeddingDimensions)
+                    throw new GeminiApiException($"Gemini вернул embedding размерности {values.Length} вместо {EmbeddingDimensions}.", false);
+
+                return values;
+            }
+            catch (GeminiApiException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
+            {
+                _logger.LogError(ex, "Gemini embeddings response has an unexpected shape: {Body}", body);
+                throw new GeminiApiException("Некорректный ответ API embeddings.", false);
+            }
+        }
+    }
 
     public async IAsyncEnumerable<string> StreamResponseAsync(
         string systemPrompt,

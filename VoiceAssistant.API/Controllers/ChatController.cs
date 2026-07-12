@@ -25,6 +25,7 @@ public class ChatController : ControllerBase
     private readonly AudioAnalysisService _audioAnalysis;
     private readonly SpeakerRegistryService _speakerRegistry;
     private readonly ConversationMemoryService _conversationMemory;
+    private readonly LongTermMemoryService _longTermMemory;
     private readonly IConfiguration _config;
     private readonly ILogger<ChatController> _logger;
     private readonly string _audioPath;
@@ -34,6 +35,7 @@ public class ChatController : ControllerBase
     public ChatController(AppDbContext db, IDbContextFactory<AppDbContext> dbContextFactory, UserManager<User> userManager,
         GeminiService gemini, CompanionPromptService tutor,
         AudioAnalysisService audioAnalysis, SpeakerRegistryService speakerRegistry, ConversationMemoryService conversationMemory,
+        LongTermMemoryService longTermMemory,
         PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
@@ -45,6 +47,7 @@ public class ChatController : ControllerBase
         _audioAnalysis = audioAnalysis;
         _speakerRegistry = speakerRegistry;
         _conversationMemory = conversationMemory;
+        _longTermMemory = longTermMemory;
         _ttsService = ttsService;
         _config = config;
         _logger = logger;
@@ -451,7 +454,8 @@ public class ChatController : ControllerBase
         }
 
         // Save user message
-        session.Messages.Add(new Message { Role = "user", Content = messageText, AudioFileName = validatedAudioFileName });
+        var userMessage = new Message { Role = "user", Content = messageText, AudioFileName = validatedAudioFileName };
+        session.Messages.Add(userMessage);
         await _db.SaveChangesAsync();
 
         // Check (in parallel, doesn't block the response) whether the user asked the
@@ -463,6 +467,13 @@ public class ChatController : ControllerBase
         // assistant message) until awaited, so it uses its own DbContext instance
         // internally rather than the shared _db (PROJECT-AUDIT-2026-07-10 REL-01).
         var instructionUpdateTask = MaybeUpdateCustomInstructionsAsync(userId, messageText, settings?.CustomSystemPrompt, geminiKey, HttpContext.RequestAborted);
+
+        // Semantic recall is the only long-term-memory operation on the critical
+        // path. Extraction of facts from this turn starts immediately afterwards
+        // on its own factory-created DbContext and runs alongside the main answer.
+        var recalledFacts = await _longTermMemory.RecallAsync(userId, messageText, geminiKey, HttpContext.RequestAborted);
+        var memoryUpdateTask = _longTermMemory.ExtractAndStoreAsync(
+            userId, userMessage.Id, messageText, geminiKey, HttpContext.RequestAborted);
 
         // Build conversation history: this session is persistent and never rotates
         // (single ongoing session per user), so resending every message ever exchanged
@@ -496,7 +507,8 @@ public class ChatController : ControllerBase
             settings?.CustomSystemPrompt,
             ResolvePromptUserName(speakerResult?.KnownName, settings?.DisplayName),
             settings?.AssistantName,
-            session.MediumTermSummary);
+            session.MediumTermSummary,
+            recalledFacts);
 
         if (speakerResult?.ShouldAskForName == true)
         {
@@ -577,7 +589,7 @@ public class ChatController : ControllerBase
             var errorData = JsonSerializer.Serialize(new { error = ex.Message, retryable = ex.IsRetryable });
             await Response.WriteAsync($"data: {errorData}\n\n");
             await Response.Body.FlushAsync();
-            await AwaitInstructionUpdateAsync(instructionUpdateTask);
+            await AwaitTurnSideEffectsAsync(instructionUpdateTask, memoryUpdateTask);
             return;
         }
         catch (OperationCanceledException)
@@ -585,7 +597,7 @@ public class ChatController : ControllerBase
             // Client abandoned this turn (e.g. user kept talking) — stop without
             // saving a partial/incomplete assistant reply. The user's message stays saved.
             _logger.LogInformation("Chat stream cancelled by client for session {SessionId}", req.SessionId);
-            await AwaitInstructionUpdateAsync(instructionUpdateTask);
+            await AwaitTurnSideEffectsAsync(instructionUpdateTask, memoryUpdateTask);
             return;
         }
         finally
@@ -628,22 +640,19 @@ public class ChatController : ControllerBase
         await Response.WriteAsync("data: [DONE]\n\n");
         await Response.Body.FlushAsync();
 
-        // Unrelated background bookkeeping (custom-instruction detection,
-        // medium-term memory compaction) -- kept after [DONE] so their own
-        // Gemini side-calls don't add to the client's perceived latency, same
-        // as before this reordering. Safe to run concurrently regardless of
-        // when it's awaited: MaybeUpdateCustomInstructionsAsync uses its own
-        // DbContext instance, not the one used above (PROJECT-AUDIT-2026-07-10
-        // REL-01).
-        await AwaitInstructionUpdateAsync(instructionUpdateTask);
+        // Non-critical side calls (custom-instruction detection and fact
+        // extraction) are awaited after [DONE], so they add no perceived
+        // latency. Both use factory-created DbContexts and can safely run
+        // alongside the main request context (PROJECT-AUDIT-2026-07-10 REL-01).
+        await AwaitTurnSideEffectsAsync(instructionUpdateTask, memoryUpdateTask);
 
         // Unlike the call above, CheckAndUpdateAsync shares the request's
         // scoped _db (ConversationMemoryService is constructed with it
         // directly, not a factory) -- fine ONLY because it's awaited here,
         // strictly after the SaveChangesAsync above has fully completed, so
         // this is sequential reuse of one context, not concurrent access.
-        // If this line is ever changed to fire-and-forget like
-        // instructionUpdateTask above, give it its own DbContext first.
+        // If this line is ever changed to run concurrently like the two tasks
+        // above, give it its own DbContext first.
         await _conversationMemory.CheckAndUpdateAsync(session, geminiKey, HttpContext.RequestAborted);
     }
 
@@ -878,15 +887,18 @@ public class ChatController : ControllerBase
         return result;
     }
 
-    private async Task AwaitInstructionUpdateAsync(Task task)
+    private async Task AwaitTurnSideEffectsAsync(params Task[] tasks)
     {
-        try
+        foreach (var task in tasks)
         {
-            await task;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Custom-instruction update failed");
+            try
+            {
+                await task;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Non-critical turn side effect failed");
+            }
         }
     }
 

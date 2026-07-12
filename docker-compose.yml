@@ -13,6 +13,7 @@ services:
       - Encryption__Key=${ENCRYPTION_KEY}
       - Registration__AutoApprove=${REGISTRATION_AUTO_APPROVE:-true}
       - Admin__Email=${ADMIN_EMAIL:-}
+      - Features__LongTermMemoryEnabled=${LONG_TERM_MEMORY_ENABLED:-true}
       - Piper__BaseUrl=http://tts:5001
       # speaker-id below is opt-in (profiles: ["speaker-id"], not started by
       # `docker compose up` on its own) -- this hostname is only ever dialed
@@ -67,7 +68,8 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:17-alpine
+    build: ./postgres-vector
+    image: vass-postgres-vector:17-0.8.2
     volumes:
       - pgdata:/var/lib/postgresql/data
     environment:

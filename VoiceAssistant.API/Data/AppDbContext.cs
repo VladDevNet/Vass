@@ -1,5 +1,8 @@
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using Pgvector;
+using Pgvector.EntityFrameworkCore;
 using VoiceAssistant.API.Data.Entities;
 
 namespace VoiceAssistant.API.Data;
@@ -19,10 +22,16 @@ public class AppDbContext : IdentityDbContext<User>
     public DbSet<SpeakerProfile> SpeakerProfiles => Set<SpeakerProfile>();
     public DbSet<DeviceLinkCode> DeviceLinkCodes => Set<DeviceLinkCode>();
     public DbSet<ClientLogEntry> ClientLogEntries => Set<ClientLogEntry>();
+    public DbSet<MemoryFact> MemoryFacts => Set<MemoryFact>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
+
+        if (Database.IsNpgsql())
+        {
+            builder.HasPostgresExtension("vector");
+        }
 
         builder.Entity<User>(e =>
         {
@@ -94,5 +103,48 @@ public class AppDbContext : IdentityDbContext<User>
             e.HasIndex(l => new { l.UserId, l.ClientTimestamp });
             e.HasIndex(l => l.RunId);
         });
+
+        builder.Entity<MemoryFact>(e =>
+        {
+            e.HasOne(m => m.User).WithMany()
+                .HasForeignKey(m => m.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(m => m.Fact).HasMaxLength(1000);
+            e.Property(m => m.ContentHash).HasMaxLength(64);
+            e.Property(m => m.EmbeddingModel).HasMaxLength(50);
+            e.Property(m => m.IsActive).HasDefaultValue(true);
+            e.HasIndex(m => new { m.UserId, m.ContentHash }).IsUnique();
+            e.HasIndex(m => new { m.UserId, m.IsActive });
+
+            if (Database.IsNpgsql())
+            {
+                e.Property(m => m.Embedding).HasColumnType("vector(768)");
+                e.HasIndex(m => m.Embedding)
+                    .HasMethod("hnsw")
+                    .HasOperators("vector_cosine_ops");
+            }
+            else
+            {
+                // The integration suite uses SQLite. Keep the current model
+                // creatable there while production retains a real vector column.
+                e.Property(m => m.Embedding).HasConversion(new ValueConverter<Vector, byte[]>(
+                    value => VectorToBytes(value),
+                    value => BytesToVector(value)));
+            }
+        });
+    }
+
+    private static byte[] VectorToBytes(Vector vector)
+    {
+        var values = vector.ToArray();
+        var bytes = new byte[values.Length * sizeof(float)];
+        Buffer.BlockCopy(values, 0, bytes, 0, bytes.Length);
+        return bytes;
+    }
+
+    private static Vector BytesToVector(byte[] bytes)
+    {
+        var values = new float[bytes.Length / sizeof(float)];
+        Buffer.BlockCopy(bytes, 0, values, 0, bytes.Length);
+        return new Vector(values);
     }
 }

@@ -12,6 +12,7 @@ Secondary features:
 
 - Text chat with SSE streaming, independent of voice mode.
 - Camera/image OCR through Gemini.
+- Per-user long-term memory: Gemini embeddings + pgvector semantic retrieval, with user-owned view/delete endpoints.
 - Per-user API keys (Gemini/OpenAI/Anthropic key fields exist in settings for future use, but only Gemini is actually consumed today, and are encrypted at rest — PROJECT-AUDIT-2026-07-10 SEC-03) and a custom system prompt, which the assistant can update itself when a user asks it to remember a behavioral preference ("говори медленнее").
 
 ## Technology Stack
@@ -24,8 +25,9 @@ Secondary features:
 | Web API | ASP.NET Core |
 | Auth | ASP.NET Core Identity + JWT (issuer/audience `Vass`) |
 | ORM | Entity Framework Core |
-| Database | PostgreSQL 17 |
+| Database | PostgreSQL 17 + pgvector 0.8.2 |
 | LLM chat | Gemini API (`gemini-3.5-flash`, Google Search grounding) |
+| Memory embeddings | Gemini API (`gemini-embedding-2`, 768 dimensions) |
 | Audio transcription/completeness check | Gemini API (`gemini-2.5-flash`) |
 | Neural TTS (server-side fallback) | Self-hosted Piper (`ru_RU-irina-medium`), raw PCM streamed |
 | Audio conversion | ffmpeg |
@@ -60,10 +62,11 @@ React 19 / Vite / TypeScript, in `admin/`. It is a separate operational SPA serv
 │   │   ├── AuthController.cs        # api/v1/auth — register, login, device-link, current user
 │   │   ├── ChatController.cs        # api/v1/chat — sessions, SSE chat, audio, TTS, OCR
 │   │   ├── ClientLogsController.cs  # api/v1/client-logs — mobile client log ingest (dev tooling)
+│   │   ├── MemoryController.cs      # api/v1/memory — view/delete personal memory facts
 │   │   └── SettingsController.cs    # api/v1/settings — per-user profile, API keys, custom prompt
 │   ├── Data/
 │   │   ├── AppDbContext.cs
-│   │   └── Entities/                # ChatSession, Message, User, UserSettings, SpeakerProfile
+│   │   └── Entities/                # ChatSession, Message, User, UserSettings, MemoryFact, SpeakerProfile
 │   ├── Migrations/
 │   ├── Prompts/
 │   │   └── companion-system.txt     # Olga's system prompt
@@ -71,6 +74,7 @@ React 19 / Vite / TypeScript, in `admin/`. It is a separate operational SPA serv
 │   │   ├── GeminiService.cs         # LLM streaming + Google Search grounding
 │   │   ├── PiperTtsService.cs       # self-hosted TTS, buffered + streaming
 │   │   ├── CompanionPromptService.cs
+│   │   ├── LongTermMemoryService.cs # fact extraction + pgvector retrieval
 │   │   ├── AudioAnalysisService.cs  # transcription + utterance-completeness check
 │   │   ├── SpeakerIdService.cs      # paused feature — see "Paused Features" below
 │   │   ├── SpeakerPendingStore.cs
@@ -81,6 +85,7 @@ React 19 / Vite / TypeScript, in `admin/`. It is a separate operational SPA serv
 ├── VoiceAssistant.API.IntegrationTests/  # WebApplicationFactory-based integration tests (PROJECT-AUDIT-2026-07-10 QA-01)
 ├── piper-tts/                        # Flask wrapper around the Piper TTS CLI
 ├── speaker-id/                       # SpeechBrain ECAPA-TDNN voice-ID microservice (paused feature, opt-in compose profile)
+├── postgres-vector/                  # Alpine PG17 + pgvector build, preserves existing volume UID
 ├── mobile/                           # React Native client — see docs/react-native/
 ├── admin/                            # React + Vite admin SPA — see docs/ADMIN-PANEL.md
 ├── docker-compose.yml
@@ -116,6 +121,7 @@ React 19 / Vite / TypeScript, in `admin/`. It is a separate operational SPA serv
 | `AdminController` | `/api/v1/admin` | Admin-only user activity, access approval, search, sorting, and pagination |
 | `ChatController` | `/api/v1/chat` | Sessions, SSE chat, audio upload/playback, TTS, utterance-completeness check, OCR |
 | `ClientLogsController` | `/api/v1/client-logs` | Batched log ingest from the mobile client — development-stage debugging tooling |
+| `MemoryController` | `/api/v1/memory` | View and delete the authenticated user's long-term memory facts |
 | `SettingsController` | `/api/v1/settings` | Per-user profile, API keys, custom system prompt |
 
 ## Main API Surface
@@ -153,6 +159,14 @@ React 19 / Vite / TypeScript, in `admin/`. It is a separate operational SPA serv
 | `GET` | `/api/v1/settings` | Loads masked API keys and preferences |
 | `PATCH` | `/api/v1/settings` | Partially updates profile/keys/custom prompt — only fields present in the request body are changed; omitted fields are left untouched server-side (PROJECT-AUDIT-2026-07-10 API-01, replacing a previous whole-object `PUT` that had a lost-update contract). An empty string explicitly clears `displayName`/`assistantName`/`customSystemPrompt`/a BYOK key to null; `null`/omitted leaves the field alone. |
 | `GET` | `/api/v1/settings/default-prompt` | Returns Olga's current system prompt |
+
+### Long-Term Memory
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/v1/memory/facts` | Lists the authenticated user's active facts; embeddings are never exposed |
+| `DELETE` | `/api/v1/memory/facts/{id}` | Deletes one user-owned fact |
+| `DELETE` | `/api/v1/memory/facts` | Clears all long-term memory for the current user |
 
 ### Client Logs
 
@@ -226,15 +240,17 @@ JWT_SECRET=your_jwt_secret_min_32_chars_long_here
 ENCRYPTION_KEY=your_encryption_secret_min_16_chars_here
 REGISTRATION_AUTO_APPROVE=true
 ADMIN_EMAIL=admin@example.com
+LONG_TERM_MEMORY_ENABLED=true
 ```
 
 Key usage:
 
-- `GEMINI_API_KEY` is required for chat, audio transcription, utterance-completeness checks, and OCR, unless the user saves a personal Gemini key in settings.
+- `GEMINI_API_KEY` is required for chat, audio transcription, utterance-completeness checks, OCR, fact extraction, and memory embeddings, unless the user saves a personal Gemini key in settings.
 - `JWT_SECRET`/`Jwt:Issuer`/`Jwt:Audience` (`Vass`) — changing the issuer/audience invalidates all previously-issued tokens.
 - `ENCRYPTION_KEY` encrypts per-user BYOK API keys at rest (PROJECT-AUDIT-2026-07-10 SEC-03).
 - `REGISTRATION_AUTO_APPROVE` defaults to `true`; set it to `false` only after the mobile pending-approval UX is implemented.
 - `ADMIN_EMAIL` promotes an already-registered account to the `Admin` role at API startup. Sign in again after promotion because its previous JWT is invalidated.
+- `LONG_TERM_MEMORY_ENABLED` defaults to `true`; turning it off skips extraction and retrieval without deleting stored facts.
 - User-level Gemini/OpenAI/Anthropic key fields exist in `/settings` (the latter two are stored but currently unused by any active service — kept for possible future use, not cleaned up because `AUDIT-LEGACY.md` didn't call for it).
 
 ## Local Development
@@ -292,7 +308,7 @@ http://127.0.0.1:4001/admin/
 
 ## Database
 
-The app uses EF Core migrations in `VoiceAssistant.API/Migrations`.
+The app uses EF Core migrations in `VoiceAssistant.API/Migrations`. The database image is built from `postgres-vector/Dockerfile`: pgvector 0.8.2 is compiled in a separate stage and copied into the same Alpine PostgreSQL runtime/UID used by the existing production volume.
 
 Startup currently runs:
 
