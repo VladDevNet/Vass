@@ -7,6 +7,7 @@ import { dismissOnboarding, isOnboardingDismissed } from './src/api/client';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { ProfileScreen } from './src/screens/ProfileScreen';
+import { amoled } from './src/theme/amoled';
 
 function Root() {
   const { isLoading, user, displayName } = useAuth();
@@ -43,7 +44,8 @@ function Root() {
   if (isLoading || (user && onboardingDismissed === null)) {
     return (
       <View style={styles.loading}>
-        <ActivityIndicator size="large" />
+        <StatusBar style="light" />
+        <ActivityIndicator size="large" color={amoled.textPrimary} />
       </View>
     );
   }
@@ -71,6 +73,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: amoled.background,
   },
 });
