@@ -170,4 +170,34 @@ public class ChatControllerTests
         Assert.False(ok);
         Assert.Equal("", mimeType);
     }
+
+    [Fact]
+    public void ResolvePromptUserName_SpeakerKnown_DiffersFromDisplayName_SpeakerWins()
+    {
+        // The actual collision this closes: a family member sharing the
+        // device (device-link), recognized by speaker-id under a name that
+        // isn't the account's own DisplayName -- must resolve to exactly
+        // one name, not both.
+        var resolved = ChatController.ResolvePromptUserName("Антон", "Владислав");
+
+        Assert.Equal("Антон", resolved);
+    }
+
+    [Fact]
+    public void ResolvePromptUserName_NoSpeakerMatch_FallsBackToDisplayName()
+    {
+        // The only case that ever happens today: Features:SpeakerIdentificationEnabled
+        // is off, so speakerKnownName is always null.
+        var resolved = ChatController.ResolvePromptUserName(null, "Владислав");
+
+        Assert.Equal("Владислав", resolved);
+    }
+
+    [Fact]
+    public void ResolvePromptUserName_NeitherSet_ReturnsNull()
+    {
+        var resolved = ChatController.ResolvePromptUserName(null, null);
+
+        Assert.Null(resolved);
+    }
 }
