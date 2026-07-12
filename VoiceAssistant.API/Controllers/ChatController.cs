@@ -608,6 +608,14 @@ public class ChatController : ControllerBase
         // DbContext instance, not the one used above (PROJECT-AUDIT-2026-07-10
         // REL-01).
         await AwaitInstructionUpdateAsync(instructionUpdateTask);
+
+        // Unlike the call above, CheckAndUpdateAsync shares the request's
+        // scoped _db (ConversationMemoryService is constructed with it
+        // directly, not a factory) -- fine ONLY because it's awaited here,
+        // strictly after the SaveChangesAsync above has fully completed, so
+        // this is sequential reuse of one context, not concurrent access.
+        // If this line is ever changed to fire-and-forget like
+        // instructionUpdateTask above, give it its own DbContext first.
         await _conversationMemory.CheckAndUpdateAsync(session, geminiKey, HttpContext.RequestAborted);
     }
 
