@@ -28,23 +28,24 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Fact]
-    public async Task CreateSession_Authenticated_ReturnsNewSession()
+    public async Task GetSessions_Authenticated_CreatesAndReturnsSession()
     {
         var client = await CreateAuthenticatedClientAsync();
 
-        var response = await client.PostAsJsonAsync("/api/v1/chat/sessions", new ChatController.CreateSessionRequest(null, null));
+        var response = await client.GetAsync("/api/v1/chat/sessions");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.True(body.GetProperty("id").GetInt32() > 0);
+        var first = body.EnumerateArray().First();
+        Assert.True(first.GetProperty("id").GetInt32() > 0);
     }
 
     [Fact]
-    public async Task CreateSession_Unauthenticated_ReturnsUnauthorized()
+    public async Task GetSessions_Unauthenticated_ReturnsUnauthorized()
     {
         var client = _factory.CreateClient();
 
-        var response = await client.PostAsJsonAsync("/api/v1/chat/sessions", new ChatController.CreateSessionRequest(null, null));
+        var response = await client.GetAsync("/api/v1/chat/sessions");
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
@@ -53,8 +54,8 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
     public async Task Send_TextMessage_StreamsReplyAndPersistsBothMessages()
     {
         var client = await CreateAuthenticatedClientAsync();
-        var sessionResponse = await client.PostAsJsonAsync("/api/v1/chat/sessions", new ChatController.CreateSessionRequest(null, null));
-        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+        var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
+        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>()).EnumerateArray().First().GetProperty("id").GetInt32();
 
         var sendResponse = await client.PostAsJsonAsync("/api/v1/chat/send",
             new ChatController.SendRequest(sessionId, "Привет, как дела?", null));
@@ -82,8 +83,8 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
     public async Task Send_EmptyMessageNoAudio_ReturnsBadRequest()
     {
         var client = await CreateAuthenticatedClientAsync();
-        var sessionResponse = await client.PostAsJsonAsync("/api/v1/chat/sessions", new ChatController.CreateSessionRequest(null, null));
-        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetInt32();
+        var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
+        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>()).EnumerateArray().First().GetProperty("id").GetInt32();
 
         var sendResponse = await client.PostAsJsonAsync("/api/v1/chat/send",
             new ChatController.SendRequest(sessionId, "", null));
