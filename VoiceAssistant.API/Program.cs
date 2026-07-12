@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.RateLimiting;
@@ -74,6 +75,42 @@ builder.Services.AddAuthentication(options =>
         ValidIssuer = builder.Configuration["Jwt:Issuer"],
         ValidAudience = builder.Configuration["Jwt:Audience"],
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret))
+    };
+
+    // Cheap, minimum-viable path to forced token revocation
+    // (PROJECT-AUDIT-2026-07-10 SEC-05) -- JWTs are otherwise valid for their
+    // full 30-day lifetime with no server-side kill switch. AuthController.
+    // GenerateToken embeds the security_stamp claim's value AT ISSUANCE; this
+    // compares it against the user's CURRENT SecurityStamp (an IdentityUser
+    // built-in column) on every authenticated request. Regenerating a user's
+    // stamp (UserManager.UpdateSecurityStampAsync) instantly invalidates
+    // every token issued before that point, regardless of its own exp claim
+    // -- a real, if manual-trigger-only, revoke path. A full short-lived-
+    // access-token + rotating-refresh-token redesign is explicitly out of
+    // scope (docs/superpowers/plans/2026-07-11-audit-remediation.md).
+    options.Events = new JwtBearerEvents
+    {
+        OnTokenValidated = async context =>
+        {
+            var userId = context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+            var tokenStamp = context.Principal?.FindFirstValue("security_stamp");
+            if (string.IsNullOrEmpty(userId) || tokenStamp is null)
+            {
+                context.Fail("Token missing required claims.");
+                return;
+            }
+
+            var db = context.HttpContext.RequestServices.GetRequiredService<AppDbContext>();
+            var currentStamp = await db.Users
+                .Where(u => u.Id == userId)
+                .Select(u => u.SecurityStamp)
+                .FirstOrDefaultAsync();
+
+            if (currentStamp is null || !string.Equals(currentStamp, tokenStamp, StringComparison.Ordinal))
+            {
+                context.Fail("Token has been revoked.");
+            }
+        }
     };
 });
 
