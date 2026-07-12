@@ -155,6 +155,17 @@ public class ChatController : ControllerBase
     // DisplayName/AssistantName below in SettingsController.
     private const int MaxSessionTitleLength = 200;
 
+    // GetPreambleIfNeededAsync/MaybeUpdateCustomInstructionsAsync below only ever
+    // need a short yes/no/short-phrase answer, not a full reply -- kept public
+    // (not just small) because VoiceAssistant.API.IntegrationTests' FakeGeminiHandler
+    // keys off these exact values to tell these background checks apart from a real
+    // chat reply (which uses StreamResponseAsync's own maxTokens default instead);
+    // a compile-time reference here means a future change to either number can't
+    // silently desync from what the fake HTTP transport expects
+    // (PROJECT-AUDIT-2026-07-10 QA-01).
+    public const int PreambleCheckMaxTokens = 30;
+    public const int CustomInstructionCheckMaxTokens = 200;
+
     public record TtsRequest(string Text, string? Voice = null);
 
     [HttpPost("tts")]
@@ -851,7 +862,7 @@ public class ChatController : ControllerBase
         try
         {
             await foreach (var chunk in _gemini.StreamResponseAsync("", messages, model: "gemini-3.5-flash",
-                maxTokens: 30, apiKey: geminiKey, enableGrounding: false, cancellationToken: ct))
+                maxTokens: PreambleCheckMaxTokens, apiKey: geminiKey, enableGrounding: false, cancellationToken: ct))
             {
                 sb.Append(chunk);
             }
@@ -909,7 +920,7 @@ public class ChatController : ControllerBase
         try
         {
             await foreach (var chunk in _gemini.StreamResponseAsync("", messages, model: "gemini-3.5-flash",
-                maxTokens: 200, apiKey: geminiKey, enableGrounding: false, cancellationToken: ct))
+                maxTokens: CustomInstructionCheckMaxTokens, apiKey: geminiKey, enableGrounding: false, cancellationToken: ct))
             {
                 sb.Append(chunk);
             }
