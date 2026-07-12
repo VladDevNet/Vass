@@ -151,7 +151,11 @@ builder.Services.AddRateLimiter(options =>
 
 var app = builder.Build();
 
-// Auto-migrate on startup
+// Auto-migrate on startup -- skipped under the integration-test host
+// (PROJECT-AUDIT-2026-07-10 QA-01), which swaps in a Sqlite-backed
+// AppDbContext via EnsureCreatedAsync from the current model instead:
+// these migrations contain Postgres-specific SQL that Sqlite can't run.
+if (!app.Environment.IsEnvironment("Testing"))
 {
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -334,3 +338,9 @@ app.MapGet("/api/health/ready", async (
 });
 
 app.Run();
+
+// Makes the implicit top-level-statements Program class visible to
+// WebApplicationFactory<Program> from the integration test assembly
+// (PROJECT-AUDIT-2026-07-10 QA-01) -- standard ASP.NET Core pattern, has no
+// effect on the running app itself.
+public partial class Program { }
