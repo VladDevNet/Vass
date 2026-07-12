@@ -567,22 +567,23 @@ public class ChatController : ControllerBase
         swLlm.Stop();
         long llmTotalMs = swLlm.ElapsedMilliseconds;
 
-        await Response.WriteAsync("data: [DONE]\n\n");
-        await Response.Body.FlushAsync();
-
-        // Save assistant response
+        // Save assistant response BEFORE any terminal SSE event -- the mobile
+        // client stops reading the instant it sees [DONE] (PROJECT-AUDIT-2026-07-10
+        // REL-02), so [DONE] must only ever mean "this turn is durably
+        // persisted," not just "streaming finished." [DONE] used to be sent
+        // first: a save failure after that point still looked successful to
+        // the client, and stats (sent even later) were practically
+        // unreachable for mobile since it had already stopped reading.
         session.Messages.Add(new Message { Role = "assistant", Content = fullResponse.ToString() });
         user.LastActiveAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
-
-        await AwaitInstructionUpdateAsync(instructionUpdateTask);
-        await _conversationMemory.CheckAndUpdateAsync(session, geminiKey, HttpContext.RequestAborted);
 
         // Log stats to server logs
         _logger.LogInformation("VoiceAssistant Performance Stats - User: {UserEmail}, Session: {SessionId}, Convert: {ConvertMs}ms, Transcribe: {TranscribeMs}ms, SpeakerId: {SpeakerIdMs}ms, LLM (First Token): {LlmFirstMs}ms, LLM (Total): {LlmTotalMs}ms",
             user.Email, req.SessionId, convertMs, transcribeMs, speakerIdMs, llmFirstTokenMs, llmTotalMs);
 
-        // Send stats event to client
+        // Send stats event to client, then [DONE] last -- both only after the
+        // save above has actually completed.
         var stats = new
         {
             ConvertMs = convertMs,
@@ -595,6 +596,27 @@ public class ChatController : ControllerBase
         var statsData = JsonSerializer.Serialize(new { stats }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
         await Response.WriteAsync($"data: {statsData}\n\n");
         await Response.Body.FlushAsync();
+
+        await Response.WriteAsync("data: [DONE]\n\n");
+        await Response.Body.FlushAsync();
+
+        // Unrelated background bookkeeping (custom-instruction detection,
+        // medium-term memory compaction) -- kept after [DONE] so their own
+        // Gemini side-calls don't add to the client's perceived latency, same
+        // as before this reordering. Safe to run concurrently regardless of
+        // when it's awaited: MaybeUpdateCustomInstructionsAsync uses its own
+        // DbContext instance, not the one used above (PROJECT-AUDIT-2026-07-10
+        // REL-01).
+        await AwaitInstructionUpdateAsync(instructionUpdateTask);
+
+        // Unlike the call above, CheckAndUpdateAsync shares the request's
+        // scoped _db (ConversationMemoryService is constructed with it
+        // directly, not a factory) -- fine ONLY because it's awaited here,
+        // strictly after the SaveChangesAsync above has fully completed, so
+        // this is sequential reuse of one context, not concurrent access.
+        // If this line is ever changed to fire-and-forget like
+        // instructionUpdateTask above, give it its own DbContext first.
+        await _conversationMemory.CheckAndUpdateAsync(session, geminiKey, HttpContext.RequestAborted);
     }
 
     // Rejects an oversized request body before model binding buffers the
