@@ -131,17 +131,35 @@ builder.Services.AddScoped<ConversationMemoryService>();
 // Controllers
 builder.Services.AddControllers();
 
-// No CORS policy (PROJECT-AUDIT-2026-07-10 SEC-06). This used to be a
-// permissive AllowAnyOrigin()/AnyMethod()/AnyHeader() policy -- the audit
-// flagged the resulting Access-Control-Allow-Origin: * as too broad. The
-// only client now is the mobile app (ARCH-01 removed the legacy PWA that
-// used to justify it); CORS is a browser-enforced restriction that native
-// apps aren't subject to in the first place, so there's no legitimate
-// browser origin left to allow. Not calling app.UseCors() below means no
-// Access-Control-* headers are ever set, which is the correct, maximally
-// restrictive posture here -- not "restrict to a trusted origin" (there
-// isn't one), but "there is no CORS policy to have."
-//
+// CORS restricted to loopback origins only (PROJECT-AUDIT-2026-07-10
+// SEC-06). This used to be a permissive AllowAnyOrigin()/AnyMethod()/
+// AnyHeader() policy -- the audit flagged the resulting
+// Access-Control-Allow-Origin: * as too broad, since it lets ANY website's
+// JS read this API's responses from a victim's browser. ARCH-01 removed
+// the legacy PWA that used to justify a public-origin policy, and the
+// shipped mobile app (native builds) isn't subject to CORS at all -- but
+// mobile/ also has a browser ("web") target, run locally via
+// `.claude/launch.json`'s "mobile-web" config on http://localhost:19006,
+// and its API client (mobile/src/api/client.ts) defaults to hitting this
+// PRODUCTION domain unless EXPO_PUBLIC_API_URL overrides it -- an already-
+// established, still-active way of visually verifying mobile UI work
+// without a physical device (see docs/react-native/BACKLOG.md's PR #10
+// verification and this session's own use of it), which a flat "no CORS
+// policy at all" would have silently broken. IsLoopback matches
+// localhost/127.0.0.1/::1 on any port -- narrow enough that no external
+// attacker page can ever satisfy it (a browser sets the Origin header from
+// the REQUESTING page's own origin; JS cannot spoof it to claim
+// "http://localhost:19006"), while still admitting the one real browser
+// origin this project's own tooling actually uses.
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+        policy.SetIsOriginAllowed(origin =>
+                Uri.TryCreate(origin, UriKind.Absolute, out var originUri) && originUri.IsLoopback)
+            .AllowAnyMethod()
+            .AllowAnyHeader());
+});
+
 // The audit's other SEC-06 asks (CSP, Referrer-Policy, Permissions-Policy)
 // are deliberately not added: all three exist to constrain what a BROWSER
 // does when rendering HTML/executing script/loading subresources on a
@@ -300,6 +318,7 @@ static bool NeedsMigration(string? rawValue, byte[] key)
 // limiting below, and anything else added later) — it rewrites that value
 // from the forwarded header, so ordering here is not cosmetic.
 app.UseForwardedHeaders();
+app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseRateLimiter();
