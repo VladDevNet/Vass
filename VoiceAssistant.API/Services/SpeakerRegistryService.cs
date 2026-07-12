@@ -156,9 +156,27 @@ public class SpeakerRegistryService
 
         var messages = new List<GeminiMessage> { new("user", prompt) };
         var sb = new System.Text.StringBuilder();
-        await foreach (var chunk in _gemini.StreamResponseAsync("Ты извлекаешь имена из текста.", messages, model: "gemini-3.5-flash", maxTokens: 20, apiKey: geminiKey))
+        try
         {
-            sb.Append(chunk);
+            await foreach (var chunk in _gemini.StreamResponseAsync("Ты извлекаешь имена из текста.", messages, model: "gemini-3.5-flash", maxTokens: 20, apiKey: geminiKey))
+            {
+                sb.Append(chunk);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch (Exception ex)
+        {
+            // Without this, a Gemini failure here (GeminiApiException --
+            // PROJECT-AUDIT-2026-07-10 REL-04) would propagate all the way up
+            // through IdentifyAsync into ChatController.Send()'s speaker-ID
+            // block uncaught, crashing the whole chat turn. This path is
+            // dormant while Features:SpeakerIdentificationEnabled is off
+            // (SEC-02), but must stay correct regardless of the flag.
+            _logger.LogWarning(ex, "Speaker name extraction failed");
+            return null;
         }
 
         var result = sb.ToString().Trim().Trim('.', '!', '"');
