@@ -52,8 +52,9 @@ Expo / React Native / TypeScript, in `mobile/`. See `docs/react-native/architect
 .
 ├── VoiceAssistant.API/
 │   ├── Controllers/
-│   │   ├── AuthController.cs        # api/v1/auth — register, login, current user
+│   │   ├── AuthController.cs        # api/v1/auth — register, login, device-link, current user
 │   │   ├── ChatController.cs        # api/v1/chat — sessions, SSE chat, audio, TTS, OCR
+│   │   ├── ClientLogsController.cs  # api/v1/client-logs — mobile client log ingest (dev tooling)
 │   │   └── SettingsController.cs    # api/v1/settings — per-user profile, API keys, custom prompt
 │   ├── Data/
 │   │   ├── AppDbContext.cs
@@ -103,8 +104,9 @@ Expo / React Native / TypeScript, in `mobile/`. See `docs/react-native/architect
 
 | Controller | Base route | Purpose |
 | --- | --- | --- |
-| `AuthController` | `/api/v1/auth` | Register, login, current user |
+| `AuthController` | `/api/v1/auth` | Register, login, device-link (elderly-friendly no-password login), current user |
 | `ChatController` | `/api/v1/chat` | Sessions, SSE chat, audio upload/playback, TTS, utterance-completeness check, OCR |
+| `ClientLogsController` | `/api/v1/client-logs` | Batched log ingest from the mobile client — development-stage debugging tooling |
 | `SettingsController` | `/api/v1/settings` | Per-user profile, API keys, custom system prompt |
 
 ## Main API Surface
@@ -115,6 +117,8 @@ Expo / React Native / TypeScript, in `mobile/`. See `docs/react-native/architect
 | --- | --- | --- |
 | `POST` | `/api/v1/auth/register` | Creates user and returns JWT |
 | `POST` | `/api/v1/auth/login` | Returns JWT |
+| `POST` | `/api/v1/auth/device-link` | Auth required. Generates a short-lived 6-digit code so an already-logged-in device can log a new one in without typing a password |
+| `POST` | `/api/v1/auth/device-link/redeem` | Redeems a `device-link` code for a JWT |
 | `GET` | `/api/v1/auth/me` | Current user data |
 
 ### Chat And Voice
@@ -141,6 +145,12 @@ Expo / React Native / TypeScript, in `mobile/`. See `docs/react-native/architect
 | `GET` | `/api/v1/settings` | Loads masked API keys and preferences |
 | `PUT` | `/api/v1/settings` | Saves profile, keys, and custom prompt |
 | `GET` | `/api/v1/settings/default-prompt` | Returns Olga's current system prompt |
+
+### Client Logs
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/api/v1/client-logs/batch` | Ingests a batch of log entries from the mobile client (`mobile/src/logging/remoteLogger.ts`) — fire-and-forget, development-stage debugging tooling for diagnosing the voice loop against a real device |
 
 ### Health
 
