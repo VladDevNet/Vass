@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build API
+        run: dotnet build VoiceAssistant.API/VoiceAssistant.API.csproj --configuration Release
+
+      - name: Run unit tests
+        run: dotnet test VoiceAssistant.API.Tests/VoiceAssistant.API.Tests.csproj --configuration Release
+
+      # SQLite-backed (no Postgres/Docker service needed) -- see
+      # VoiceAssistant.API.IntegrationTests/TestWebApplicationFactory.cs.
+      # Faked Gemini HTTP transport (FakeGeminiHandler.cs), so no network
+      # calls or API keys/secrets are required here either.
+      - name: Run integration tests
+        run: dotnet test VoiceAssistant.API.IntegrationTests/VoiceAssistant.API.IntegrationTests.csproj --configuration Release
+
+      # `dotnet list package --vulnerable` always exits 0 (it's a report, not
+      # a pass/fail audit command -- unlike npm audit below) -- findings show
+      # up in this step's log for visibility, but won't fail the job. Acting
+      # on any findings here is DEP-01's job, not this workflow's.
+      - name: Check for vulnerable NuGet packages
+        run: dotnet list VoiceAssistant.API/VoiceAssistant.API.csproj package --vulnerable --include-transitive
+
+  mobile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      # Informational, not gating: its SDK-version-match check queries Expo's
+      # own live compatibility metadata, not just this repo's lockfile, so it
+      # can start failing purely from an upstream Expo patch release with zero
+      # code changes here (this happened once already -- see DEP-01, which
+      # fixed the gap this caught but can't prevent a future recurrence of
+      # the same class of drift).
+      - name: Expo doctor
+        run: npx expo-doctor
+        continue-on-error: true
+
+      # --audit-level=high: same reporting-not-gating rationale as the NuGet
+      # check above -- moderate/low transitive findings are DEP-01's job.
+      - name: Check for high/critical vulnerable npm packages
+        run: npm audit --audit-level=high
