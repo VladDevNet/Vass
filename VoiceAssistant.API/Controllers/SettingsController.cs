@@ -147,7 +147,13 @@ public partial class SettingsController : ControllerBase
         // against what MaskKey would currently produce, not the previous
         // Contains("...") substring check, which could misfire on a real key
         // that happens to contain the literal characters "..."
-        // (PROJECT-AUDIT-2026-07-10 API-01).
+        // (PROJECT-AUDIT-2026-07-10 API-01). Known, accepted limitation: if a
+        // caller's INTENDED new key happens to be byte-for-byte identical to
+        // the current masked placeholder (e.g. literally typing "sk-...abcd"
+        // as a new value), this silently treats it as unchanged rather than
+        // saving that literal string as the new key -- astronomically
+        // unlikely for a real provider key format, not worth the complexity
+        // of a separate "did the caller send exactly this?" signal.
         if (req.OpenAiApiKey is not null && req.OpenAiApiKey != MaskKey(settings.OpenAiApiKey))
             settings.OpenAiApiKey = req.OpenAiApiKey == "" ? null : req.OpenAiApiKey;
 
