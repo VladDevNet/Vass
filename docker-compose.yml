@@ -79,12 +79,19 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Now a pure /api/* reverse proxy in front of `api` -- it used to also serve
+  # the legacy PWA's static files, removed along with `frontend/`
+  # (PROJECT-AUDIT-2026-07-10 ARCH-01: mobile/ is the sole client now). Kept
+  # (not removed outright) because the external Caddy proxy on the VPS points
+  # at this container's published port, and removing it would mean exposing
+  # `api` directly -- a bigger change that would also need Program.cs's
+  # ForwardedHeaders ForwardLimit (currently 2, counting on exactly this
+  # nginx hop) recalibrated to 1. Out of scope for this fix.
   nginx:
     image: nginx:alpine
     ports:
       - "127.0.0.1:4001:80"
     volumes:
-      - ./frontend:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       api:

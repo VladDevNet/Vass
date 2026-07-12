@@ -37,9 +37,11 @@ longer passages», так что on-device Piper решило бы только 
 русского голоса или синтез не удался (эндпоинт `/api/v1/chat/tts` остаётся,
 код — `mobile/src/hooks/useVoiceChat.ts:stopAndRespond`).
 
-Потоковый синтез по предложениям (как в `frontend/js/yolo.js` —
-`extractCompleteSentences()`) для `expo-speech` не нужен — синтез и так
-мгновенный (системный движок), сетевого хопа нет независимо от стриминга.
+Потоковый синтез по предложениям (как было в `frontend/js/yolo.js` —
+`extractCompleteSentences()`, каталог удалён при
+PROJECT-AUDIT-2026-07-10 ARCH-01, восстановим из истории git) для
+`expo-speech` не нужен — синтез и так мгновенный (системный движок),
+сетевого хопа нет независимо от стриминга.
 
 ## Анимированный аватар
 
