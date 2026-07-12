@@ -61,7 +61,7 @@ Secondary features:
 | `nginx` | Static frontend + `/api/*` reverse proxy (prefix-match, not path rewrite — `/api/v1/...` passes through unchanged) |
 | `audio` volume | Persists uploaded user audio |
 
-`speaker-id` (SpeechBrain-based voice identification) and `tts-silero` (a TTS quality comparison) exist as code/Dockerfiles in the repo but are **not** in `docker-compose.yml` — both are paused, see below.
+`speaker-id` (SpeechBrain-based voice identification) is in `docker-compose.yml` but opt-in only (`profiles: ["speaker-id"]` -- `docker compose up` alone never starts it, and `api` does not `depends_on` it); the standalone Silero TTS quality comparison that used to live in `silero-tts/` was removed entirely, having lost its comparison against Piper (PROJECT-AUDIT-2026-07-10 OPS-02). See below.
 
 ## Repository Layout
 
@@ -89,8 +89,7 @@ Secondary features:
 │   ├── Dockerfile
 │   └── VoiceAssistant.API.csproj
 ├── piper-tts/                       # Flask wrapper around the Piper TTS CLI
-├── speaker-id/                      # SpeechBrain ECAPA-TDNN voice-ID microservice (paused, not in compose)
-├── silero-tts/                      # Standalone TTS quality comparison (not in compose)
+├── speaker-id/                      # SpeechBrain ECAPA-TDNN voice-ID microservice (paused feature, opt-in compose profile)
 ├── frontend/
 │   ├── app.html                     # main chat/YOLO screen
 │   ├── index.html                   # login/register
@@ -124,7 +123,7 @@ Secondary features:
 - ASP.NET Identity with relaxed password rules for early development.
 - JWT bearer authentication (issuer/audience `Vass`).
 - Shared `IHttpClientFactory`.
-- Application services: Gemini, Piper TTS, companion prompt, audio analysis, speaker-ID (registered but its call site in `ChatController` is commented out — see below).
+- Application services: Gemini, Piper TTS, companion prompt, audio analysis, speaker-ID (call site is real, uncommented code — `SpeakerRegistryService.IdentifyAsync` no-ops immediately unless `Features:SpeakerIdentificationEnabled` is set, see below).
 - Controller routing and `/api/health`.
 - EF Core migrations on startup (`db.Database.Migrate()`).
 
@@ -312,8 +311,7 @@ YOLO mode depends on:
 
 ## Paused Features
 
-- **Speaker identification** (`SpeakerIdService`, `SpeakerRegistryService`, `SpeakerProfile` entity, the `speaker-id` SpeechBrain microservice): built, then paused — real short phone-mic clips scored too close to the noise-floor similarity seen between different speakers to trust yet. The call site in `ChatController.Send()` is commented out with the reasoning inline. Infrastructure is kept intentionally; revisit if there's demand (e.g. multiple household members using the same device).
-- **`tts-silero`**: a standalone quality comparison against Piper, never wired into the API. Kept as a reference, not run by default.
+- **Speaker identification** (`SpeakerIdService`, `SpeakerRegistryService`, `SpeakerProfile` entity, the `speaker-id` SpeechBrain microservice): built, then paused for two independent reasons -- real short phone-mic clips scored too close to the noise-floor similarity seen between different speakers to trust yet, and `SpeakerProfile`/`SpeakerPendingStore` have no per-user/household isolation (PROJECT-AUDIT-2026-07-10 SEC-02) -- turning this on today would mix voices/names across unrelated accounts. The call site is real code, gated by `Features:SpeakerIdentificationEnabled` (default `false`). The `speaker-id` compose service is defined but opt-in (`profiles: ["speaker-id"]`, OPS-02) -- run `docker compose --profile speaker-id up` to stand it up for testing. Do not flip the feature flag on before adding tenant isolation.
 
 ## Recent Product Direction
 

@@ -12,6 +12,12 @@ services:
       - Jwt__Audience=Vass
       - Encryption__Key=${ENCRYPTION_KEY}
       - Piper__BaseUrl=http://tts:5001
+      # speaker-id below is opt-in (profiles: ["speaker-id"], not started by
+      # `docker compose up` on its own) -- this hostname is only ever dialed
+      # if Features__SpeakerIdentificationEnabled is ALSO set to true
+      # (SpeakerRegistryService.IdentifyAsync no-ops before ever reaching it
+      # otherwise). Both must be turned on together
+      # (PROJECT-AUDIT-2026-07-10 OPS-02, SEC-02).
       - SpeakerId__BaseUrl=http://speaker-id:5003
     volumes:
       - audio:/app/audio
@@ -36,6 +42,26 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    restart: unless-stopped
+
+  # Opt-in only: `docker compose --profile speaker-id up` (or COMPOSE_PROFILES=
+  # speaker-id). Not started by a plain `docker compose up`, and `api` does not
+  # depend_on it -- speaker identification is disabled by default
+  # (Features:SpeakerIdentificationEnabled=false) pending the tenant-isolation
+  # work SEC-02 flagged as a prerequisite for ever turning it on for real.
+  # Previously this service had no compose entry at all despite api's
+  # SpeakerId__BaseUrl pointing at it -- a real, if disabled-today, footgun
+  # for whoever next enables the feature flag without knowing to also stand
+  # this up (PROJECT-AUDIT-2026-07-10 OPS-02).
+  speaker-id:
+    build: ./speaker-id
+    profiles: ["speaker-id"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s # embedding model load is slow on first boot
     restart: unless-stopped
 
   db:
