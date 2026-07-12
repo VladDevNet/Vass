@@ -8,6 +8,7 @@ import {
 } from 'expo-audio';
 import { File } from 'expo-file-system';
 import { api, sendMessage } from '../api/client';
+import { getReminderDeviceContext, scheduleAndAcknowledgeReminder } from '../reminders/localReminders';
 import {
   createStreamingSpeech,
   hasSpeechToResume,
@@ -732,6 +733,13 @@ export function useVoiceChat(sessionId: number | null) {
 
       try {
         let fullReply: string;
+        const reminderDevice = await getReminderDeviceContext();
+        const handleReminder = async (reminder: Parameters<typeof scheduleAndAcknowledgeReminder>[0]) => {
+          const result = await scheduleAndAcknowledgeReminder(reminder, reminderDevice.deviceId);
+          if (!result.success && myTurn === turnGenerationRef.current) {
+            setError(result.error ?? 'Не удалось установить локальное напоминание');
+          }
+        };
 
         if (fromShadow) {
           const { transcription } = await api.checkUtteranceComplete(uri);
@@ -770,13 +778,25 @@ export function useVoiceChat(sessionId: number | null) {
             await armMicUnlessPaused();
             return;
           }
-          fullReply = await sendMessage({ sessionId: sid, message: combinedText }, {
+          fullReply = await sendMessage({
+            sessionId: sid,
+            message: combinedText,
+            deviceId: reminderDevice.deviceId,
+            timeZoneId: reminderDevice.timeZoneId,
+          }, {
             onChunk: handleChunk,
+            onReminder: handleReminder,
           });
         } else {
           const { fileName } = await api.uploadAudio(uri);
           fullReply = await sendMessage(
-            { sessionId: sid, message: '', audioFileName: fileName },
+            {
+              sessionId: sid,
+              message: '',
+              audioFileName: fileName,
+              deviceId: reminderDevice.deviceId,
+              timeZoneId: reminderDevice.timeZoneId,
+            },
             {
               onTranscription: (text) => {
                 if (!text.trim() || myTurn !== turnGenerationRef.current) return;
@@ -784,6 +804,7 @@ export function useVoiceChat(sessionId: number | null) {
                 if (myGeneration === segmentGenerationRef.current) setTranscript(pendingText());
               },
               onChunk: handleChunk,
+              onReminder: handleReminder,
             }
           );
         }

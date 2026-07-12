@@ -330,10 +330,13 @@
 - [x] RAG-подмешивание top-K фактов в системный промпт. **Готово
       2026-07-12** — cosine retrieval, top-5 с порогом релевантности;
       извлечение нового факта не блокирует основной LLM-ответ.
-- [ ] Напоминания: «напомни мне …» → серверная джоба → push (FCM/APNs) + голос.
-      Идёт вместе с остальной Фазой 4, не отдельным треком — технически то
-      же самое, что факт с датой-триггером (решено 2026-07-12, см.
-      [ROADMAP.md](../ROADMAP.md)).
+- [x] Напоминания: «напомни мне …» → server-managed, locally scheduled.
+      **Реализовано 2026-07-12** — Gemini JSON parser, `Reminder` + per-device
+      delivery ack, SSE event, `expo-notifications`, startup reconciliation.
+      Push не является точкой срабатывания. Архитектура уточнена после
+      обсуждения offline/wake-up; см. [reminders.md](reminders.md).
+- [ ] Физическая проверка напоминаний: airplane mode, kill/background,
+      reboot, Doze/battery saver, exact permission denied/granted, timezone.
 
 ## Фаза 5 — контент-компаньон
 

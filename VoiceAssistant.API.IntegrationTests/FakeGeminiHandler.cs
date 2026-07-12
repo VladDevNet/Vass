@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using VoiceAssistant.API.Controllers;
+using VoiceAssistant.API.Services;
 
 namespace VoiceAssistant.API.IntegrationTests;
 
@@ -29,13 +30,18 @@ public class FakeGeminiHandler : HttpMessageHandler
 
     private static readonly string PreambleCheckMarker = $"\"maxOutputTokens\":{ChatController.PreambleCheckMaxTokens}";
     private static readonly string CustomInstructionCheckMarker = $"\"maxOutputTokens\":{ChatController.CustomInstructionCheckMaxTokens}";
+    private static readonly string ReminderParseMarker = $"\"maxOutputTokens\":{ReminderService.ParseMaxTokens}";
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
 
         var replyText = DefaultReplyText;
-        if (body.Contains(PreambleCheckMarker, StringComparison.Ordinal) ||
+        if (body.Contains(ReminderParseMarker, StringComparison.Ordinal))
+        {
+            replyText = "{\"isReminder\":true,\"needsClarification\":false,\"text\":\"позвонить врачу\",\"dueAtLocal\":\"2030-01-01T09:00:00\"}";
+        }
+        else if (body.Contains(PreambleCheckMarker, StringComparison.Ordinal) ||
             body.Contains(CustomInstructionCheckMarker, StringComparison.Ordinal))
         {
             replyText = "NONE";

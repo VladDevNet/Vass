@@ -48,7 +48,8 @@
 | [`architecture.md`](react-native/architecture.md) | `in progress` | Expo/RN/TS каркас, `/api/v1`, упрощённый вход реализованы. Push-уведомления (FCM/APNs, «напоминания из памяти») описаны, но нигде не реализованы — ни бэкенда, ни `expo-notifications` в мобильном клиенте |
 | [`audio-and-vad.md`](react-native/audio-and-vad.md) | `in progress` | Аудио-сессия и серверный STT актуальны. Раздел «VAD on-device: Silero VAD через onnxruntime» устарел: реально в `useVad.ts` портирован RMS/dBFS-подход с веба, а не Silero ONNX — нативный ML-модуль не понадобился |
 | [`tts-and-avatar.md`](react-native/tts-and-avatar.md) | `in progress` | TTS-раздел (`expo-speech`) актуален. Avatar-раздел описывает раннюю версию `AvatarFace.tsx` (07-07) как основной аватар — с 07-09/07-10 основным стал `LayeredAvatar` (layered PNG, не Rive), см. `docs/designs/*_avatar_asset_plan.md`. `AvatarFace.tsx` не удалён: остаётся runtime fallback на случай ошибки загрузки ассетов (`HomeScreen.tsx`) |
-| [`memory.md`](react-native/memory.md) | `in progress` | Кратко-, средне- и долгосрочная RAG-память реализованы. Напоминания и push delivery — оставшийся инкремент Фазы 4 |
+| [`memory.md`](react-native/memory.md) | `implemented` | Кратко-, средне- и долгосрочная RAG-память реализованы |
+| [`reminders.md`](react-native/reminders.md) | `in progress` | Local-first реализация готова; требуется физическая Android-матрица offline/reboot/Doze |
 | [`content-companion.md`](react-native/content-companion.md) | `draft` | YouTube/новости/сериалы/рецепты через intent-роутер — написано, ни один intent не реализован |
 | [`risks.md`](react-native/risks.md) | `reference` | Живой реестр рисков и осознанных ограничений |
 | [`BACKLOG.md`](react-native/BACKLOG.md) | `reference` | Живой бэклог Фаз 0-7. Фазы 0-6 в основном реализованы (см. историю PR); Фаза 7 (overlay) — `draft`-спека, ядро (7.1-7.2) пересмотрено на более ранний приоритет 2026-07-12, см. [ROADMAP.md](../ROADMAP.md) |

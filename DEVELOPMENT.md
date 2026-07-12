@@ -13,6 +13,7 @@ Secondary features:
 - Text chat with SSE streaming, independent of voice mode.
 - Camera/image OCR through Gemini.
 - Per-user long-term memory: Gemini embeddings + pgvector semantic retrieval, with user-owned view/delete endpoints.
+- Local-first reminders: server-side language/date parsing plus OS-scheduled mobile notifications that fire offline.
 - Per-user API keys (Gemini/OpenAI/Anthropic key fields exist in settings for future use, but only Gemini is actually consumed today, and are encrypted at rest — PROJECT-AUDIT-2026-07-10 SEC-03) and a custom system prompt, which the assistant can update itself when a user asks it to remember a behavioral preference ("говори медленнее").
 
 ## Technology Stack
@@ -63,10 +64,11 @@ React 19 / Vite / TypeScript, in `admin/`. It is a separate operational SPA serv
 │   │   ├── ChatController.cs        # api/v1/chat — sessions, SSE chat, audio, TTS, OCR
 │   │   ├── ClientLogsController.cs  # api/v1/client-logs — mobile client log ingest (dev tooling)
 │   │   ├── MemoryController.cs      # api/v1/memory — view/delete personal memory facts
+│   │   ├── RemindersController.cs   # api/v1/reminders — per-device schedule sync/ack
 │   │   └── SettingsController.cs    # api/v1/settings — per-user profile, API keys, custom prompt
 │   ├── Data/
 │   │   ├── AppDbContext.cs
-│   │   └── Entities/                # ChatSession, Message, User, UserSettings, MemoryFact, SpeakerProfile
+│   │   └── Entities/                # ChatSession, Message, UserSettings, MemoryFact, Reminder/Delivery
 │   ├── Migrations/
 │   ├── Prompts/
 │   │   └── companion-system.txt     # Olga's system prompt
@@ -75,6 +77,7 @@ React 19 / Vite / TypeScript, in `admin/`. It is a separate operational SPA serv
 │   │   ├── PiperTtsService.cs       # self-hosted TTS, buffered + streaming
 │   │   ├── CompanionPromptService.cs
 │   │   ├── LongTermMemoryService.cs # fact extraction + pgvector retrieval
+│   │   ├── ReminderService.cs       # typed reminder parsing and delivery handshake
 │   │   ├── AudioAnalysisService.cs  # transcription + utterance-completeness check
 │   │   ├── SpeakerIdService.cs      # paused feature — see "Paused Features" below
 │   │   ├── SpeakerPendingStore.cs
@@ -122,6 +125,7 @@ React 19 / Vite / TypeScript, in `admin/`. It is a separate operational SPA serv
 | `ChatController` | `/api/v1/chat` | Sessions, SSE chat, audio upload/playback, TTS, utterance-completeness check, OCR |
 | `ClientLogsController` | `/api/v1/client-logs` | Batched log ingest from the mobile client — development-stage debugging tooling |
 | `MemoryController` | `/api/v1/memory` | View and delete the authenticated user's long-term memory facts |
+| `RemindersController` | `/api/v1/reminders` | Reconcile and acknowledge OS-scheduled reminders per device |
 | `SettingsController` | `/api/v1/settings` | Per-user profile, API keys, custom system prompt |
 
 ## Main API Surface
@@ -168,6 +172,15 @@ React 19 / Vite / TypeScript, in `admin/`. It is a separate operational SPA serv
 | `DELETE` | `/api/v1/memory/facts/{id}` | Deletes one user-owned fact |
 | `DELETE` | `/api/v1/memory/facts` | Clears all long-term memory for the current user |
 
+### Reminders
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/v1/reminders?deviceId=...` | Active reminders plus this device's local schedule state |
+| `POST` | `/api/v1/reminders/{id}/scheduled` | Confirms the OS-owned local notification identifier |
+| `POST` | `/api/v1/reminders/{id}/failed` | Records a device scheduling failure |
+| `DELETE` | `/api/v1/reminders/{id}` | Cancels the canonical reminder |
+
 ### Client Logs
 
 | Method | Path | Notes |
@@ -199,6 +212,7 @@ Anything outside `/api/` and `/admin/` returns nginx's own default 404 — there
 
 ```text
 data: {"transcription":"..."}
+data: {"reminder":{"id":1,"text":"позвонить врачу","dueAtUtc":"...","timeZoneId":"Europe/Warsaw"}}
 data: {"preamble":"..."}
 data: {"text":"..."}
 data: {"stats":{"convertMs":0,"transcribeMs":0,"speakerIdMs":0,"llmFirstTokenMs":0,"llmTotalMs":0,"translationMs":0}}

@@ -12,6 +12,9 @@
     },
     "android": {
       "package": "com.vass.assistant",
+      "permissions": [
+        "android.permission.SCHEDULE_EXACT_ALARM"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -31,7 +34,8 @@
           "microphonePermission": "Ассистенту нужен доступ к микрофону, чтобы слышать вас."
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      "expo-notifications"
     ]
   }
 }

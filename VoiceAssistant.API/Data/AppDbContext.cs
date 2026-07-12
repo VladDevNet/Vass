@@ -23,6 +23,8 @@ public class AppDbContext : IdentityDbContext<User>
     public DbSet<DeviceLinkCode> DeviceLinkCodes => Set<DeviceLinkCode>();
     public DbSet<ClientLogEntry> ClientLogEntries => Set<ClientLogEntry>();
     public DbSet<MemoryFact> MemoryFacts => Set<MemoryFact>();
+    public DbSet<Reminder> Reminders => Set<Reminder>();
+    public DbSet<ReminderDelivery> ReminderDeliveries => Set<ReminderDelivery>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -130,6 +132,28 @@ public class AppDbContext : IdentityDbContext<User>
                     value => VectorToBytes(value),
                     value => BytesToVector(value)));
             }
+        });
+
+        builder.Entity<Reminder>(e =>
+        {
+            e.HasOne(r => r.User).WithMany()
+                .HasForeignKey(r => r.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(r => r.Text).HasMaxLength(500);
+            e.Property(r => r.TimeZoneId).HasMaxLength(100);
+            e.Property(r => r.Status).HasMaxLength(20);
+            e.Property(r => r.CreatedByDeviceId).HasMaxLength(64);
+            e.HasIndex(r => new { r.UserId, r.Status, r.DueAtUtc });
+        });
+
+        builder.Entity<ReminderDelivery>(e =>
+        {
+            e.HasOne(d => d.Reminder).WithMany(r => r.Deliveries)
+                .HasForeignKey(d => d.ReminderId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(d => d.DeviceId).HasMaxLength(64);
+            e.Property(d => d.Status).HasMaxLength(20);
+            e.Property(d => d.LocalNotificationId).HasMaxLength(200);
+            e.Property(d => d.Error).HasMaxLength(500);
+            e.HasIndex(d => new { d.ReminderId, d.DeviceId }).IsUnique();
         });
     }
 

@@ -26,6 +26,7 @@ public class ChatController : ControllerBase
     private readonly SpeakerRegistryService _speakerRegistry;
     private readonly ConversationMemoryService _conversationMemory;
     private readonly LongTermMemoryService _longTermMemory;
+    private readonly ReminderService _reminders;
     private readonly IConfiguration _config;
     private readonly ILogger<ChatController> _logger;
     private readonly string _audioPath;
@@ -36,6 +37,7 @@ public class ChatController : ControllerBase
         GeminiService gemini, CompanionPromptService tutor,
         AudioAnalysisService audioAnalysis, SpeakerRegistryService speakerRegistry, ConversationMemoryService conversationMemory,
         LongTermMemoryService longTermMemory,
+        ReminderService reminders,
         PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
@@ -48,6 +50,7 @@ public class ChatController : ControllerBase
         _speakerRegistry = speakerRegistry;
         _conversationMemory = conversationMemory;
         _longTermMemory = longTermMemory;
+        _reminders = reminders;
         _ttsService = ttsService;
         _config = config;
         _logger = logger;
@@ -160,7 +163,12 @@ public class ChatController : ControllerBase
     public static string? ResolvePromptUserName(string? speakerKnownName, string? displayName)
         => speakerKnownName ?? displayName;
 
-    public record SendRequest(int SessionId, string Message, string? AudioFileName = null);
+    public record SendRequest(
+        int SessionId,
+        string Message,
+        string? AudioFileName = null,
+        string? DeviceId = null,
+        string? TimeZoneId = null);
 
     private const long MaxAudioSize = 5 * 1024 * 1024; // 5MB
     private const long MaxImageSize = 10 * 1024 * 1024; // 10MB
@@ -458,6 +466,15 @@ public class ChatController : ControllerBase
         session.Messages.Add(userMessage);
         await _db.SaveChangesAsync();
 
+        var reminderInterpretation = await _reminders.TryCreateAsync(
+            userId,
+            userMessage.Id,
+            messageText,
+            req.DeviceId,
+            req.TimeZoneId,
+            geminiKey,
+            HttpContext.RequestAborted);
+
         // Check (in parallel, doesn't block the response) whether the user asked the
         // assistant to remember a persistent behavior preference ("говори медленнее",
         // "давай на ты", etc.) so future turns' system prompts reflect it. Awaited at
@@ -472,8 +489,10 @@ public class ChatController : ControllerBase
         // path. Extraction of facts from this turn starts immediately afterwards
         // on its own factory-created DbContext and runs alongside the main answer.
         var recalledFacts = await _longTermMemory.RecallAsync(userId, messageText, geminiKey, HttpContext.RequestAborted);
-        var memoryUpdateTask = _longTermMemory.ExtractAndStoreAsync(
-            userId, userMessage.Id, messageText, geminiKey, HttpContext.RequestAborted);
+        var memoryUpdateTask = reminderInterpretation.State == ReminderInterpretationState.None
+            ? _longTermMemory.ExtractAndStoreAsync(
+                userId, userMessage.Id, messageText, geminiKey, HttpContext.RequestAborted)
+            : Task.CompletedTask;
 
         // Build conversation history: this session is persistent and never rotates
         // (single ongoing session per user), so resending every message ever exchanged
@@ -510,6 +529,13 @@ public class ChatController : ControllerBase
             session.MediumTermSummary,
             recalledFacts);
 
+        if (reminderInterpretation.State == ReminderInterpretationState.NeedsClarification)
+        {
+            systemPrompt = "Пользователь просит установить напоминание, но точную будущую дату или время определить нельзя. " +
+                           "Задай один короткий уточняющий вопрос и не утверждай, что напоминание уже установлено.\n\n" +
+                           systemPrompt;
+        }
+
         if (speakerResult?.ShouldAskForName == true)
         {
             systemPrompt = $"Ты слышишь новый, ранее не знакомый тебе голос несколько реплик подряд. Ненавязчиво, как естественную часть своего ответа по теме разговора, поинтересуйся как зовут собеседника — не делай это отдельным резким вопросом или объявлением о распознавании голоса.\n\n{systemPrompt}";
@@ -526,6 +552,38 @@ public class ChatController : ControllerBase
             var trData = JsonSerializer.Serialize(new { transcription });
             await Response.WriteAsync($"data: {trData}\n\n");
             await Response.Body.FlushAsync();
+        }
+
+        if (reminderInterpretation.Reminder is { } reminder)
+        {
+            var reminderData = JsonSerializer.Serialize(new
+            {
+                reminder = new
+                {
+                    id = reminder.Id,
+                    text = reminder.Text,
+                    dueAtUtc = reminder.DueAtUtc,
+                    timeZoneId = reminder.TimeZoneId,
+                    localNotificationId = reminder.LocalNotificationId
+                }
+            });
+            await Response.WriteAsync($"data: {reminderData}\n\n");
+            await Response.Body.FlushAsync();
+
+            var deliveryStatus = await _reminders.WaitForDeliveryStatusAsync(
+                reminder.Id,
+                reminder.DeviceId,
+                TimeSpan.FromSeconds(30),
+                HttpContext.RequestAborted);
+            systemPrompt = deliveryStatus switch
+            {
+                ReminderDeliveryStatuses.Scheduled =>
+                    $"Телефон подтвердил локальное напоминание «{reminder.Text}» на {reminder.DueAtUtc:O}. Кратко подтверди пользователю, что оно установлено и сработает без интернета.\n\n{systemPrompt}",
+                ReminderDeliveryStatuses.Failed =>
+                    $"Телефон не смог установить локальное напоминание «{reminder.Text}». Честно сообщи об ошибке и не обещай, что напоминание сработает.\n\n{systemPrompt}",
+                _ =>
+                    $"Напоминание «{reminder.Text}» сохранено на сервере, но телефон ещё не подтвердил локальную установку. Не утверждай, что оно уже установлено; скажи, что требуется проверка уведомлений на телефоне.\n\n{systemPrompt}"
+            };
         }
 
         // Cleanup wav file

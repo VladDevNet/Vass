@@ -260,6 +260,27 @@ export const api = {
       body: JSON.stringify({ avatarId } satisfies SettingsPatch),
     }),
 
+  getReminders: (deviceId: string): Promise<ReminderSyncItem[]> =>
+    request<ReminderSyncItem[]>(`/reminders?deviceId=${encodeURIComponent(deviceId)}`),
+
+  markReminderScheduled: (id: number, deviceId: string, localNotificationId: string): Promise<void> =>
+    request<void>(`/reminders/${id}/scheduled`, {
+      method: 'POST',
+      body: JSON.stringify({ deviceId, localNotificationId }),
+    }),
+
+  markReminderFailed: (id: number, deviceId: string, error: string): Promise<void> =>
+    request<void>(`/reminders/${id}/failed`, {
+      method: 'POST',
+      body: JSON.stringify({ deviceId, error }),
+    }),
+
+  markReminderCancelled: (id: number, deviceId: string): Promise<void> =>
+    request<void>(`/reminders/${id}/cancelled`, {
+      method: 'POST',
+      body: JSON.stringify({ deviceId }),
+    }),
+
   // Uploads a just-recorded clip (from expo-audio's recorder.uri) ahead of
   // sendMessage. Multipart, not JSON — bypasses request()'s Content-Type.
   //
@@ -405,11 +426,28 @@ export interface SendMessageParams {
   sessionId: number;
   message: string;
   audioFileName?: string;
+  deviceId?: string;
+  timeZoneId?: string;
+}
+
+export interface ReminderEvent {
+  id: number;
+  text: string;
+  dueAtUtc: string;
+  timeZoneId: string;
+  localNotificationId?: string | null;
+}
+
+export interface ReminderSyncItem extends ReminderEvent {
+  status: string;
+  deliveryStatus: string | null;
+  localNotificationId: string | null;
 }
 
 export interface SendMessageCallbacks {
   onTranscription?: (text: string) => void;
   onChunk?: (text: string) => void;
+  onReminder?: (reminder: ReminderEvent) => Promise<void>;
 }
 
 // Streams POST /chat/send (SSE-style `data: {...}` lines) and resolves with
@@ -491,19 +529,23 @@ export async function sendMessage(params: SendMessageParams, callbacks: SendMess
         const data = line.slice(6).trim();
         if (data === '[DONE]') return fullText;
 
+        let parsed: Record<string, unknown>;
         try {
-          const parsed = JSON.parse(data);
-          if (parsed.transcription) {
-            callbacks.onTranscription?.(parsed.transcription);
-          } else if (typeof parsed.text === 'string') {
-            fullText += parsed.text;
-            callbacks.onChunk?.(parsed.text);
-          }
-          // parsed.preamble / parsed.stats: not consumed yet in this first
-          // mobile voice-loop increment — see docs/react-native/BACKLOG.md Phase 1.
+          parsed = JSON.parse(data) as Record<string, unknown>;
         } catch {
           // ignore malformed lines, matches the web client's behavior
+          continue;
         }
+
+        if (typeof parsed.transcription === 'string') {
+          callbacks.onTranscription?.(parsed.transcription);
+        } else if (typeof parsed.text === 'string') {
+          fullText += parsed.text;
+          callbacks.onChunk?.(parsed.text);
+        } else if (parsed.reminder && callbacks.onReminder) {
+          await callbacks.onReminder(parsed.reminder as ReminderEvent);
+        }
+        // parsed.preamble / parsed.stats are not consumed yet.
       }
     }
 
