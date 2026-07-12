@@ -17,6 +17,10 @@ appsettings.Development.json
 ## Docker
 pgdata/
 
+## Deploy-time DB backups (scripts/deploy.sh writes these on the VPS
+## checkout itself, PROJECT-AUDIT-2026-07-10 OPS-01) -- never committed.
+backups/
+
 ## OS
 .DS_Store
 Thumbs.db

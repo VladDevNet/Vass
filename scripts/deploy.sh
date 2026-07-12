@@ -19,6 +19,24 @@ set -euo pipefail
 
 HOST="${VASS_DEPLOY_HOST:-root@vass.it-consult.services}"
 REMOTE_DIR="${VASS_DEPLOY_DIR:-/root/vass}"
+
+# REMOTE_DIR is interpolated inside single-quoted segments of remote command
+# strings below (e.g. "cd '$REMOTE_DIR' && ..."); a single quote in an
+# overridden VASS_DEPLOY_DIR would break out of that quoting on the remote
+# end. Reject anything that isn't a plain absolute path with no shell
+# metacharacters before using it.
+case "$REMOTE_DIR" in
+    *[\'\"\$\`]*)
+        echo "!! VASS_DEPLOY_DIR ('$REMOTE_DIR') must not contain quotes, \$, or \`." >&2
+        exit 1
+        ;;
+    /*) : ;;
+    *)
+        echo "!! VASS_DEPLOY_DIR ('$REMOTE_DIR') must be an absolute path." >&2
+        exit 1
+        ;;
+esac
+
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_FILE="backups/pre-deploy-${TIMESTAMP}.sql"
 READY_TIMEOUT_S=300
@@ -28,8 +46,21 @@ echo "==> Backing up database ($BACKUP_FILE)..."
 ssh "$HOST" "cd '$REMOTE_DIR' && mkdir -p backups && docker compose exec -T db pg_dump -U app -d vass > '$BACKUP_FILE'"
 
 BACKUP_SIZE="$(ssh "$HOST" "wc -c < '$REMOTE_DIR/$BACKUP_FILE'" | tr -d '[:space:]')"
-if [ -z "$BACKUP_SIZE" ] || [ "$BACKUP_SIZE" -lt 1000 ]; then
-    echo "!! Backup file is suspiciously small (${BACKUP_SIZE:-0} bytes) -- aborting before touching the running deployment." >&2
+# Validate as digits-only before the numeric [ -lt ] test below -- that test
+# lives inside an `if` condition, which `set -e` explicitly does not abort
+# on, so a non-numeric BACKUP_SIZE (e.g. shell-startup output on the remote
+# end contaminating the pipe) would make `[ -lt ]` error out silently and
+# fall through as if the check had passed, defeating the one guard this
+# script exists to provide.
+case "$BACKUP_SIZE" in
+    ''|*[!0-9]*)
+        echo "!! Could not determine backup file size (got '$BACKUP_SIZE') -- aborting before touching the running deployment." >&2
+        echo "!! Check '$REMOTE_DIR/$BACKUP_FILE' on the VPS manually." >&2
+        exit 1
+        ;;
+esac
+if [ "$BACKUP_SIZE" -lt 1000 ]; then
+    echo "!! Backup file is suspiciously small ($BACKUP_SIZE bytes) -- aborting before touching the running deployment." >&2
     echo "!! Check '$REMOTE_DIR/$BACKUP_FILE' on the VPS manually." >&2
     exit 1
 fi
@@ -48,7 +79,11 @@ while [ "$elapsed" -lt "$READY_TIMEOUT_S" ]; do
     if [ "$status" = "200" ]; then
         echo "    ready (HTTP 200) after ${elapsed}s"
         echo
-        ssh "$HOST" "cd '$REMOTE_DIR' && docker compose exec -T api curl -s http://localhost:5000/api/health/ready"
+        # Purely informational re-fetch to print the check breakdown --
+        # readiness is already confirmed above, so a flake on this specific
+        # extra round-trip shouldn't turn an already-successful deploy into
+        # a reported failure.
+        ssh "$HOST" "cd '$REMOTE_DIR' && docker compose exec -T api curl -s http://localhost:5000/api/health/ready" || true
         echo
         echo "==> Deploy complete."
         exit 0
