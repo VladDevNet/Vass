@@ -9,7 +9,9 @@ import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowInsets
@@ -26,6 +28,15 @@ class VassOverlayService : Service() {
   private var avatarId = "olga"
   private var appVisible = true
   private var enabled = false
+  private val vadHandler = Handler(Looper.getMainLooper())
+  private var vadTickerRunning = false
+  private val vadTicker = object : Runnable {
+    override fun run() {
+      if (!vadTickerRunning) return
+      OverlayEventBridge.emit("vadTick", mapOf("timestamp" to System.currentTimeMillis()))
+      vadHandler.postDelayed(this, VAD_TICK_INTERVAL_MS)
+    }
+  }
 
   override fun onCreate() {
     super.onCreate()
@@ -62,6 +73,7 @@ class VassOverlayService : Service() {
   }
 
   override fun onDestroy() {
+    setVadTickerRunning(false)
     removeOverlay()
     isRunning = false
     super.onDestroy()
@@ -121,6 +133,14 @@ class VassOverlayService : Service() {
   private fun syncOverlayVisibility() {
     val shouldShow = enabled && !appVisible && Settings.canDrawOverlays(this)
     if (shouldShow) showOverlay() else removeOverlay()
+    setVadTickerRunning(shouldShow)
+  }
+
+  private fun setVadTickerRunning(running: Boolean) {
+    if (vadTickerRunning == running) return
+    vadTickerRunning = running
+    vadHandler.removeCallbacks(vadTicker)
+    if (running) vadHandler.post(vadTicker)
   }
 
   private fun showOverlay() {
@@ -226,6 +246,7 @@ class VassOverlayService : Service() {
   private fun stopFromUser(notifyRuntime: Boolean) {
     enabled = false
     persistSnapshot()
+    setVadTickerRunning(false)
     removeOverlay()
     stopExpoAudioRecording()
     if (notifyRuntime) OverlayEventBridge.emit("stopRequested")
@@ -267,6 +288,8 @@ class VassOverlayService : Service() {
   private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
   companion object {
+    private const val VAD_TICK_INTERVAL_MS = 50L
+
     @Volatile
     var isRunning: Boolean = false
       private set

@@ -21,7 +21,8 @@ export type OverlayEvent =
   | { type: 'controlPress' }
   | { type: 'pauseToggle'; paused: boolean }
   | { type: 'openApp' }
-  | { type: 'stopRequested' };
+  | { type: 'stopRequested' }
+  | { type: 'vadTick'; timestamp: number };
 
 interface NativeVassOverlayModule {
   canDrawOverlays(): Promise<boolean>;

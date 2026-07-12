@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { AudioRecorder } from 'expo-audio';
 import { log } from '../logging/remoteLogger';
+import { VassOverlay } from '../../modules/vass-overlay';
 
 const POLL_INTERVAL_MS = 50;
 
@@ -156,7 +157,14 @@ export function useVad({
 
     if (!active) return;
 
-    const interval = setInterval(() => {
+    let lastTickAt = 0;
+    const tick = () => {
+      const tickAt = Date.now();
+      // During the foreground/background transition a final JS timer and
+      // the first native heartbeat can land almost together. Treat them as
+      // one frame so debounce/silence accounting does not run twice.
+      if (tickAt - lastTickAt < POLL_INTERVAL_MS / 2) return;
+      lastTickAt = tickAt;
       const { metering } = recorder.getStatus();
       if (metering === undefined) return; // metering not enabled, or recorder not started yet
 
@@ -211,8 +219,20 @@ export function useVad({
           onSilenceTickRef.current(now - lastSpeechAtRef.current, lastSpeechAtRef.current - speechStartAtRef.current);
         }
       }
-    }, POLL_INTERVAL_MS);
+    };
 
-    return () => clearInterval(interval);
+    const interval = setInterval(tick, POLL_INTERVAL_MS);
+    // React Native pauses JavaScript timers in onHostPause. The native
+    // overlay foreground service emits this heartbeat only while its window
+    // is actually visible, keeping the SAME VAD state machine moving in the
+    // background without creating a second recorder or JS runtime.
+    const removeOverlayListener = VassOverlay.addListener((event) => {
+      if (event.type === 'vadTick') tick();
+    });
+
+    return () => {
+      clearInterval(interval);
+      removeOverlayListener();
+    };
   }, [active, recorder, thresholdDb, startFrames, resetKey]);
 }
