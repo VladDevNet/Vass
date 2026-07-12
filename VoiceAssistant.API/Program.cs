@@ -131,12 +131,25 @@ builder.Services.AddScoped<ConversationMemoryService>();
 // Controllers
 builder.Services.AddControllers();
 
-// CORS (dev)
-builder.Services.AddCors(options =>
-{
-    options.AddDefaultPolicy(policy =>
-        policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader());
-});
+// No CORS policy (PROJECT-AUDIT-2026-07-10 SEC-06). This used to be a
+// permissive AllowAnyOrigin()/AnyMethod()/AnyHeader() policy -- the audit
+// flagged the resulting Access-Control-Allow-Origin: * as too broad. The
+// only client now is the mobile app (ARCH-01 removed the legacy PWA that
+// used to justify it); CORS is a browser-enforced restriction that native
+// apps aren't subject to in the first place, so there's no legitimate
+// browser origin left to allow. Not calling app.UseCors() below means no
+// Access-Control-* headers are ever set, which is the correct, maximally
+// restrictive posture here -- not "restrict to a trusted origin" (there
+// isn't one), but "there is no CORS policy to have."
+//
+// The audit's other SEC-06 asks (CSP, Referrer-Policy, Permissions-Policy)
+// are deliberately not added: all three exist to constrain what a BROWSER
+// does when rendering HTML/executing script/loading subresources on a
+// PAGE. This API never returns HTML -- only JSON, binary audio, and SSE
+// text/event-stream bodies -- so there is no page-rendering surface for
+// them to constrain. HSTS/X-Frame-Options/X-Content-Type-Options are
+// already present per the audit (added by the external Caddy proxy on the
+// VPS, unversioned config outside this repo).
 
 // The api container publishes no ports (see docker-compose.yml) — nginx is
 // the ONLY thing that can reach it, so X-Forwarded-For on the immediate
@@ -287,7 +300,6 @@ static bool NeedsMigration(string? rawValue, byte[] key)
 // limiting below, and anything else added later) — it rewrites that value
 // from the forwarded header, so ordering here is not cosmetic.
 app.UseForwardedHeaders();
-app.UseCors();
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseRateLimiter();
