@@ -130,6 +130,33 @@ public class ChatController : ControllerBase
         return false;
     }
 
+    // The Send action used to pass settings.DisplayName as GetSystemPrompt's
+    // userName UNCONDITIONALLY, then separately PREPEND a second "Сейчас с
+    // тобой говорит: X" note whenever speaker-id matched a known voice --
+    // if the two ever disagreed (e.g. a family member sharing the device
+    // via device-link, recognized by speaker-id under a name that isn't
+    // the account's own DisplayName), the model saw two contradicting
+    // "who you're talking to" claims in the same prompt. Speaker-id
+    // reflects who is ACTUALLY speaking on THIS turn, so it takes priority
+    // over the account-level DisplayName rather than stacking alongside it
+    // -- there is only ever one userName slot now. Dormant while
+    // Features:SpeakerIdentificationEnabled is off (SEC-02):
+    // speakerKnownName is then always null and this always resolves to
+    // displayName, unchanged from before.
+    //
+    // Re-review before ever flipping that flag on: SpeakerRegistryService
+    // has no tenant isolation yet (matches globally across ALL accounts'
+    // voices) at a match threshold its own comment calls "not
+    // confidently-calibrated." A false cross-account match would now fully
+    // REPLACE the correct DisplayName with a stranger's name in the
+    // prompt, where the old (contradictory) code at least still mentioned
+    // the true DisplayName alongside the wrong prepend. Worth raising the
+    // override threshold or keeping DisplayName as a fallback mention on a
+    // match, not just accepting KnownName outright, as part of that
+    // future work -- not fixed here since it's inert while the flag is off.
+    public static string? ResolvePromptUserName(string? speakerKnownName, string? displayName)
+        => speakerKnownName ?? displayName;
+
     public record SendRequest(int SessionId, string Message, string? AudioFileName = null);
 
     private const long MaxAudioSize = 5 * 1024 * 1024; // 5MB
@@ -465,13 +492,13 @@ public class ChatController : ControllerBase
             m.Content
         )).ToList();
 
-        var systemPrompt = _tutor.GetSystemPrompt(settings?.CustomSystemPrompt, settings?.DisplayName, settings?.AssistantName, session.MediumTermSummary);
+        var systemPrompt = _tutor.GetSystemPrompt(
+            settings?.CustomSystemPrompt,
+            ResolvePromptUserName(speakerResult?.KnownName, settings?.DisplayName),
+            settings?.AssistantName,
+            session.MediumTermSummary);
 
-        if (speakerResult?.KnownName != null)
-        {
-            systemPrompt = $"Сейчас с тобой говорит: {speakerResult.KnownName}. Обращайся к нему соответственно, если это уместно.\n\n{systemPrompt}";
-        }
-        else if (speakerResult?.ShouldAskForName == true)
+        if (speakerResult?.ShouldAskForName == true)
         {
             systemPrompt = $"Ты слышишь новый, ранее не знакомый тебе голос несколько реплик подряд. Ненавязчиво, как естественную часть своего ответа по теме разговора, поинтересуйся как зовут собеседника — не делай это отдельным резким вопросом или объявлением о распознавании голоса.\n\n{systemPrompt}";
         }
