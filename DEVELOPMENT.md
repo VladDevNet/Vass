@@ -143,7 +143,7 @@ Expo / React Native / TypeScript, in `mobile/`. See `docs/react-native/architect
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/api/v1/settings` | Loads masked API keys and preferences |
-| `PUT` | `/api/v1/settings` | Saves profile, keys, and custom prompt |
+| `PATCH` | `/api/v1/settings` | Partially updates profile/keys/custom prompt — only fields present in the request body are changed; omitted fields are left untouched server-side (PROJECT-AUDIT-2026-07-10 API-01, replacing a previous whole-object `PUT` that had a lost-update contract). An empty string explicitly clears `displayName`/`assistantName`/`customSystemPrompt`/a BYOK key to null; `null`/omitted leaves the field alone. |
 | `GET` | `/api/v1/settings/default-prompt` | Returns Olga's current system prompt |
 
 ### Client Logs
