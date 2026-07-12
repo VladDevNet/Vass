@@ -279,7 +279,11 @@ app.MapGet("/api/health/ready", async (
 
     try
     {
-        checks["database"] = await db.Database.CanConnectAsync() ? "ok" : "unavailable";
+        // Explicit bound, matching the deliberate 3s cap on the TTS check
+        // below -- Npgsql's own default connect timeout (15s) would
+        // otherwise apply, which is a real bound but an inconsistent one.
+        using var dbTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        checks["database"] = await db.Database.CanConnectAsync(dbTimeout.Token) ? "ok" : "unavailable";
         if (checks["database"] != "ok") ready = false;
     }
     catch (Exception ex)
@@ -294,9 +298,24 @@ app.MapGet("/api/health/ready", async (
         var audioPath = ChatController.ResolveAudioPath(configuration["Audio:Path"], hostEnv.ContentRootPath);
         Directory.CreateDirectory(audioPath);
         var probeFile = Path.Combine(audioPath, $".readiness-probe-{Guid.NewGuid():N}");
-        await File.WriteAllBytesAsync(probeFile, []);
-        File.Delete(probeFile);
+        // A handful of real bytes, not zero -- a 0-byte file needs only a
+        // directory entry on most filesystems and can succeed even on a
+        // volume with no free data blocks left, missing exactly the
+        // "volume is actually writable" failure mode this check exists for.
+        await File.WriteAllBytesAsync(probeFile, "readiness"u8.ToArray());
         checks["storage"] = "ok";
+        try
+        {
+            File.Delete(probeFile);
+        }
+        catch (Exception deleteEx)
+        {
+            // The write already proved storage is writable -- that's what
+            // this check reports on. A failed cleanup shouldn't flip a
+            // working volume to "unavailable"; just log so leaked probe
+            // files are traceable rather than silently accumulating.
+            readinessLogger.LogWarning(deleteEx, "Readiness check: failed to delete probe file {ProbeFile}", probeFile);
+        }
     }
     catch (Exception ex)
     {
