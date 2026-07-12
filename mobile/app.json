@@ -35,7 +35,8 @@
         }
       ],
       "expo-asset",
-      "expo-notifications"
+      "expo-notifications",
+      "./modules/vass-overlay/app.plugin.js"
     ]
   }
 }

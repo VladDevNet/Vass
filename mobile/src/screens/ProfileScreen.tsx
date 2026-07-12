@@ -23,6 +23,7 @@ import {
   type VoiceGender,
 } from '../tts/systemSpeech';
 import type { AvatarId } from '../components/LayeredAvatar';
+import { OverlaySettings } from '../components/OverlaySettings';
 
 interface ProfileScreenProps {
   mode: 'onboarding' | 'settings';
@@ -251,6 +252,13 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
         </Pressable>
       </View>
       {avatarSwitchError && <Text style={styles.error}>{avatarSwitchError}</Text>}
+
+      {mode === 'settings' && (
+        <>
+          <View style={styles.divider} />
+          <OverlaySettings avatarId={avatarId === 'male' ? 'male' : 'olga'} />
+        </>
+      )}
 
       <View style={styles.divider} />
 

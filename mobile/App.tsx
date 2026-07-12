@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, AppState, StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
@@ -10,13 +10,15 @@ import { ProfileScreen } from './src/screens/ProfileScreen';
 import { amoled } from './src/theme/amoled';
 import { reconcileLocalReminders } from './src/reminders/localReminders';
 import { log } from './src/logging/remoteLogger';
+import { VassOverlay } from './modules/vass-overlay';
 
 function Root() {
-  const { isLoading, user, displayName } = useAuth();
+  const { isLoading, user, displayName, avatarId } = useAuth();
   // null = not checked yet this session (only matters once a user exists —
   // see the loading-gate below, which waits on this too so we don't flash
   // onboarding for a split second before the dismissed flag loads).
   const [onboardingDismissed, setOnboardingDismissed] = useState<boolean | null>(null);
+  const hadAuthenticatedUserRef = useRef(false);
 
   useEffect(() => {
     // Reset synchronously on logout — SecureStore's dismissed flag is one
@@ -41,6 +43,35 @@ function Root() {
         error: err instanceof Error ? err.message : String(err),
       });
     });
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    VassOverlay.setAppVisible(AppState.currentState === 'active');
+    const subscription = AppState.addEventListener('change', (state) => {
+      VassOverlay.setAppVisible(state === 'active');
+    });
+    return () => subscription.remove();
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    VassOverlay.update({
+      state: 'idle',
+      avatarId: avatarId === 'male' ? 'male' : 'olga',
+      enabled: true,
+    });
+  }, [user, avatarId]);
+
+  useEffect(() => {
+    if (user) {
+      hadAuthenticatedUserRef.current = true;
+      return;
+    }
+    if (hadAuthenticatedUserRef.current) {
+      hadAuthenticatedUserRef.current = false;
+      void VassOverlay.stop();
+    }
   }, [user]);
 
   async function handleOnboardingDone() {
