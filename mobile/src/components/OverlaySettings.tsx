@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Platform, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
-import * as Notifications from 'expo-notifications';
 import {
   VassOverlay,
   type OverlayAvatarId,
   type OverlayStatus,
 } from '../../modules/vass-overlay';
+import { useConversationRuntime } from '../context/ConversationRuntimeContext';
 
 const EMPTY_STATUS: OverlayStatus = {
   available: false,
@@ -15,6 +15,7 @@ const EMPTY_STATUS: OverlayStatus = {
 };
 
 export function OverlaySettings({ avatarId }: { avatarId: OverlayAvatarId }) {
+  const { prepareOverlayMode, disableOverlayMode } = useConversationRuntime();
   const [status, setStatus] = useState<OverlayStatus>(EMPTY_STATUS);
   const [showDisclosure, setShowDisclosure] = useState(false);
   const [showRestrictedSettingsHelp, setShowRestrictedSettingsHelp] = useState(false);
@@ -37,14 +38,10 @@ export function OverlaySettings({ avatarId }: { avatarId: OverlayAvatarId }) {
   const startOverlay = useCallback(async () => {
     setBusy(true);
     setError(null);
+    let backgroundPrepared = false;
     try {
-      let notificationPermission = await Notifications.getPermissionsAsync();
-      if (!notificationPermission.granted) {
-        notificationPermission = await Notifications.requestPermissionsAsync();
-      }
-      if (!notificationPermission.granted) {
-        throw new Error('Разрешите уведомления, чтобы Vass всегда показывал кнопку остановки режима');
-      }
+      await prepareOverlayMode();
+      backgroundPrepared = true;
       await VassOverlay.start({ state: 'idle', avatarId, enabled: true }, AppState.currentState === 'active');
       setShowDisclosure(false);
       setShowRestrictedSettingsHelp(false);
@@ -52,11 +49,12 @@ export function OverlaySettings({ avatarId }: { avatarId: OverlayAvatarId }) {
       await new Promise((resolve) => setTimeout(resolve, 250));
       await refreshStatus();
     } catch (err) {
+      if (backgroundPrepared) await disableOverlayMode(true);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
-  }, [avatarId, refreshStatus, setPermissionWait]);
+  }, [avatarId, disableOverlayMode, prepareOverlayMode, refreshStatus, setPermissionWait]);
 
   useEffect(() => {
     void refreshStatus();
@@ -82,6 +80,7 @@ export function OverlaySettings({ avatarId }: { avatarId: OverlayAvatarId }) {
       setBusy(true);
       setError(null);
       try {
+        await disableOverlayMode(true);
         await VassOverlay.stop();
         setShowDisclosure(false);
         setShowRestrictedSettingsHelp(false);
@@ -160,7 +159,8 @@ export function OverlaySettings({ avatarId }: { avatarId: OverlayAvatarId }) {
             постоянного уведомления.
           </Text>
           <Text style={styles.disclosureText}>
-            На этом этапе окно не читает экран и не запускает скрытую запись. Разбор экрана появится
+            Пока режим включён, тот же голосовой разговор продолжается в фоне, а Android показывает
+            постоянное уведомление о работе микрофона. Окно не читает экран: его разбор появится
             отдельно и всегда будет требовать явного системного подтверждения.
           </Text>
           <Pressable

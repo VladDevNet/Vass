@@ -1,13 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useKeepAwake } from 'expo-keep-awake';
 import { StatusBar } from 'expo-status-bar';
 import { useAuth } from '../context/AuthContext';
-import { api } from '../api/client';
 import { log } from '../logging/remoteLogger';
 import type { VoiceState } from '../hooks/useVoiceChat';
-import { useVoiceChat } from '../hooks/useVoiceChat';
+import { useConversationRuntime } from '../context/ConversationRuntimeContext';
 import { useSleepTimer } from '../hooks/useSleepTimer';
 import { useGreeting } from '../hooks/useGreeting';
 import { AvatarFace } from '../components/AvatarFace';
@@ -53,14 +52,22 @@ export function HomeScreen() {
 
   const { assistantName, avatarId } = useAuth();
   const displayAvatarId: AvatarId = avatarId === 'male' ? 'male' : 'olga';
-  const [sessionId, setSessionId] = useState<number | null>(null);
-  const [sessionError, setSessionError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   // Ошибка загрузки любого слоя LayeredAvatar — падаем на AvatarFace
   // на остаток сессии, без retry-петли. См. spec, «Обработка ошибок».
   const [assetsFailed, setAssetsFailed] = useState(false);
-  const { state, transcript, reply, error, forceFinalize, pauseConversation, micArmed } = useVoiceChat(sessionId);
+  const {
+    sessionId,
+    sessionError,
+    state,
+    transcript,
+    reply,
+    error,
+    forceFinalize,
+    pauseConversation,
+    micArmed,
+  } = useConversationRuntime();
 
   const sleeping = useSleepTimer(state === 'idle', SLEEP_AFTER_MS);
   // micArmed, not just state === 'idle' -- see useVoiceChat.ts's own
@@ -71,21 +78,6 @@ export function HomeScreen() {
   // background/foreground churn then masqueraded as a real focus-return,
   // greeting twice on a fresh install).
   useGreeting(micArmed && state === 'idle' && !!sessionId);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .getSessions()
-      .then((sessions) => {
-        if (!cancelled && sessions.length > 0) setSessionId(sessions[0].id);
-      })
-      .catch((err) => {
-        if (!cancelled) setSessionError(err instanceof Error ? err.message : String(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   if (showSettings) {
     return <ProfileScreen mode="settings" onDone={() => setShowSettings(false)} />;

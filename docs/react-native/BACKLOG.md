@@ -372,9 +372,9 @@ Gate A/B из [плана устранения аудита](../superpowers/plan
 (7.5) остаётся последним — по-прежнему завязан на решение о
 распространении из Фазы 6.
 
-- [ ] Подготовить общий `ConversationRuntime`, независимый от жизненного цикла
+- [x] Подготовить общий `ConversationRuntime`, независимый от жизненного цикла
       `HomeScreen`: fullscreen и overlay используют один voice loop, session и
-      state machine.
+      state machine. **Готово в коде 2026-07-12.**
 - [x] Local Expo Module + config plugin: `TYPE_APPLICATION_OVERLAY`, permission
       onboarding, Android foreground service `specialUse`, постоянное
       notification с действиями «Открыть» и «Остановить». **Готово
@@ -383,11 +383,14 @@ Gate A/B из [плана устранения аудита](../superpowers/plan
 - [x] Нативный круглый avatar-control поверх приложений: выбранный avatar,
       halo состояния, drag + snap к краю, сохранение позиции, safe insets.
       **Готово в коде 2026-07-12**; physical-device smoke остаётся ниже.
-- [ ] Единая кнопка управления: short tap = manual voice control/перебивание,
-      long press = pause/resume, double tap = полный экран.
-- [ ] Background voice lifecycle: microphone service стартует из видимой
-      Activity, не запускается скрыто после process death; проверить реальные
-      background/foreground переходы и 30-минутную сессию.
+- [x] Единая кнопка управления: short tap = manual voice control/перебивание,
+      long press = pause/resume, double tap = полный экран. **Готово в коде
+      2026-07-12**; физическая проверка входит в gate ниже.
+- [x] Background voice lifecycle: microphone service стартует из видимой
+      Activity, не запускается скрыто после process death; pause/stop имеют
+      нативный safety stop. **Готово в коде 2026-07-12.**
+- [ ] Проверить реальные background/foreground переходы, все voice-состояния
+      и 30-минутную сессию на физическом Android-устройстве.
 - [ ] External intents: «вернись в Vass», YouTube search/watch URL и browser
       fallback без `AccessibilityService` и автокликов.
 - [ ] One-shot screen analysis через MediaProjection: системный consent для

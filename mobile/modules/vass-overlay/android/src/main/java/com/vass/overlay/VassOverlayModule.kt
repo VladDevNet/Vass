@@ -99,7 +99,7 @@ class VassOverlayModule : Module() {
         .edit()
         .putBoolean(OverlayContract.PREF_ENABLED, false)
         .apply()
-      sendServiceCommand(Intent(context, VassOverlayService::class.java).setAction(OverlayContract.ACTION_STOP))
+      sendServiceCommand(Intent(context, VassOverlayService::class.java).setAction(OverlayContract.ACTION_STOP_FROM_APP))
     }
   }
 

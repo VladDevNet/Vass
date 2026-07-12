@@ -43,7 +43,9 @@ class VassOverlayService : Service() {
         appVisible = intent.getBooleanExtra(OverlayContract.EXTRA_APP_VISIBLE, true)
         syncOverlayVisibility()
       }
-      OverlayContract.ACTION_STOP -> stopFromUser()
+      OverlayContract.ACTION_PAUSE -> requestPauseToggle()
+      OverlayContract.ACTION_STOP -> stopFromUser(notifyRuntime = true)
+      OverlayContract.ACTION_STOP_FROM_APP -> stopFromUser(notifyRuntime = false)
       else -> if (!enabled) stopSelf()
     }
     return START_NOT_STICKY
@@ -146,10 +148,11 @@ class VassOverlayService : Service() {
     val view = OverlayAvatarView(
       context = this,
       onDrag = { deltaX, deltaY, finished -> moveOverlay(deltaX, deltaY, finished) },
-      onSingleTap = { OverlayEventBridge.emit("controlPress") },
-      // Phase 7.1 has no background voice control. Opening the full app is
-      // the safe fallback until 7.2 wires this gesture to ConversationRuntime.
-      onLongPress = { openApp() },
+      onSingleTap = {
+        if (state == "paused") openApp()
+        OverlayEventBridge.emit("controlPress")
+      },
+      onLongPress = { requestPauseToggle() },
       onDoubleTap = { openApp() },
     ).apply {
       update(state, avatarId)
@@ -200,13 +203,46 @@ class VassOverlayService : Service() {
     OverlayEventBridge.emit("openApp")
   }
 
-  private fun stopFromUser() {
+  private fun requestPauseToggle() {
+    val shouldPause = state != "paused"
+    if (shouldPause) {
+      // Native safety net: stop the SDK 57 recording service even if the JS
+      // event is delayed while React is backgrounded. The runtime receives
+      // the same event and reconciles its recorder refs/state machine.
+      stopExpoAudioRecording()
+      state = "paused"
+      persistSnapshot()
+      avatarView?.update(state, avatarId)
+      updateNotification()
+    } else {
+      // A microphone foreground service cannot be cold-started safely from
+      // an arbitrary background state. Bring the existing task forward;
+      // ConversationRuntime resumes after AppState becomes active.
+      openApp()
+    }
+    OverlayEventBridge.emit("pauseToggle", mapOf("paused" to shouldPause))
+  }
+
+  private fun stopFromUser(notifyRuntime: Boolean) {
     enabled = false
     persistSnapshot()
     removeOverlay()
-    OverlayEventBridge.emit("stopRequested")
+    stopExpoAudioRecording()
+    if (notifyRuntime) OverlayEventBridge.emit("stopRequested")
     stopForeground(STOP_FOREGROUND_REMOVE)
     stopSelf()
+  }
+
+  private fun stopExpoAudioRecording() {
+    try {
+      startService(
+        Intent()
+          .setClassName(packageName, OverlayContract.EXPO_AUDIO_RECORDING_SERVICE)
+          .setAction(OverlayContract.EXPO_AUDIO_STOP_RECORDING),
+      )
+    } catch (_: Exception) {
+      // The service may already be gone; stopping overlay remains idempotent.
+    }
   }
 
   private fun usableBounds(): Rect {

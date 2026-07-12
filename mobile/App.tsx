@@ -11,9 +11,10 @@ import { amoled } from './src/theme/amoled';
 import { reconcileLocalReminders } from './src/reminders/localReminders';
 import { log } from './src/logging/remoteLogger';
 import { VassOverlay } from './modules/vass-overlay';
+import { ConversationRuntimeProvider } from './src/context/ConversationRuntimeContext';
 
 function Root() {
-  const { isLoading, user, displayName, avatarId } = useAuth();
+  const { isLoading, user, displayName } = useAuth();
   // null = not checked yet this session (only matters once a user exists —
   // see the loading-gate below, which waits on this too so we don't flash
   // onboarding for a split second before the dismissed flag loads).
@@ -55,15 +56,6 @@ function Root() {
   }, [user]);
 
   useEffect(() => {
-    if (!user) return;
-    VassOverlay.update({
-      state: 'idle',
-      avatarId: avatarId === 'male' ? 'male' : 'olga',
-      enabled: true,
-    });
-  }, [user, avatarId]);
-
-  useEffect(() => {
     if (user) {
       hadAuthenticatedUserRef.current = true;
       return;
@@ -96,7 +88,11 @@ function Root() {
   if (!displayName && !onboardingDismissed) {
     return <ProfileScreen mode="onboarding" onDone={handleOnboardingDone} />;
   }
-  return <HomeScreen />;
+  return (
+    <ConversationRuntimeProvider>
+      <HomeScreen />
+    </ConversationRuntimeProvider>
+  );
 }
 
 export default function App() {

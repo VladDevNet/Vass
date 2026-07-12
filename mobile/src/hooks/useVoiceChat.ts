@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Platform } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import {
   createAudioPlayer,
   RecordingPresets,
@@ -284,6 +286,10 @@ export function useVoiceChat(sessionId: number | null) {
   // bargedInRef/firstSegmentInFlightRef already exist to close for their
   // own races. This is the same fix, for pause.
   const pausedRef = useRef(false);
+  // Background recording is enabled only after the user explicitly turns
+  // on Android overlay mode. Keeping it off by default avoids a microphone
+  // foreground-service notification during ordinary fullscreen use.
+  const backgroundRecordingEnabledRef = useRef(false);
   // Guards handleSilenceTick's first-segment trigger against re-entry across
   // the few 50ms VAD ticks between "silence threshold crossed" and `state`
   // actually becoming 'thinking' (at which point the main recorder's useVad
@@ -537,7 +543,13 @@ export function useVoiceChat(sessionId: number | null) {
           log('error', 'mic', 'permission denied');
           return;
         }
-        await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true, interruptionMode: 'doNotMix' });
+        await setAudioModeAsync({
+          playsInSilentMode: true,
+          allowsRecording: true,
+          interruptionMode: 'doNotMix',
+          shouldPlayInBackground: false,
+          allowsBackgroundRecording: false,
+        });
         if (cancelled) return;
         await armMic();
       } catch (err) {
@@ -1174,6 +1186,52 @@ export function useVoiceChat(sessionId: number | null) {
     }
   }, [rearmRecorderOnly, armMic, stopRecorderIfLive]);
 
+  // Reconfiguring expo-audio's recorder foreground-service mode requires a
+  // fresh prepare. Pause first (synchronously guarded by pausedRef), switch
+  // the mode while the Activity is visible, then resume through the normal
+  // state machine so no second recorder or turn is created.
+  const configureBackgroundRecording = useCallback(
+    async (enabled: boolean, resumeAfterConfiguration: boolean) => {
+      const previous = backgroundRecordingEnabledRef.current;
+      if (previous === enabled) {
+        if (!enabled && !resumeAfterConfiguration && !pausedRef.current) {
+          await pauseConversation();
+        }
+        return;
+      }
+
+      if (enabled && Platform.OS === 'android') {
+        let permission = await Notifications.getPermissionsAsync();
+        if (!permission.granted) permission = await Notifications.requestPermissionsAsync();
+        if (!permission.granted) {
+          throw new Error('Разрешите уведомления для фонового голосового режима');
+        }
+      }
+
+      const wasPaused = pausedRef.current;
+      backgroundRecordingEnabledRef.current = enabled;
+      try {
+        if (!wasPaused) await pauseConversation();
+        await setAudioModeAsync({
+          playsInSilentMode: true,
+          allowsRecording: true,
+          interruptionMode: 'doNotMix',
+          shouldPlayInBackground: enabled,
+          allowsBackgroundRecording: enabled,
+        });
+        if (!wasPaused && resumeAfterConfiguration) await resumeConversation();
+        log('info', 'overlay', 'background recording mode changed', { enabled });
+      } catch (err) {
+        backgroundRecordingEnabledRef.current = previous;
+        if (!wasPaused && resumeAfterConfiguration && pausedRef.current) {
+          await resumeConversation();
+        }
+        throw err;
+      }
+    },
+    [pauseConversation, resumeConversation],
+  );
+
   // Manual override: send whatever's been captured so far immediately,
   // regardless of the 1.2s pause timer — same shape as before, just calling
   // straight into sendSegment now that there's no separate ceiling function.
@@ -1219,7 +1277,17 @@ export function useVoiceChat(sessionId: number | null) {
   // (never reset back to false once armed), matching what a caller
   // actually wants to know: "has the mic genuinely been armed at least
   // once this session."
-  return { state, transcript, reply, error, forceFinalize, pauseConversation, micArmed };
+  return {
+    state,
+    transcript,
+    reply,
+    error,
+    forceFinalize,
+    pauseConversation,
+    resumeConversation,
+    configureBackgroundRecording,
+    micArmed,
+  };
 }
 
 // Generous cap on how long a synthesized reply could plausibly run — a

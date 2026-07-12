@@ -6,7 +6,9 @@ internal object OverlayContract {
   const val ACTION_START = "com.vass.overlay.action.START"
   const val ACTION_UPDATE = "com.vass.overlay.action.UPDATE"
   const val ACTION_VISIBILITY = "com.vass.overlay.action.VISIBILITY"
+  const val ACTION_PAUSE = "com.vass.overlay.action.PAUSE"
   const val ACTION_STOP = "com.vass.overlay.action.STOP"
+  const val ACTION_STOP_FROM_APP = "com.vass.overlay.action.STOP_FROM_APP"
 
   const val EXTRA_STATE = "state"
   const val EXTRA_AVATAR_ID = "avatarId"
@@ -20,6 +22,9 @@ internal object OverlayContract {
 
   const val NOTIFICATION_CHANNEL_ID = "vass_overlay"
   const val NOTIFICATION_ID = 7101
+
+  const val EXPO_AUDIO_RECORDING_SERVICE = "expo.modules.audio.service.AudioRecordingService"
+  const val EXPO_AUDIO_STOP_RECORDING = "expo.modules.audio.action.STOP_RECORDING"
 
   fun putSnapshot(intent: Intent, snapshot: Map<String, Any?>): Intent = intent.apply {
     putExtra(EXTRA_STATE, snapshot[EXTRA_STATE] as? String ?: "idle")

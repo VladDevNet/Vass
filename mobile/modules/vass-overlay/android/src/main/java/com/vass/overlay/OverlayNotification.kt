@@ -32,7 +32,9 @@ internal object OverlayNotification {
     val openPendingIntent = openIntent?.let {
       PendingIntent.getActivity(context, 1, it, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
+    val pausePendingIntent = servicePendingIntent(context, 2, OverlayContract.ACTION_PAUSE)
     val stopPendingIntent = servicePendingIntent(context, 3, OverlayContract.ACTION_STOP)
+    val paused = state == "paused"
 
     return NotificationCompat.Builder(context, OverlayContract.NOTIFICATION_CHANNEL_ID)
       .setSmallIcon(R.drawable.vass_overlay_notification)
@@ -44,6 +46,7 @@ internal object OverlayNotification {
       .setCategory(NotificationCompat.CATEGORY_SERVICE)
       .setPriority(NotificationCompat.PRIORITY_LOW)
       .addAction(0, "Открыть", openPendingIntent)
+      .addAction(0, if (paused) "Продолжить" else "Пауза", pausePendingIntent)
       .addAction(0, "Остановить", stopPendingIntent)
       .build()
   }
