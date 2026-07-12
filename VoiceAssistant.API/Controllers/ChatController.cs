@@ -27,6 +27,7 @@ public class ChatController : ControllerBase
     private readonly ConversationMemoryService _conversationMemory;
     private readonly LongTermMemoryService _longTermMemory;
     private readonly ReminderService _reminders;
+    private readonly ExternalActionService _externalActions;
     private readonly IConfiguration _config;
     private readonly ILogger<ChatController> _logger;
     private readonly string _audioPath;
@@ -38,6 +39,7 @@ public class ChatController : ControllerBase
         AudioAnalysisService audioAnalysis, SpeakerRegistryService speakerRegistry, ConversationMemoryService conversationMemory,
         LongTermMemoryService longTermMemory,
         ReminderService reminders,
+        ExternalActionService externalActions,
         PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
@@ -51,6 +53,7 @@ public class ChatController : ControllerBase
         _conversationMemory = conversationMemory;
         _longTermMemory = longTermMemory;
         _reminders = reminders;
+        _externalActions = externalActions;
         _ttsService = ttsService;
         _config = config;
         _logger = logger;
@@ -168,7 +171,8 @@ public class ChatController : ControllerBase
         string Message,
         string? AudioFileName = null,
         string? DeviceId = null,
-        string? TimeZoneId = null);
+        string? TimeZoneId = null,
+        bool SupportsExternalActions = false);
 
     private const long MaxAudioSize = 5 * 1024 * 1024; // 5MB
     private const long MaxImageSize = 10 * 1024 * 1024; // 10MB
@@ -466,6 +470,10 @@ public class ChatController : ControllerBase
         session.Messages.Add(userMessage);
         await _db.SaveChangesAsync();
 
+        var externalActionTask = req.SupportsExternalActions
+            ? _externalActions.ClassifyAsync(messageText, geminiKey, HttpContext.RequestAborted)
+            : Task.FromResult<ExternalActionCommand?>(null);
+
         var reminderInterpretation = await _reminders.TryCreateAsync(
             userId,
             userMessage.Id,
@@ -474,7 +482,6 @@ public class ChatController : ControllerBase
             req.TimeZoneId,
             geminiKey,
             HttpContext.RequestAborted);
-
         // Check (in parallel, doesn't block the response) whether the user asked the
         // assistant to remember a persistent behavior preference ("говори медленнее",
         // "давай на ты", etc.) so future turns' system prompts reflect it. Awaited at
@@ -488,11 +495,13 @@ public class ChatController : ControllerBase
         // Semantic recall is the only long-term-memory operation on the critical
         // path. Extraction of facts from this turn starts immediately afterwards
         // on its own factory-created DbContext and runs alongside the main answer.
-        var recalledFacts = await _longTermMemory.RecallAsync(userId, messageText, geminiKey, HttpContext.RequestAborted);
+        var recalledFactsTask = _longTermMemory.RecallAsync(userId, messageText, geminiKey, HttpContext.RequestAborted);
         var memoryUpdateTask = reminderInterpretation.State == ReminderInterpretationState.None
             ? _longTermMemory.ExtractAndStoreAsync(
                 userId, userMessage.Id, messageText, geminiKey, HttpContext.RequestAborted)
             : Task.CompletedTask;
+        var externalAction = await externalActionTask;
+        var recalledFacts = await recalledFactsTask;
 
         // Build conversation history: this session is persistent and never rotates
         // (single ongoing session per user), so resending every message ever exchanged
@@ -536,6 +545,19 @@ public class ChatController : ControllerBase
                            systemPrompt;
         }
 
+        if (externalAction is not null)
+        {
+            systemPrompt = externalAction.Type switch
+            {
+                ExternalActionTypes.OpenVass =>
+                    "Клиент получил команду открыть полный экран Vass. Ответь одной короткой естественной фразой, что возвращаешься в приложение.\n\n" + systemPrompt,
+                ExternalActionTypes.YouTubeWatch =>
+                    "Клиент получил команду открыть конкретное видео YouTube. Ответь одной короткой естественной фразой без дополнительных объяснений.\n\n" + systemPrompt,
+                _ =>
+                    "Клиент получил команду открыть поиск YouTube. Коротко скажи, что открываешь поиск; не утверждай, что видео уже играет.\n\n" + systemPrompt
+            };
+        }
+
         if (speakerResult?.ShouldAskForName == true)
         {
             systemPrompt = $"Ты слышишь новый, ранее не знакомый тебе голос несколько реплик подряд. Ненавязчиво, как естественную часть своего ответа по теме разговора, поинтересуйся как зовут собеседника — не делай это отдельным резким вопросом или объявлением о распознавании голоса.\n\n{systemPrompt}";
@@ -551,6 +573,21 @@ public class ChatController : ControllerBase
         {
             var trData = JsonSerializer.Serialize(new { transcription });
             await Response.WriteAsync($"data: {trData}\n\n");
+            await Response.Body.FlushAsync();
+        }
+
+        if (externalAction is not null)
+        {
+            var actionData = JsonSerializer.Serialize(new
+            {
+                externalAction = new
+                {
+                    type = externalAction.Type,
+                    query = externalAction.Query,
+                    videoId = externalAction.VideoId
+                }
+            });
+            await Response.WriteAsync($"data: {actionData}\n\n");
             await Response.Body.FlushAsync();
         }
 
@@ -600,7 +637,9 @@ public class ChatController : ControllerBase
         // in parallel with the real (possibly slow, search-grounded) response, so we
         // can speak a natural "hold on" phrase while the real answer is still cooking
         // instead of leaving the user in silence for several seconds.
-        var preambleTask = GetPreambleIfNeededAsync(messageText, geminiKey, HttpContext.RequestAborted);
+        var preambleTask = externalAction is null
+            ? GetPreambleIfNeededAsync(messageText, geminiKey, HttpContext.RequestAborted)
+            : Task.FromResult<string?>(null);
 
         // Use Gemini 3.5 Flash with Google Search grounding for real-time facts (news, weather, etc.)
         var stream = _gemini.StreamResponseAsync(systemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey, cancellationToken: HttpContext.RequestAborted);

@@ -61,6 +61,15 @@ class VassOverlayModule : Module() {
       null
     }
 
+    AsyncFunction("openApp") {
+      val context = requireContext()
+      val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+      } ?: throw IllegalStateException("Vass launch activity is unavailable")
+      context.startActivity(intent)
+      null
+    }
+
     AsyncFunction("start") { snapshot: Map<String, Any?>, appVisible: Boolean ->
       val context = requireContext()
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {

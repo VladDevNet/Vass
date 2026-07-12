@@ -31,13 +31,20 @@ public class FakeGeminiHandler : HttpMessageHandler
     private static readonly string PreambleCheckMarker = $"\"maxOutputTokens\":{ChatController.PreambleCheckMaxTokens}";
     private static readonly string CustomInstructionCheckMarker = $"\"maxOutputTokens\":{ChatController.CustomInstructionCheckMaxTokens}";
     private static readonly string ReminderParseMarker = $"\"maxOutputTokens\":{ReminderService.ParseMaxTokens}";
+    private static readonly string ExternalActionParseMarker = $"\"maxOutputTokens\":{ExternalActionService.ParseMaxTokens}";
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
 
         var replyText = DefaultReplyText;
-        if (body.Contains(ReminderParseMarker, StringComparison.Ordinal))
+        if (body.Contains(ExternalActionParseMarker, StringComparison.Ordinal))
+        {
+            replyText = ReadPromptText(body).Contains("Высоцкого", StringComparison.Ordinal)
+                ? "{\"type\":\"youtube_search\",\"query\":\"песни Высоцкого\",\"videoId\":null}"
+                : "{\"type\":\"chat\",\"query\":null,\"videoId\":null}";
+        }
+        else if (body.Contains(ReminderParseMarker, StringComparison.Ordinal))
         {
             replyText = "{\"isReminder\":true,\"needsClarification\":false,\"text\":\"позвонить врачу\",\"dueAtLocal\":\"2030-01-01T09:00:00\"}";
         }
@@ -63,5 +70,15 @@ public class FakeGeminiHandler : HttpMessageHandler
             }
         });
         return $"data: {payload}\n\n";
+    }
+
+    private static string ReadPromptText(string body)
+    {
+        using var document = JsonDocument.Parse(body);
+        return document.RootElement
+            .GetProperty("contents")[0]
+            .GetProperty("parts")[0]
+            .GetProperty("text")
+            .GetString() ?? "";
     }
 }

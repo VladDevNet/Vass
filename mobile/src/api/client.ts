@@ -428,7 +428,13 @@ export interface SendMessageParams {
   audioFileName?: string;
   deviceId?: string;
   timeZoneId?: string;
+  supportsExternalActions?: boolean;
 }
+
+export type ExternalActionEvent =
+  | { type: 'open_vass'; query?: null; videoId?: null }
+  | { type: 'youtube_search'; query: string; videoId?: null }
+  | { type: 'youtube_watch'; query?: null; videoId: string };
 
 export interface ReminderEvent {
   id: number;
@@ -448,6 +454,20 @@ export interface SendMessageCallbacks {
   onTranscription?: (text: string) => void;
   onChunk?: (text: string) => void;
   onReminder?: (reminder: ReminderEvent) => Promise<void>;
+  onExternalAction?: (action: ExternalActionEvent) => Promise<void>;
+}
+
+function parseExternalAction(value: unknown): ExternalActionEvent | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.type === 'open_vass') return { type: 'open_vass' };
+  if (candidate.type === 'youtube_search' && typeof candidate.query === 'string') {
+    return { type: 'youtube_search', query: candidate.query };
+  }
+  if (candidate.type === 'youtube_watch' && typeof candidate.videoId === 'string') {
+    return { type: 'youtube_watch', videoId: candidate.videoId };
+  }
+  return null;
 }
 
 // Streams POST /chat/send (SSE-style `data: {...}` lines) and resolves with
@@ -544,6 +564,9 @@ export async function sendMessage(params: SendMessageParams, callbacks: SendMess
           callbacks.onChunk?.(parsed.text);
         } else if (parsed.reminder && callbacks.onReminder) {
           await callbacks.onReminder(parsed.reminder as ReminderEvent);
+        } else if (parsed.externalAction && callbacks.onExternalAction) {
+          const action = parseExternalAction(parsed.externalAction);
+          if (action) await callbacks.onExternalAction(action);
         }
         // parsed.preamble / parsed.stats are not consumed yet.
       }

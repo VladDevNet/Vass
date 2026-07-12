@@ -750,6 +750,22 @@ export function speakGreeting(): void {
   })();
 }
 
+// A short, awaited system notice for failures that happen on the device
+// after the server has already emitted an action (for example no handler for
+// a YouTube URL). The caller stops live recorders before awaiting this so the
+// assistant never captures its own failure message as user speech.
+export async function speakSystemNotice(text: string): Promise<void> {
+  try {
+    const voice = await getRussianVoice();
+    if (!voice) return;
+    await speakBackchannelPhrase(text, voice);
+  } catch (err) {
+    log('debug', 'tts', 'system notice failed (non-critical)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 // Public API — called from outside this file whenever something else needs
 // to cut speech short (currently just useVoiceChat's unmount cleanup).
 // Marks the stop as expected first so speakChunk's onStopped handler

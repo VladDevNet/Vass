@@ -1,8 +1,8 @@
-# Android overlay — фазы 7.1–7.2
+# Android overlay — фазы 7.1–7.3
 
-Статус на 2026-07-12: нативная основа 7.1 и код voice-интеграции 7.2
-реализованы. Release APK 7.2 собран; физический background/foreground smoke
-и 30-минутная сессия остаются acceptance gate.
+Статус на 2026-07-12: нативная основа 7.1, voice-интеграция 7.2 и external
+actions 7.3 реализованы. Физический background/foreground smoke,
+YouTube/open_vass сценарии и 30-минутная сессия остаются acceptance gate.
 
 ## Что реализовано
 
@@ -25,11 +25,19 @@
 - pause и stop дополнительно останавливают recording service на нативной
   стороне, даже если JS runtime временно недоступен;
 - после process death сервисы не перезапускаются скрыто (`START_NOT_STICKY`);
+- серверный intent-router передаёт `open_vass`, `youtube_search` и
+  `youtube_watch` отдельным типизированным SSE event;
+- YouTube открывается universal search/watch URL через системный handler,
+  без автокликов, undocumented package API и `AccessibilityService`;
+- `open_vass` поднимает существующий `singleTask` MainActivity через explicit
+  launch intent, не создавая второй conversation runtime;
+- device action дедуплицируется внутри одного voice turn; ошибка handler
+  озвучивается локально, после чего listening безопасно восстанавливается;
 - Android 8+; на Android 7 приложение работает без overlay.
 
-Screen capture и YouTube/intents в этот инкремент не входят. Overlay не читает
-экран. При включённом режиме тот же разговор продолжает слушать в фоне, что
-явно описано в disclosure и отображается системным уведомлением Android.
+Screen capture пока не входит. Overlay не читает экран. При включённом режиме
+тот же разговор продолжает слушать в фоне, что явно описано в disclosure и
+отображается системным уведомлением Android.
 
 ## Архитектура background voice
 
@@ -77,6 +85,13 @@ EXPO_PUBLIC_API_URL=https://vass.it-consult.services \
 - перетащить к обоим краям, повернуть экран, вернуть portrait и проверить позиции;
 - double tap открывает существующий Vass, без второго task;
 - short tap во время записи отправляет фразу, во время речи перебивает ответ;
+- сказать «открой в YouTube песни Высоцкого»: открывается приложение YouTube
+  либо browser search, overlay остаётся видимым и разговор не дублируется;
+- передать в речи конкретную YouTube-ссылку: открывается watch URL; выдуманный
+  или некорректный video ID не принимается;
+- сказать «вернись в Vass»: открывается существующий fullscreen task;
+- повторить YouTube-команду без установленного handler и проверить локально
+  озвученную ошибку с последующим восстановлением listening;
 - long press останавливает микрофон и ставит runtime в `paused`; повторное
   нажатие возвращает Vass и продолжает разговор;
 - проверить те же pause/continue через постоянное notification;

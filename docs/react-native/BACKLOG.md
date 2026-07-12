@@ -340,9 +340,13 @@
 
 ## Фаза 5 — контент-компаньон
 
-- [ ] Intent-роутер (классификация side-call'ом).
-- [ ] YouTube: поиск (Data API v3) + `react-native-youtube-iframe` +
-      голосовое управление.
+- [x] Intent-роутер: capability-gated Gemini side-call + typed SSE actions.
+      **Минимальный срез готов в коде 2026-07-12:** `chat`, `open_vass`,
+      `youtube_search`, `youtube_watch`; новые content intents добавляются
+      позже в тот же контракт.
+- [x] YouTube external action: безопасные search/watch universal URL через
+      системный handler, browser fallback, без iframe/Accessibility/autoclick.
+      **Готово в коде 2026-07-12 как 7.3;** физический smoke остаётся ниже.
 - [ ] Новости: сводка через grounding, чтение по предложениям.
 - [ ] Сериалы: TMDB-поиск, голосовые карточки.
 - [ ] Рецепты: пошаговый режим с паузами и командами навигации.
@@ -391,8 +395,9 @@ Gate A/B из [плана устранения аудита](../superpowers/plan
       нативный safety stop. **Готово в коде 2026-07-12.**
 - [ ] Проверить реальные background/foreground переходы, все voice-состояния
       и 30-минутную сессию на физическом Android-устройстве.
-- [ ] External intents: «вернись в Vass», YouTube search/watch URL и browser
-      fallback без `AccessibilityService` и автокликов.
+- [x] External intents: «вернись в Vass», YouTube search/watch URL и browser
+      fallback без `AccessibilityService` и автокликов. **Готово в коде
+      2026-07-12 (7.3); физический smoke не закрыт.**
 - [ ] One-shot screen analysis через MediaProjection: системный consent для
       каждой session, один кадр без overlay, приватный image attachment,
       multimodal Gemini turn, немедленный cleanup.

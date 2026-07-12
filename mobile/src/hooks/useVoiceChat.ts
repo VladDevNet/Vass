@@ -18,12 +18,14 @@ import {
   pauseSpeaking,
   resumeSpeaking,
   speakBackchannel,
+  speakSystemNotice,
   stopSpeaking,
   stripMarkdownForSpeechChunk,
 } from '../tts/systemSpeech';
 import type { StreamingSpeech } from '../tts/systemSpeech';
 import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
+import { executeExternalAction, ExternalActionExecutionError } from '../actions/externalActions';
 
 export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking' | 'paused';
 
@@ -362,6 +364,11 @@ export function useVoiceChat(sessionId: number | null) {
   // a stale reply could get spoken over a mic that's already listening for
   // something else entirely. Found by independent review of this PR.
   const turnGenerationRef = useRef(0);
+  // A continuation re-sends the combined text through /chat/send, so the
+  // router may legitimately emit the same action more than once within one
+  // turn. Keep device side effects exactly-once until armMic starts the next
+  // turn; otherwise one long YouTube request could open two Activities/tabs.
+  const executedExternalActionsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     return () => {
@@ -492,6 +499,7 @@ export function useVoiceChat(sessionId: number | null) {
     // considers that turn's work finished.
     turnGenerationRef.current += 1;
     pendingSegmentsRef.current.clear();
+    executedExternalActionsRef.current.clear();
     bargedInRef.current = false;
     firstSegmentInFlightRef.current = false;
     await rearmRecorderOnly();
@@ -752,6 +760,17 @@ export function useVoiceChat(sessionId: number | null) {
             setError(result.error ?? 'Не удалось установить локальное напоминание');
           }
         };
+        const handleExternalAction = async (action: Parameters<typeof executeExternalAction>[0]) => {
+          if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) return;
+          const actionKey = JSON.stringify(action);
+          if (executedExternalActionsRef.current.has(actionKey)) {
+            log('debug', 'external-action', 'duplicate action ignored', { type: action.type });
+            return;
+          }
+          executedExternalActionsRef.current.add(actionKey);
+          await executeExternalAction(action);
+          log('info', 'external-action', 'action opened', { type: action.type });
+        };
 
         if (fromShadow) {
           const { transcription } = await api.checkUtteranceComplete(uri);
@@ -795,9 +814,11 @@ export function useVoiceChat(sessionId: number | null) {
             message: combinedText,
             deviceId: reminderDevice.deviceId,
             timeZoneId: reminderDevice.timeZoneId,
+            supportsExternalActions: true,
           }, {
             onChunk: handleChunk,
             onReminder: handleReminder,
+            onExternalAction: handleExternalAction,
           });
         } else {
           const { fileName } = await api.uploadAudio(uri);
@@ -808,6 +829,7 @@ export function useVoiceChat(sessionId: number | null) {
               audioFileName: fileName,
               deviceId: reminderDevice.deviceId,
               timeZoneId: reminderDevice.timeZoneId,
+              supportsExternalActions: true,
             },
             {
               onTranscription: (text) => {
@@ -817,6 +839,7 @@ export function useVoiceChat(sessionId: number | null) {
               },
               onChunk: handleChunk,
               onReminder: handleReminder,
+              onExternalAction: handleExternalAction,
             }
           );
         }
@@ -907,10 +930,17 @@ export function useVoiceChat(sessionId: number | null) {
           });
           return;
         }
-        const message = err instanceof Error ? err.message : String(err);
+        const message = err instanceof ExternalActionExecutionError
+          ? err.userMessage
+          : err instanceof Error ? err.message : String(err);
         setError(message);
         log('error', 'turn', 'segment send failed', { error: message, elapsedMs: Date.now() - turnStartedAt });
         pendingSegmentsRef.current.clear();
+        if (err instanceof ExternalActionExecutionError) {
+          await stopRecorderIfLive();
+          await stopShadowRecorderIfLive();
+          await speakSystemNotice(message);
+        }
       } finally {
         // Only the segment that's still current AND whose turn is still
         // alive owns turn wrap-up — a superseded (or stale-turn) segment's

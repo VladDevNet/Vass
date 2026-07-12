@@ -132,6 +132,7 @@ builder.Services.AddScoped<SpeakerRegistryService>();
 builder.Services.AddScoped<ConversationMemoryService>();
 builder.Services.AddScoped<LongTermMemoryService>();
 builder.Services.AddScoped<ReminderService>();
+builder.Services.AddSingleton<ExternalActionService>();
 
 // Skipped under the integration-test host, same reason as the auto-migrate
 // block below -- there's no value in a 24h-interval background timer

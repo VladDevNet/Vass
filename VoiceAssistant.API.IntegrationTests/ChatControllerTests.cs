@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using VoiceAssistant.API.Controllers;
+using VoiceAssistant.API.Services;
 using Xunit;
 
 namespace VoiceAssistant.API.IntegrationTests;
@@ -103,6 +104,32 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
         Assert.Equal("Привет, как дела?", messages[0].GetProperty("content").GetString());
         Assert.Equal("assistant", messages[1].GetProperty("role").GetString());
         Assert.Equal(FakeGeminiHandler.DefaultReplyText, messages[1].GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public async Task Send_ExternalActionsSupported_StreamsTypedYouTubeAction()
+    {
+        var client = await CreateAuthenticatedClientAsync();
+        var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
+        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>())
+            .EnumerateArray().First().GetProperty("id").GetInt32();
+
+        var sendResponse = await client.PostAsJsonAsync("/api/v1/chat/send",
+            new ChatController.SendRequest(
+                sessionId,
+                "Открой в YouTube песни Высоцкого",
+                SupportsExternalActions: true));
+
+        Assert.Equal(HttpStatusCode.OK, sendResponse.StatusCode);
+        var raw = await sendResponse.Content.ReadAsStringAsync();
+        var actionLine = raw.Split('\n')
+            .First(line => line.StartsWith("data: ") && line.Contains("externalAction", StringComparison.Ordinal));
+        using var actionJson = JsonDocument.Parse(actionLine[6..]);
+        var action = actionJson.RootElement.GetProperty("externalAction");
+        Assert.Equal(ExternalActionTypes.YouTubeSearch, action.GetProperty("type").GetString());
+        Assert.Equal("песни Высоцкого", action.GetProperty("query").GetString());
+        Assert.Equal(JsonValueKind.Null, action.GetProperty("videoId").ValueKind);
+        Assert.Contains("data: [DONE]", raw);
     }
 
     [Fact]

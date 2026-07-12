@@ -28,6 +28,7 @@ interface NativeVassOverlayModule {
   getStatus(): Promise<OverlayStatus>;
   requestOverlayPermission(): Promise<void>;
   openAppDetails(): Promise<void>;
+  openApp(): Promise<void>;
   start(snapshot: OverlaySnapshot, appVisible: boolean): Promise<void>;
   update(snapshot: OverlaySnapshot): void;
   setAppVisible(visible: boolean): void;
@@ -66,6 +67,11 @@ export const VassOverlay = {
 
   async openAppDetails(): Promise<void> {
     await nativeModule?.openAppDetails();
+  },
+
+  async openApp(): Promise<void> {
+    if (!nativeModule) throw new Error('Android overlay недоступен в этой сборке');
+    await nativeModule.openApp();
   },
 
   async start(snapshot: OverlaySnapshot, appVisible = true): Promise<void> {
