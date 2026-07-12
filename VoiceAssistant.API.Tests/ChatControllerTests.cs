@@ -59,6 +59,40 @@ public class ChatControllerTests
     }
 
     [Fact]
+    public void ResolveAudioPath_ConfiguredPathIsRooted_UsedAsIs()
+    {
+        var contentRoot = Path.GetFullPath("/app");
+        var configured = Path.Combine(contentRoot, "custom-audio");
+
+        var resolved = ChatController.ResolveAudioPath(configured, contentRoot);
+
+        Assert.Equal(Path.GetFullPath(configured), resolved);
+    }
+
+    [Fact]
+    public void ResolveAudioPath_ConfiguredPathIsRelative_CombinedWithContentRoot()
+    {
+        var contentRoot = Path.GetFullPath("/app");
+
+        var resolved = ChatController.ResolveAudioPath("relative-audio", contentRoot);
+
+        Assert.Equal(Path.GetFullPath(Path.Combine(contentRoot, "relative-audio")), resolved);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void ResolveAudioPath_NoConfiguredPath_DefaultsToAudioUnderContentRoot(string? configured)
+    {
+        var contentRoot = Path.GetFullPath("/app");
+
+        var resolved = ChatController.ResolveAudioPath(configured, contentRoot);
+
+        Assert.Equal(Path.GetFullPath(Path.Combine(contentRoot, "audio")), resolved);
+    }
+
+    [Fact]
     public void TryDetectImageMimeType_Jpeg_ReturnsTrue()
     {
         byte[] content = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46];
