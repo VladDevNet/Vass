@@ -652,15 +652,23 @@ const BACKCHANNEL_PHRASES = ['Хорошо.', 'Минутку.', 'Понятно
 
 // Warm opening phrases for useGreeting.ts — spoken once when the app first
 // becomes ready to listen, and again on returning to the foreground after
-// being backgrounded (PROJECT-AUDIT-2026-07-10 section 6). Deliberately
-// generic enough to fit either moment, matching frontend/js/yolo.js's own
-// GREETING_FILLERS, which shared one pool for both "YOLO start" and
-// "focus-return" (commit 2b28a10) — unlike BACKCHANNEL_PHRASES above,
-// which are specifically about turn-taking, not a fresh conversation.
+// being backgrounded. Deliberately generic enough to fit either moment,
+// matching frontend/js/yolo.js's own GREETING_FILLERS, which shared one
+// pool for both "YOLO start" and "focus-return" (commit 2b28a10) — unlike
+// BACKCHANNEL_PHRASES above, which are specifically about turn-taking, not
+// a fresh conversation.
+//
+// Deliberately gender-neutral (no adjective agreeing with the speaker,
+// e.g. NOT "Рада"/"Готова", which are grammatically feminine-only) — this
+// assistant supports a male voice/persona (LayeredAvatar's "male" avatar,
+// AssistantName "Максим" — see HomeScreen.tsx and the VoiceGender tagging
+// above) as well as a female one, and a mis-gendered greeting would be
+// wrong every time that voice is active. Same constraint BACKCHANNEL_PHRASES
+// already satisfies by accident; here it's deliberate.
 const GREETING_PHRASES = [
   'Здравствуйте! Я на связи, слушаю вас.',
-  'Добрый день! Готова пообщаться.',
-  'Привет! Рада снова вас слышать.',
+  'Добрый день! Можно начинать — я слушаю.',
+  'Привет! Всё готово, говорите.',
 ];
 
 // Speaks one short phrase, resolving on ANY stop — done, engine-initiated,
