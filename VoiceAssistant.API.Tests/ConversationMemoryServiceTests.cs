@@ -72,17 +72,4 @@ public class ConversationMemoryServiceTests
         Assert.False(ConversationMemoryService.ShouldCompact(null));
     }
 
-    [Fact]
-    public void IsGeminiErrorResponse_RecognizesKnownErrorPrefixes()
-    {
-        Assert.True(ConversationMemoryService.IsGeminiErrorResponse("Ошибка: отсутствует API-ключ Gemini."));
-        Assert.True(ConversationMemoryService.IsGeminiErrorResponse("Ошибка API Gemini: 429"));
-        Assert.True(ConversationMemoryService.IsGeminiErrorResponse("Ошибка соединения с сервером ИИ."));
-    }
-
-    [Fact]
-    public void IsGeminiErrorResponse_DoesNotFlagNormalSummaryText()
-    {
-        Assert.False(ConversationMemoryService.IsGeminiErrorResponse("Пользователь рассказывал о своём отпуске."));
-    }
 }

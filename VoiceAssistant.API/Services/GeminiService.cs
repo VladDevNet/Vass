@@ -8,6 +8,19 @@ namespace VoiceAssistant.API.Services;
 
 public record GeminiMessage(string Role, string Content);
 
+// Typed error channel for StreamResponseAsync's infrastructure failures
+// (missing key, non-2xx HTTP, connection error) -- previously these were
+// yielded as Russian error strings indistinguishable from real model output,
+// so callers that persist/parse the result (not just relay it to a client)
+// could save an error message as if it were genuine AI content
+// (PROJECT-AUDIT-2026-07-10 REL-04). IsRetryable lets a caller decide
+// whether surfacing "try again" makes sense (transient/rate-limit) vs. not
+// (misconfiguration).
+public class GeminiApiException(string message, bool isRetryable) : Exception(message)
+{
+    public bool IsRetryable { get; } = isRetryable;
+}
+
 public class GeminiService
 {
     private readonly string _defaultApiKey;
@@ -20,6 +33,11 @@ public class GeminiService
         _logger = logger;
         _httpClientFactory = httpClientFactory;
     }
+
+    // 429 (rate limit) and 5xx are transient -- retrying later has a real
+    // chance of succeeding. Everything else (4xx auth/validation errors) is a
+    // configuration problem retrying won't fix.
+    public static bool IsRetryableStatusCode(int statusCode) => statusCode == 429 || statusCode >= 500;
 
     public async IAsyncEnumerable<string> StreamResponseAsync(
         string systemPrompt,
@@ -34,8 +52,7 @@ public class GeminiService
         if (string.IsNullOrWhiteSpace(key))
         {
             _logger.LogError("Gemini API key is missing.");
-            yield return "Ошибка: отсутствует API-ключ Gemini.";
-            yield break;
+            throw new GeminiApiException("Ошибка: отсутствует API-ключ Gemini.", isRetryable: false);
         }
 
         // Format request body for Gemini API: roles must be "user" or "model"
@@ -69,8 +86,7 @@ public class GeminiService
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
-        HttpResponseMessage? response = null;
-        string? errorMessage = null;
+        HttpResponseMessage response;
         try
         {
             response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -78,7 +94,7 @@ public class GeminiService
             {
                 var errBody = await response.Content.ReadAsStringAsync();
                 _logger.LogError("Gemini API error {Status}: {Body}", response.StatusCode, errBody);
-                errorMessage = $"Ошибка API Gemini: {(int)response.StatusCode}";
+                throw new GeminiApiException($"Ошибка API Gemini: {(int)response.StatusCode}", IsRetryableStatusCode((int)response.StatusCode));
             }
         }
         catch (OperationCanceledException)
@@ -87,19 +103,15 @@ public class GeminiService
             // content chunk, so nothing gets saved as if the model actually said it.
             throw;
         }
+        catch (GeminiApiException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to connect to Gemini API");
-            errorMessage = "Ошибка соединения с сервером ИИ.";
+            throw new GeminiApiException("Ошибка соединения с сервером ИИ.", isRetryable: true);
         }
-
-        if (errorMessage != null)
-        {
-            yield return errorMessage;
-            yield break;
-        }
-
-        if (response == null) yield break;
 
         using var stream = await response.Content.ReadAsStreamAsync();
         using var reader = new StreamReader(stream);

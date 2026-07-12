@@ -552,6 +552,23 @@ public class ChatController : ControllerBase
                 hasMore = await enumerator.MoveNextAsync();
             }
         }
+        catch (GeminiApiException ex)
+        {
+            // Infrastructure failure (missing key, non-2xx, connection error) --
+            // GeminiService throws instead of yielding a fake content chunk
+            // specifically so this never gets mistaken for a real reply and
+            // saved to history (PROJECT-AUDIT-2026-07-10 REL-04). Tell the
+            // client explicitly via a dedicated `error` SSE event (with a
+            // retryability hint) instead of [DONE], and don't save
+            // fullResponse -- it's empty anyway, since GeminiService only
+            // ever throws before yielding its first real chunk.
+            _logger.LogWarning(ex, "Gemini API error during chat response for session {SessionId}", req.SessionId);
+            var errorData = JsonSerializer.Serialize(new { error = ex.Message, retryable = ex.IsRetryable });
+            await Response.WriteAsync($"data: {errorData}\n\n");
+            await Response.Body.FlushAsync();
+            await AwaitInstructionUpdateAsync(instructionUpdateTask);
+            return;
+        }
         catch (OperationCanceledException)
         {
             // Client abandoned this turn (e.g. user kept talking) — stop without
