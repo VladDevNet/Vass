@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using VoiceAssistant.API.Controllers;
 using VoiceAssistant.API.Data;
 using VoiceAssistant.API.Data.Entities;
 using VoiceAssistant.API.Services;
@@ -250,6 +251,86 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.UseRateLimiter();
 app.MapControllers();
+
+// Liveness -- unchanged, deliberately just "is the process up and
+// responding." This is what Docker's own healthcheck (docker-compose.yml)
+// and the external Caddy/monitoring probe -- keep it cheap and dependency-free
+// so a slow/degraded dependency never causes Docker to restart a
+// perfectly-alive container.
 app.MapGet("/api/health", () => Results.Ok("healthy"));
+
+// Readiness -- can this instance actually serve the user-facing flow right
+// now? Checks real DB connectivity and that the audio volume is writable
+// (both hard requirements -- reflected in the overall status/HTTP code).
+// TTS is checked but reported as its own degraded-dependency field, not a
+// hard failure, per PROJECT-AUDIT-2026-07-10 REL-03's recommendation: a
+// synthesis outage shouldn't make monitoring treat the whole API as down.
+// Gemini is checked by CONFIGURATION presence only (never a real paid API
+// call) -- also per REL-03, so probing readiness doesn't cost money/quota.
+app.MapGet("/api/health/ready", async (
+    AppDbContext db,
+    PiperTtsService tts,
+    IConfiguration configuration,
+    IWebHostEnvironment hostEnv,
+    ILogger<Program> readinessLogger) =>
+{
+    var checks = new Dictionary<string, string>();
+    var ready = true;
+
+    try
+    {
+        // Explicit bound, matching the deliberate 3s cap on the TTS check
+        // below -- Npgsql's own default connect timeout (15s) would
+        // otherwise apply, which is a real bound but an inconsistent one.
+        using var dbTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        checks["database"] = await db.Database.CanConnectAsync(dbTimeout.Token) ? "ok" : "unavailable";
+        if (checks["database"] != "ok") ready = false;
+    }
+    catch (Exception ex)
+    {
+        checks["database"] = "unavailable";
+        ready = false;
+        readinessLogger.LogWarning(ex, "Readiness check: database unreachable");
+    }
+
+    try
+    {
+        var audioPath = ChatController.ResolveAudioPath(configuration["Audio:Path"], hostEnv.ContentRootPath);
+        Directory.CreateDirectory(audioPath);
+        var probeFile = Path.Combine(audioPath, $".readiness-probe-{Guid.NewGuid():N}");
+        // A handful of real bytes, not zero -- a 0-byte file needs only a
+        // directory entry on most filesystems and can succeed even on a
+        // volume with no free data blocks left, missing exactly the
+        // "volume is actually writable" failure mode this check exists for.
+        await File.WriteAllBytesAsync(probeFile, "readiness"u8.ToArray());
+        checks["storage"] = "ok";
+        try
+        {
+            File.Delete(probeFile);
+        }
+        catch (Exception deleteEx)
+        {
+            // The write already proved storage is writable -- that's what
+            // this check reports on. A failed cleanup shouldn't flip a
+            // working volume to "unavailable"; just log so leaked probe
+            // files are traceable rather than silently accumulating.
+            readinessLogger.LogWarning(deleteEx, "Readiness check: failed to delete probe file {ProbeFile}", probeFile);
+        }
+    }
+    catch (Exception ex)
+    {
+        checks["storage"] = "unavailable";
+        ready = false;
+        readinessLogger.LogWarning(ex, "Readiness check: audio storage not writable");
+    }
+
+    checks["gemini"] = string.IsNullOrWhiteSpace(configuration["Gemini:ApiKey"]) ? "not_configured" : "configured";
+    if (checks["gemini"] == "not_configured") ready = false;
+
+    checks["tts"] = await tts.IsHealthyAsync() ? "ok" : "degraded";
+
+    var payload = new { status = ready ? "ready" : "not_ready", checks };
+    return ready ? Results.Ok(payload) : Results.Json(payload, statusCode: StatusCodes.Status503ServiceUnavailable);
+});
 
 app.Run();

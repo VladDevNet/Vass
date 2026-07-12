@@ -15,6 +15,26 @@ public class PiperTtsService
         _httpClientFactory = httpClientFactory;
     }
 
+    // Used by the readiness endpoint (PROJECT-AUDIT-2026-07-10 REL-03) --
+    // deliberately just the service's own /health, not a real synthesis
+    // request, so probing readiness doesn't burn TTS compute on every check.
+    // Short timeout: a slow-but-alive TTS shouldn't make the whole readiness
+    // probe hang.
+    public async Task<bool> IsHealthyAsync()
+    {
+        using var http = _httpClientFactory.CreateClient();
+        http.Timeout = TimeSpan.FromSeconds(3);
+        try
+        {
+            var response = await http.GetAsync($"{_baseUrl}/health");
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public async Task<byte[]?> GenerateSpeechAsync(string text)
     {
         using var http = _httpClientFactory.CreateClient();

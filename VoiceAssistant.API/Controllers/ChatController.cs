@@ -49,13 +49,20 @@ public class ChatController : ControllerBase
         _config = config;
         _logger = logger;
 
-        var configuredAudioPath = config["Audio:Path"];
-        var audioPath = string.IsNullOrWhiteSpace(configuredAudioPath)
-            ? Path.Combine(env.ContentRootPath, "audio")
-            : configuredAudioPath;
-        _audioPath = Path.GetFullPath(Path.IsPathRooted(audioPath)
+        _audioPath = ResolveAudioPath(config["Audio:Path"], env.ContentRootPath);
+    }
+
+    // Static and parameterized so Program.cs's readiness check (REL-03) can
+    // resolve the SAME directory this controller actually writes to/reads
+    // from, without duplicating the resolution logic.
+    public static string ResolveAudioPath(string? configuredPath, string contentRootPath)
+    {
+        var audioPath = string.IsNullOrWhiteSpace(configuredPath)
+            ? Path.Combine(contentRootPath, "audio")
+            : configuredPath;
+        return Path.GetFullPath(Path.IsPathRooted(audioPath)
             ? audioPath
-            : Path.Combine(env.ContentRootPath, audioPath));
+            : Path.Combine(contentRootPath, audioPath));
     }
 
     // upload-audio (below) only ever generates "{guid}.webm" — /chat/send's
