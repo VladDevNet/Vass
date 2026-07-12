@@ -43,7 +43,8 @@ public class AuthController : ControllerBase
         {
             UserName = req.Email,
             Email = req.Email,
-            NativeLang = req.NativeLang ?? "uk"
+            NativeLang = req.NativeLang ?? "uk",
+            IsApproved = _config.GetValue("Registration:AutoApprove", true)
         };
 
         // UserManager and _db share one connection per request (both resolve
@@ -68,7 +69,12 @@ public class AuthController : ControllerBase
         await _db.SaveChangesAsync();
         await transaction.CommitAsync();
 
-        return Ok(new { token = GenerateToken(user) });
+        if (!user.IsApproved)
+        {
+            return Accepted(new { approvalRequired = true });
+        }
+
+        return Ok(new { token = await GenerateTokenAsync(user) });
     }
 
     [EnableRateLimiting("auth")]
@@ -82,10 +88,15 @@ public class AuthController : ControllerBase
             return Unauthorized(new { error = "Invalid credentials" });
         }
 
+        if (!user.IsApproved)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "Account pending approval" });
+        }
+
         user.LastActiveAt = DateTime.UtcNow;
         await _userManager.UpdateAsync(user);
 
-        return Ok(new { token = GenerateToken(user) });
+        return Ok(new { token = await GenerateTokenAsync(user) });
     }
 
     // Elderly-friendly login: an already-logged-in device (e.g. a family
@@ -138,11 +149,13 @@ public class AuthController : ControllerBase
 
         var user = await _userManager.FindByIdAsync(link.UserId);
         if (user == null) return BadRequest(new { error = "Код недействителен или истёк" });
+        if (!user.IsApproved)
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "Account pending approval" });
 
         user.LastActiveAt = DateTime.UtcNow;
         await _userManager.UpdateAsync(user);
 
-        return Ok(new { token = GenerateToken(user) });
+        return Ok(new { token = await GenerateTokenAsync(user) });
     }
 
     [Authorize]
@@ -163,10 +176,10 @@ public class AuthController : ControllerBase
         });
     }
 
-    private string GenerateToken(User user)
+    private async Task<string> GenerateTokenAsync(User user)
     {
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_config["Jwt:Secret"]!));
-        var claims = new[]
+        var claims = new List<Claim>
         {
             new Claim(ClaimTypes.NameIdentifier, user.Id),
             new Claim(ClaimTypes.Email, user.Email!),
@@ -179,6 +192,9 @@ public class AuthController : ControllerBase
             // its own 30-day exp claim.
             new Claim("security_stamp", user.SecurityStamp ?? "")
         };
+
+        var roles = await _userManager.GetRolesAsync(user);
+        claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
 
         var token = new JwtSecurityToken(
             issuer: _config["Jwt:Issuer"],

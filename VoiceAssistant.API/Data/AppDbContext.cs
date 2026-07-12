@@ -28,6 +28,7 @@ public class AppDbContext : IdentityDbContext<User>
         {
             e.Property(u => u.NativeLang).HasMaxLength(5);
             e.Property(u => u.Level).HasMaxLength(5);
+            e.Property(u => u.IsApproved).HasDefaultValue(true);
         });
 
         builder.Entity<ChatSession>(e =>

@@ -101,12 +101,14 @@ builder.Services.AddAuthentication(options =>
             }
 
             var db = context.HttpContext.RequestServices.GetRequiredService<AppDbContext>();
-            var currentStamp = await db.Users
+            var currentUserState = await db.Users
                 .Where(u => u.Id == userId)
-                .Select(u => u.SecurityStamp)
+                .Select(u => new { u.SecurityStamp, u.IsApproved })
                 .FirstOrDefaultAsync();
 
-            if (currentStamp is null || !string.Equals(currentStamp, tokenStamp, StringComparison.Ordinal))
+            if (currentUserState is null ||
+                !currentUserState.IsApproved ||
+                !string.Equals(currentUserState.SecurityStamp, tokenStamp, StringComparison.Ordinal))
             {
                 context.Fail("Token has been revoked.");
             }
@@ -239,6 +241,7 @@ if (!app.Environment.IsEnvironment("Testing"))
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.Migrate();
     await MigrateLegacyApiKeysAsync(db, scope.ServiceProvider.GetRequiredService<IConfiguration>());
+    await AdminBootstrapper.EnsureAdminAsync(scope.ServiceProvider);
 }
 
 // One-time, idempotent: re-saves any UserSettings row whose key fields

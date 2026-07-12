@@ -2,7 +2,7 @@
 
 Vass is a personal voice assistant. The assistant persona is Olga: a warm Russian-speaking voice companion for short, natural conversations, everyday help, and hands-free voice interaction. Primary audience is older users — the design favors patience and simplicity over speed or feature density.
 
-The repository was originally copied from a Polish tutor prototype. Legacy tutor/vocabulary/onboarding code has been removed (see `docs/AUDIT-LEGACY.md` for the full audit and what was deleted vs. deliberately kept). The client is a React Native mobile app (`mobile/`) — see `docs/react-native/` for its architecture, backlog, and build instructions. A browser-based PWA client existed during early development but has been removed (PROJECT-AUDIT-2026-07-10 ARCH-01); mobile is the sole client now.
+The repository was originally copied from a Polish tutor prototype. Legacy tutor/vocabulary/onboarding code has been removed (see `docs/AUDIT-LEGACY.md` for the full audit and what was deleted vs. deliberately kept). The product client is a React Native mobile app (`mobile/`) — see `docs/react-native/` for its architecture, backlog, and build instructions. The old browser PWA was removed (PROJECT-AUDIT-2026-07-10 ARCH-01); the only browser UI is now the protected React admin SPA in `admin/`.
 
 ## Current Product
 
@@ -34,6 +34,10 @@ Secondary features:
 
 Expo / React Native / TypeScript, in `mobile/`. See `docs/react-native/architecture.md` for the client-side stack and `docs/react-native/BUILD-WSL.md` / `docs/react-native/BUILD-MACOS.md` for building and installing on a physical device.
 
+### Admin Client
+
+React 19 / Vite / TypeScript, in `admin/`. It is a separate operational SPA served at `/admin/`, not a public product client. See `docs/ADMIN-PANEL.md` for access provisioning, endpoints, and local development.
+
 ### Infrastructure
 
 | Service | Purpose |
@@ -41,7 +45,8 @@ Expo / React Native / TypeScript, in `mobile/`. See `docs/react-native/architect
 | `api` | ASP.NET Core backend on port `5000`, has a real Docker healthcheck against `/api/health` |
 | `db` | PostgreSQL 17 |
 | `tts` | Self-hosted Piper TTS (Flask wrapper around the Piper CLI) — server-side fallback, mobile's primary TTS path is on-device |
-| `nginx` | `/api/*` reverse proxy in front of `api` (prefix-match, not path rewrite — `/api/v1/...` passes through unchanged) |
+| `admin` | nginx container serving the compiled React admin SPA |
+| `nginx` | Gateway for `/api/*` and `/admin/`; the API prefix passes through unchanged and the admin prefix is stripped before proxying to its static container |
 | `audio` volume | Persists uploaded user audio |
 
 `speaker-id` (SpeechBrain-based voice identification) is in `docker-compose.yml` but opt-in only (`profiles: ["speaker-id"]` -- `docker compose up` alone never starts it, and `api` does not `depends_on` it); the standalone Silero TTS quality comparison that used to live in `silero-tts/` was removed entirely, having lost its comparison against Piper (PROJECT-AUDIT-2026-07-10 OPS-02). See below.
@@ -77,11 +82,13 @@ Expo / React Native / TypeScript, in `mobile/`. See `docs/react-native/architect
 ├── piper-tts/                        # Flask wrapper around the Piper TTS CLI
 ├── speaker-id/                       # SpeechBrain ECAPA-TDNN voice-ID microservice (paused feature, opt-in compose profile)
 ├── mobile/                           # React Native client — see docs/react-native/
+├── admin/                            # React + Vite admin SPA — see docs/ADMIN-PANEL.md
 ├── docker-compose.yml
 ├── nginx.conf
 ├── .env.example
 ├── docs/
 │   ├── AUDIT-LEGACY.md              # legacy-cleanup audit (mostly executed)
+│   ├── ADMIN-PANEL.md                # admin access, API, operation, and future usage accounting
 │   └── react-native/                # mobile app architecture, backlog, build guides
 └── DEVELOPMENT.md
 ```
@@ -98,6 +105,7 @@ Expo / React Native / TypeScript, in `mobile/`. See `docs/react-native/architect
 - Shared `IHttpClientFactory`.
 - Application services: Gemini, Piper TTS, companion prompt, audio analysis, speaker-ID (call site is real, uncommented code — `SpeakerRegistryService.IdentifyAsync` no-ops immediately unless `Features:SpeakerIdentificationEnabled` is set, see below).
 - Controller routing, `/api/health`, and `/api/health/ready`.
+- Admin role bootstrap from `Admin:Email`; no password is stored in configuration.
 - EF Core migrations on startup (`db.Database.Migrate()`) — skipped under a `"Testing"` environment name, which the integration test project uses instead of a real Postgres database (PROJECT-AUDIT-2026-07-10 QA-01).
 
 ### Active Controllers
@@ -105,6 +113,7 @@ Expo / React Native / TypeScript, in `mobile/`. See `docs/react-native/architect
 | Controller | Base route | Purpose |
 | --- | --- | --- |
 | `AuthController` | `/api/v1/auth` | Register, login, device-link (elderly-friendly no-password login), current user |
+| `AdminController` | `/api/v1/admin` | Admin-only user activity, access approval, search, sorting, and pagination |
 | `ChatController` | `/api/v1/chat` | Sessions, SSE chat, audio upload/playback, TTS, utterance-completeness check, OCR |
 | `ClientLogsController` | `/api/v1/client-logs` | Batched log ingest from the mobile client — development-stage debugging tooling |
 | `SettingsController` | `/api/v1/settings` | Per-user profile, API keys, custom system prompt |
@@ -153,6 +162,14 @@ Expo / React Native / TypeScript, in `mobile/`. See `docs/react-native/architect
 
 Entries are retained for 30 days (`ClientLogRetentionService`, PROJECT-AUDIT-2026-07-10 DATA-01) — a background service checked once on startup and every 24h thereafter, deleting anything older by its server-received timestamp.
 
+### Administration
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/api/v1/admin/overview` | User, activity, message, and character totals |
+| `GET` | `/api/v1/admin/users` | Search, approval filter, sorting, and pagination |
+| `PATCH` | `/api/v1/admin/users/{id}/approval` | Approves or blocks an account and invalidates its existing JWTs |
+
 ### Health
 
 Two separate endpoints (PROJECT-AUDIT-2026-07-10 REL-03):
@@ -160,7 +177,7 @@ Two separate endpoints (PROJECT-AUDIT-2026-07-10 REL-03):
 - `GET /api/health` — liveness. Always returns a plain `"healthy"` body if the process is up; no dependency checks. This is what the Docker healthcheck and `docker-compose.yml`'s `depends_on: condition: service_healthy` gates point at — deliberately cheap so a slow/degraded dependency never makes Docker restart an otherwise-healthy container.
 - `GET /api/health/ready` — readiness. Checks real DB connectivity, that the audio volume is actually writable, and Gemini configuration presence (never a paid API call) — any of those failing returns HTTP 503 with `"status":"not_ready"`. TTS is checked too but reported as its own `checks.tts` field (`"ok"`/`"degraded"`) without affecting the overall status. This is what **external** uptime monitoring should point at instead of `/api/health`, since liveness alone can't tell you the user-facing chat flow actually works.
 
-Anything outside `/api/` returns nginx's own default 404 — there's no static site behind it anymore (ARCH-01).
+Anything outside `/api/` and `/admin/` returns nginx's own default 404 — there is no public static site behind it (ARCH-01).
 
 ## Streaming Events
 
@@ -207,6 +224,8 @@ GEMINI_API_KEY=AIza...
 DB_PASSWORD=your_secure_password
 JWT_SECRET=your_jwt_secret_min_32_chars_long_here
 ENCRYPTION_KEY=your_encryption_secret_min_16_chars_here
+REGISTRATION_AUTO_APPROVE=true
+ADMIN_EMAIL=admin@example.com
 ```
 
 Key usage:
@@ -214,6 +233,8 @@ Key usage:
 - `GEMINI_API_KEY` is required for chat, audio transcription, utterance-completeness checks, and OCR, unless the user saves a personal Gemini key in settings.
 - `JWT_SECRET`/`Jwt:Issuer`/`Jwt:Audience` (`Vass`) — changing the issuer/audience invalidates all previously-issued tokens.
 - `ENCRYPTION_KEY` encrypts per-user BYOK API keys at rest (PROJECT-AUDIT-2026-07-10 SEC-03).
+- `REGISTRATION_AUTO_APPROVE` defaults to `true`; set it to `false` only after the mobile pending-approval UX is implemented.
+- `ADMIN_EMAIL` promotes an already-registered account to the `Admin` role at API startup. Sign in again after promotion because its previous JWT is invalidated.
 - User-level Gemini/OpenAI/Anthropic key fields exist in `/settings` (the latter two are stored but currently unused by any active service — kept for possible future use, not cleaned up because `AUDIT-LEGACY.md` didn't call for it).
 
 ## Local Development
@@ -233,7 +254,17 @@ The API listens according to `launchSettings.json` or `ASPNETCORE_URLS`.
 
 See `docs/react-native/BUILD-WSL.md` (Windows) or `docs/react-native/BUILD-MACOS.md` (macOS) for building and installing on a physical device. Cloud EAS builds and store publication are not set up yet — local builds only.
 
-### Full Docker Stack (backend + db + tts)
+### Admin Client
+
+```powershell
+cd admin
+npm ci
+npm run dev
+```
+
+Open `http://127.0.0.1:4173/admin/`. Vite proxies `/api` to `http://localhost:5000` by default; override it with `VITE_DEV_API_TARGET`.
+
+### Full Docker Stack (backend + admin + db + tts)
 
 ```powershell
 copy .env.example .env
@@ -253,6 +284,12 @@ Health check:
 curl http://127.0.0.1:4001/api/health
 ```
 
+Admin panel:
+
+```text
+http://127.0.0.1:4001/admin/
+```
+
 ## Database
 
 The app uses EF Core migrations in `VoiceAssistant.API/Migrations`.
@@ -265,7 +302,7 @@ db.Database.Migrate();
 
 Convenient during development; `Program.cs` applies migrations unconditionally on every container start, including in production (skipped only under the integration test project's `"Testing"` environment — see Startup above).
 
-**Deploying to production**: use `scripts/deploy.sh` rather than pulling/rebuilding by hand — it takes a `pg_dump` backup first (aborting before touching anything if the backup looks wrong), then pulls/rebuilds/restarts, then polls `GET /api/health/ready` as a post-deploy smoke test before reporting success (PROJECT-AUDIT-2026-07-10 OPS-01). Backups land in `backups/pre-deploy-<timestamp>.sql` on the VPS.
+**Deploying to production**: use `scripts/deploy.sh` rather than pulling/rebuilding by hand — it takes a `pg_dump` backup first (aborting before touching anything if the backup looks wrong), then pulls and rebuilds `api` plus `admin`, restarts the gateway, and smoke-tests both `GET /api/health/ready` and `/admin/` before reporting success (PROJECT-AUDIT-2026-07-10 OPS-01). Backups land in `backups/pre-deploy-<timestamp>.sql` on the VPS.
 
 Useful commands:
 
@@ -284,7 +321,7 @@ dotnet ef database update --project VoiceAssistant.API
 - Self-hosted Piper TTS with sentence-level streaming, later demoted to a server-side fallback once mobile's on-device `expo-speech` TTS shipped (no network hop, more natural voice on most devices).
 - Legacy Polish-tutor code (vocabulary, onboarding, level tests, nightly analysis) removed — see `docs/AUDIT-LEGACY.md`.
 - `/api/v1/` versioning, added ahead of the React Native mobile client.
-- Legacy browser PWA removed; mobile (`mobile/`) is the sole client (PROJECT-AUDIT-2026-07-10 ARCH-01).
+- Legacy public browser PWA removed; mobile (`mobile/`) remains the product client and `admin/` is a separate protected operations UI (PROJECT-AUDIT-2026-07-10 ARCH-01).
 
 ## Pre-commit Checklist
 
@@ -293,6 +330,16 @@ dotnet build VoiceAssistant.API/VoiceAssistant.API.csproj
 dotnet test VoiceAssistant.API.Tests/VoiceAssistant.API.Tests.csproj
 dotnet test VoiceAssistant.API.IntegrationTests/VoiceAssistant.API.IntegrationTests.csproj
 git status --short
+```
+
+For admin changes:
+
+```powershell
+cd admin
+npm ci
+npm run typecheck
+npm run build
+npm audit --audit-level=high
 ```
 
 For mobile changes:

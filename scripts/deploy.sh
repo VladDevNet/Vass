@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Deploy the API to the VPS: pg_dump backup -> pull -> rebuild -> restart ->
-# readiness smoke test. Run from anywhere with SSH access to the VPS
+# Deploy Vass to the VPS: pg_dump backup -> pull -> rebuild -> restart ->
+# API and admin SPA smoke tests. Run from anywhere with SSH access to the VPS
 # configured (matches the ssh invocations used throughout this repo's own
 # deploy history).
 #
@@ -66,11 +66,11 @@ if [ "$BACKUP_SIZE" -lt 1000 ]; then
 fi
 echo "    OK ($BACKUP_SIZE bytes)"
 
-echo "==> Pulling latest main and rebuilding api..."
-ssh "$HOST" "cd '$REMOTE_DIR' && git pull && docker compose build api"
+echo "==> Pulling latest main and rebuilding api + admin..."
+ssh "$HOST" "cd '$REMOTE_DIR' && git pull && docker compose build api admin"
 
-echo "==> Restarting api container..."
-ssh "$HOST" "cd '$REMOTE_DIR' && docker compose up -d api"
+echo "==> Restarting api, admin, and nginx containers..."
+ssh "$HOST" "cd '$REMOTE_DIR' && docker compose up -d api admin nginx"
 
 echo "==> Waiting for readiness (up to ${READY_TIMEOUT_S}s)..."
 elapsed=0
@@ -78,6 +78,13 @@ while [ "$elapsed" -lt "$READY_TIMEOUT_S" ]; do
     status="$(ssh "$HOST" "cd '$REMOTE_DIR' && docker compose exec -T api curl -s -o /dev/null -w '%{http_code}' http://localhost:5000/api/health/ready" 2>/dev/null || echo "000")"
     if [ "$status" = "200" ]; then
         echo "    ready (HTTP 200) after ${elapsed}s"
+        admin_status="$(ssh "$HOST" "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4001/admin/" 2>/dev/null || echo "000")"
+        if [ "$admin_status" != "200" ]; then
+            echo "!! admin SPA smoke test failed (HTTP $admin_status)." >&2
+            echo "!! Check logs: ssh $HOST \"cd $REMOTE_DIR && docker compose logs admin nginx --tail 100\"" >&2
+            exit 1
+        fi
+        echo "    admin SPA (HTTP 200)"
         echo
         # Purely informational re-fetch to print the check breakdown --
         # readiness is already confirmed above, so a flake on this specific
