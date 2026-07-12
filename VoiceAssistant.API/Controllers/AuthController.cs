@@ -151,7 +151,15 @@ public class AuthController : ControllerBase
         var claims = new[]
         {
             new Claim(ClaimTypes.NameIdentifier, user.Id),
-            new Claim(ClaimTypes.Email, user.Email!)
+            new Claim(ClaimTypes.Email, user.Email!),
+            // Cheap, minimum-viable revoke path (PROJECT-AUDIT-2026-07-10 SEC-05) --
+            // Program.cs's JWT bearer OnTokenValidated compares this against the
+            // user's CURRENT SecurityStamp (an IdentityUser built-in column) on
+            // every authenticated request. Regenerating the stamp via
+            // UserManager.UpdateSecurityStampAsync instantly invalidates every
+            // token issued before that point, even though it hasn't expired by
+            // its own 30-day exp claim.
+            new Claim("security_stamp", user.SecurityStamp ?? "")
         };
 
         var token = new JwtSecurityToken(
