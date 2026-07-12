@@ -208,30 +208,23 @@ public class ChatController : ControllerBase
         }
     }
 
+    // Pure read -- PROJECT-AUDIT-2026-07-10 section 6 flagged this endpoint
+    // creating a session as a side effect of a GET. The user's initial
+    // session is now created once, at registration (AuthController.Register),
+    // so this never needs to. Still defensive (empty array, not an error) in
+    // case that invariant is ever violated -- HomeScreen.tsx already handles
+    // a zero-length result.
     [HttpGet("sessions")]
     public async Task<IActionResult> GetSessions()
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
-        var sessions = await _db.ChatSessions
+        var session = await _db.ChatSessions
             .Where(s => s.UserId == userId)
             .OrderByDescending(s => s.CreatedAt)
-            .ToListAsync();
+            .Select(s => new { s.Id, s.Mode, s.Title, s.CreatedAt })
+            .FirstOrDefaultAsync();
 
-        if (sessions.Count == 0)
-        {
-            var session = new ChatSession
-            {
-                UserId = userId,
-                Mode = "dialog",
-                Title = "Общение"
-            };
-            _db.ChatSessions.Add(session);
-            await _db.SaveChangesAsync();
-            sessions.Add(session);
-        }
-
-        var singleSession = sessions[0];
-        return Ok(new[] { new { singleSession.Id, Mode = "dialog", Title = "Общение", singleSession.CreatedAt } });
+        return Ok(session == null ? Array.Empty<object>() : [session]);
     }
 
     public record RenameSessionRequest(string Title);
