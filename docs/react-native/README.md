@@ -14,8 +14,8 @@
 | Файл | Содержание |
 |---|---|
 | [architecture.md](./architecture.md) | Каркас (Expo/RN/TS), правки бэкенда для мобильного клиента |
-| [audio-and-vad.md](./audio-and-vad.md) | Аудио-сессия, Silero VAD, кнопки гарнитуры, фон, STT |
-| [tts-and-avatar.md](./tts-and-avatar.md) | Встроенный нейро-TTS (sherpa-onnx), анимированный аватар (Rive) |
+| [audio-and-vad.md](./audio-and-vad.md) | Аудио-сессия, VAD (RMS/dBFS), кнопки гарнитуры, фон, STT |
+| [tts-and-avatar.md](./tts-and-avatar.md) | Встроенный TTS (`expo-speech`), анимированный аватар (layered PNG) |
 | [memory.md](./memory.md) | Кратко/средне/долгосрочная память, pgvector RAG |
 | [content-companion.md](./content-companion.md) | YouTube, новости, сериалы, рецепты — intent-роутер |
 | [risks.md](./risks.md) | Риски и открытые вопросы, что сознательно не делаем |

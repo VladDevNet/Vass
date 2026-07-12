@@ -33,9 +33,9 @@
 | Документ | Статус | Заметка |
 |---|---|---|
 | [`README.md`](react-native/README.md) | `implemented` | Индекс каталога мобильной документации |
-| [`architecture.md`](react-native/architecture.md) | `implemented` | Expo/RN/TS каркас, `/api/v1`, упрощённый вход — всё реализовано |
+| [`architecture.md`](react-native/architecture.md) | `in progress` | Expo/RN/TS каркас, `/api/v1`, упрощённый вход реализованы. Push-уведомления (FCM/APNs, «напоминания из памяти») описаны, но нигде не реализованы — ни бэкенда, ни `expo-notifications` в мобильном клиенте |
 | [`audio-and-vad.md`](react-native/audio-and-vad.md) | `in progress` | Аудио-сессия и серверный STT актуальны. Раздел «VAD on-device: Silero VAD через onnxruntime» устарел: реально в `useVad.ts` портирован RMS/dBFS-подход с веба, а не Silero ONNX — нативный ML-модуль не понадобился |
-| [`tts-and-avatar.md`](react-native/tts-and-avatar.md) | `in progress` | TTS-раздел (`expo-speech`) актуален. Avatar-раздел описывает раннюю версию `AvatarFace.tsx` (07-07) — с 07-09/07-10 она заменена `OlgaLayeredAvatar`/`LayeredAvatar` (layered PNG, не Rive), см. `docs/designs/*_avatar_asset_plan.md` |
+| [`tts-and-avatar.md`](react-native/tts-and-avatar.md) | `in progress` | TTS-раздел (`expo-speech`) актуален. Avatar-раздел описывает раннюю версию `AvatarFace.tsx` (07-07) как основной аватар — с 07-09/07-10 основным стал `LayeredAvatar` (layered PNG, не Rive), см. `docs/designs/*_avatar_asset_plan.md`. `AvatarFace.tsx` не удалён: остаётся runtime fallback на случай ошибки загрузки ассетов (`HomeScreen.tsx`) |
 | [`memory.md`](react-native/memory.md) | `in progress` | Кратко- и среднесрочная память реализованы. Долгосрочная память (RAG/pgvector) — следующий пункт роадмапа, ещё не начата |
 | [`content-companion.md`](react-native/content-companion.md) | `draft` | YouTube/новости/сериалы/рецепты через intent-роутер — написано, ни один intent не реализован |
 | [`risks.md`](react-native/risks.md) | `reference` | Живой реестр рисков и осознанных ограничений |
@@ -49,7 +49,7 @@
 |---|---|---|
 | [`implementation_plan.md`](designs/implementation_plan.md) | `legacy` | Ранний черновик решения «строим на Rive» для AMOLED-релиза — заменён формальной спекой/планом от 2026-07-09 и фактической layered-PNG реализацией |
 | [`vass_home_ui_redesign_plan.md`](designs/vass_home_ui_redesign_plan.md) | `implemented` | Инвентаризация HomeScreen под AMOLED-редизайн — выполнено |
-| [`olga_avatar_asset_plan.md`](designs/olga_avatar_asset_plan.md) | `implemented` | Ассеты Ольги нарезаны, используются в `OlgaLayeredAvatar` |
+| [`olga_avatar_asset_plan.md`](designs/olga_avatar_asset_plan.md) | `implemented` | Ассеты Ольги нарезаны, используются в `LayeredAvatar` |
 | [`male_avatar_asset_plan.md`](designs/male_avatar_asset_plan.md) | `implemented` | Ассеты мужского аватара нарезаны, используются в `LayeredAvatar` |
 
 ## Superpowers — спеки (`docs/superpowers/specs/`)
