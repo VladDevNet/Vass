@@ -52,7 +52,7 @@ public class GeminiService
         if (string.IsNullOrWhiteSpace(key))
         {
             _logger.LogError("Gemini API key is missing.");
-            throw new GeminiApiException("Отсутствует API-ключ Gemini.", isRetryable: false);
+            throw new GeminiApiException("Ошибка: отсутствует API-ключ Gemini.", isRetryable: false);
         }
 
         // Format request body for Gemini API: roles must be "user" or "model"
