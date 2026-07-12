@@ -131,7 +131,6 @@ public class ChatController : ControllerBase
     }
 
     public record SendRequest(int SessionId, string Message, string? AudioFileName = null);
-    public record CreateSessionRequest(string? Mode, string? Title);
 
     private const long MaxAudioSize = 5 * 1024 * 1024; // 5MB
     private const long MaxImageSize = 10 * 1024 * 1024; // 10MB
@@ -207,32 +206,6 @@ public class ChatController : ControllerBase
         {
             Response.StatusCode = 500;
         }
-    }
-
-    [HttpPost("sessions")]
-    public async Task<IActionResult> CreateSession([FromBody] CreateSessionRequest req)
-    {
-        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
-        var existing = await _db.ChatSessions
-            .Where(s => s.UserId == userId)
-            .OrderByDescending(s => s.CreatedAt)
-            .FirstOrDefaultAsync();
-
-        if (existing != null)
-        {
-            return Ok(new { existing.Id, Mode = "dialog", Title = "Общение", existing.CreatedAt });
-        }
-
-        var session = new ChatSession
-        {
-            UserId = userId,
-            Mode = "dialog",
-            Title = "Общение"
-        };
-        _db.ChatSessions.Add(session);
-        await _db.SaveChangesAsync();
-
-        return Ok(new { session.Id, session.Mode, session.Title, session.CreatedAt });
     }
 
     [HttpGet("sessions")]
