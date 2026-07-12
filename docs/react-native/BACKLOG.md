@@ -341,3 +341,39 @@
       сценариев.
 - [ ] Решение об облачных EAS-сборках / публикации в сторы (не раньше этого
       пункта — до сих пор только локальные сборки).
+
+## Фаза 7 — Android overlay и помощь поверх других приложений
+
+Последняя фаза. Выполняется после пилота и решения о распространении. Полная
+спецификация: [Android overlay и помощь поверх других приложений](../superpowers/specs/2026-07-11-android-overlay-and-screen-assistance-design.md).
+До начала должны быть закрыты Gate A/B из
+[плана устранения аудита](../superpowers/plans/2026-07-11-audit-remediation.md),
+особенно безопасность attachments, request limits и тестовая инфраструктура.
+
+- [ ] Подготовить общий `ConversationRuntime`, независимый от жизненного цикла
+      `HomeScreen`: fullscreen и overlay используют один voice loop, session и
+      state machine.
+- [ ] Local Expo Module + config plugin: `TYPE_APPLICATION_OVERLAY`, permission
+      onboarding, Android foreground service `specialUse`, постоянное
+      notification с действиями «Открыть», «Пауза/Продолжить», «Остановить».
+- [ ] Нативный круглый avatar-control поверх приложений: выбранный avatar,
+      halo состояния, drag + snap к краю, сохранение позиции, safe insets.
+- [ ] Единая кнопка управления: short tap = manual voice control/перебивание,
+      long press = pause/resume, double tap = полный экран.
+- [ ] Background voice lifecycle: microphone service стартует из видимой
+      Activity, не запускается скрыто после process death; проверить реальные
+      background/foreground переходы и 30-минутную сессию.
+- [ ] External intents: «вернись в Vass», YouTube search/watch URL и browser
+      fallback без `AccessibilityService` и автокликов.
+- [ ] One-shot screen analysis через MediaProjection: системный consent для
+      каждой session, один кадр без overlay, приватный image attachment,
+      multimodal Gemini turn, немедленный cleanup.
+- [ ] Privacy/store hardening: prominent disclosure, permission revoke,
+      protected-screen fallback, Android Data Safety и review типа foreground
+      service; отдельно принять решение Google Play vs managed sideload.
+- [ ] Физическая матрица: Android 8/10/12/14/15+, Pixel/чистый Android и хотя
+      бы один Samsung/Xiaomi с агрессивным power management.
+- Критерий выхода: Vass надежно работает как один плавающий avatar-control
+  поверх YouTube/браузера, продолжает тот же разговор, по явному разрешению
+  разбирает текущий экран и возвращается в существующий fullscreen task без
+  второго voice loop, скрытого захвата или зависшего foreground service.
