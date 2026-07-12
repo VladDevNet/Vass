@@ -28,6 +28,12 @@
 |---|---|---|
 | [`DEVELOPMENT.md`](../DEVELOPMENT.md) | `implemented` | Актуальная архитектура бэкенда и деплоя |
 
+## Планирование
+
+| Документ | Статус | Заметка |
+|---|---|---|
+| [`ROADMAP.md`](ROADMAP.md) | `reference` | Живой приоритетный порядок между фазами/спеками/новыми направлениями (не конкурирует с BACKLOG.md — тот держит конкретные таски внутри мобильных фаз) |
+
 ## React Native (`docs/react-native/`)
 
 | Документ | Статус | Заметка |
@@ -39,7 +45,7 @@
 | [`memory.md`](react-native/memory.md) | `in progress` | Кратко- и среднесрочная память реализованы. Долгосрочная память (RAG/pgvector) — следующий пункт роадмапа, ещё не начата |
 | [`content-companion.md`](react-native/content-companion.md) | `draft` | YouTube/новости/сериалы/рецепты через intent-роутер — написано, ни один intent не реализован |
 | [`risks.md`](react-native/risks.md) | `reference` | Живой реестр рисков и осознанных ограничений |
-| [`BACKLOG.md`](react-native/BACKLOG.md) | `reference` | Живой бэклог Фаз 0-7. Фазы 0-6 в основном реализованы (см. историю PR), Фаза 7 (overlay поверх других приложений) — `draft`-спека, намеренно отложена |
+| [`BACKLOG.md`](react-native/BACKLOG.md) | `reference` | Живой бэклог Фаз 0-7. Фазы 0-6 в основном реализованы (см. историю PR); Фаза 7 (overlay) — `draft`-спека, ядро (7.1-7.2) пересмотрено на более ранний приоритет 2026-07-12, см. [ROADMAP.md](../ROADMAP.md) |
 | [`BUILD-WSL.md`](react-native/BUILD-WSL.md) | `implemented` | Проверенный процесс локальной Android-сборки, используется регулярно |
 | [`BUILD-MACOS.md`](react-native/BUILD-MACOS.md) | `approved` | Согласованный процесс iOS-сборки; ни разу не исполнялся — нет доступного Mac |
 
@@ -60,7 +66,7 @@
 | [`2026-07-10-male-avatar-and-voice-gender-design.md`](superpowers/specs/2026-07-10-male-avatar-and-voice-gender-design.md) | `implemented` | Мужской аватар + пол голоса — смёрджено |
 | [`2026-07-10-medium-term-memory-design.md`](superpowers/specs/2026-07-10-medium-term-memory-design.md) | `implemented` | Среднесрочная память (резюме сессии) — смёрджено |
 | [`2026-07-10-visual-capture-and-image-tasks-design.md`](superpowers/specs/2026-07-10-visual-capture-and-image-tasks-design.md) | `draft` | Спека написана; соответствующего implementation-плана ещё нет |
-| [`2026-07-11-android-overlay-and-screen-assistance-design.md`](superpowers/specs/2026-07-11-android-overlay-and-screen-assistance-design.md) | `draft` | Спека Фазы 7 (`BACKLOG.md`) — сознательно отложена до пилота и закрытия Gate A/B аудита |
+| [`2026-07-11-android-overlay-and-screen-assistance-design.md`](superpowers/specs/2026-07-11-android-overlay-and-screen-assistance-design.md) | `draft` | Спека Фазы 7. Gate A/B аудита закрыты 2026-07-12; ядро (7.1-7.2) пересмотрено на более ранний приоритет, см. [ROADMAP.md](../ROADMAP.md) — implementation-план ещё не написан |
 
 ## Superpowers — планы (`docs/superpowers/plans/`)
 
@@ -69,13 +75,13 @@
 | [`2026-07-09-amoled-avatar-redesign.md`](superpowers/plans/2026-07-09-amoled-avatar-redesign.md) | `implemented` | Смёрджено |
 | [`2026-07-10-male-avatar-and-voice-gender.md`](superpowers/plans/2026-07-10-male-avatar-and-voice-gender.md) | `implemented` | Смёрджено |
 | [`2026-07-10-medium-term-memory.md`](superpowers/plans/2026-07-10-medium-term-memory.md) | `implemented` | Смёрджено |
-| [`2026-07-11-audit-remediation.md`](superpowers/plans/2026-07-11-audit-remediation.md) | `in progress` | Текущая работа. Gate A/B закрыты, Gate C почти завершён (этот документ — часть DOC-01) |
+| [`2026-07-11-audit-remediation.md`](superpowers/plans/2026-07-11-audit-remediation.md) | `implemented` | Вся программа (Gate A/B/C, 21 пункт) завершена 2026-07-12, включая QA-01 (CI) |
 
 ## Аудит
 
 | Документ | Статус | Заметка |
 |---|---|---|
-| [`PROJECT-AUDIT-2026-07-10.md`](PROJECT-AUDIT-2026-07-10.md) | `reference` | Baseline-аудит проекта. Большинство находок Gate A/B/C закрыто планом remediation выше |
+| [`PROJECT-AUDIT-2026-07-10.md`](PROJECT-AUDIT-2026-07-10.md) | `reference` | Baseline-аудит проекта. Все находки Gate A/B/C закрыты планом remediation выше (2026-07-12) |
 | [`AUDIT-LEGACY.md`](AUDIT-LEGACY.md) | `legacy` | Каталог хвостов родительского проекта Polish Tutor. DELETE-раздел выполнен; REWORK сознательно отложен, см. `react-native/README.md` → «Статус» |
 
 ## Инструкции для агентов
