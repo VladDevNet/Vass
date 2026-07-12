@@ -20,23 +20,34 @@ import { speakGreeting } from '../tts/systemSpeech';
 //    the cold-start greeting already happened, and only while `ready` is
 //    still true at the moment of return.
 //
-// Both guards below close real issues found in review, not hypothetical
+// The guards below close real issues found in review, not hypothetical
 // ones:
 //
-// - hasBeenBackgroundedRef is only set by a background/inactive event that
-//   happens AFTER hasGreetedRef is already true. The OS's own mic-permission
-//   dialog (requestRecordingPermissionsAsync, in useVoiceChat.ts's one-time
-//   setup effect) itself triggers an Activity.onPause/onResume on Android —
-//   which React Native's own AppState module maps directly to a
-//   background/active transition — and iOS's 'inactive' state is
-//   documented to cover exactly "asking for permissions" too (see
-//   node_modules/react-native/Libraries/AppState/AppState.d.ts). Without
-//   this ordering guard, that permission dialog's own open/close would
-//   masquerade as the user leaving and returning, greeting TWICE on every
-//   fresh install or permission re-prompt — reproduced by tracing the
-//   actual effect ordering in HomeScreen.tsx (useVoiceChat runs before
-//   useGreeting, and its permission request starts before the cold-start
-//   greeting's own effect has a chance to run).
+// - The CALLER's `ready` must not go true from mere UI/state defaults --
+//   it must reflect the mic having genuinely been armed. The OS's own
+//   mic-permission dialog (requestRecordingPermissionsAsync, in
+//   useVoiceChat.ts's one-time setup effect) triggers an
+//   Activity.onPause/onResume on Android -- which React Native's own
+//   AppState module maps directly to a background/active transition --
+//   and iOS's 'inactive' state is documented to cover exactly "asking for
+//   permissions" too (see
+//   node_modules/react-native/Libraries/AppState/AppState.d.ts). An
+//   earlier version of this hook tried to guard against that dialog's own
+//   open/close being mistaken for a real focus-return by only tracking
+//   "genuinely left" AFTER hasGreetedRef was already true -- that doesn't
+//   work: `state === 'idle'` (useVoiceChat.ts's useState<VoiceState>
+//   initial value) is true from this hook's very FIRST render, well
+//   before the permission dialog can even appear, so hasGreetedRef was
+//   already true by the time that dialog-induced background event fired,
+//   and the guard passed through the exact case it was meant to block.
+//   The real fix lives in the caller: HomeScreen.tsx now passes
+//   `micArmed && state === 'idle' && !!sessionId` as `ready`, and
+//   micArmed only becomes true once armMic() has actually succeeded --
+//   which itself can't happen until permission is granted (see
+//   useVoiceChat.ts's own comment on micArmed). That closes the race at
+//   its root: `ready` simply can't go true until well after any
+//   permission dialog has already been resolved, so a background event
+//   from that dialog can never land while hasGreetedRef is still false.
 //
 // - The focus-return greeting itself is gated on readyRef.current (kept in
 //   sync with the `ready` prop via its own effect, since the AppState
