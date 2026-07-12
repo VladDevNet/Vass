@@ -9,6 +9,7 @@ import { log } from '../logging/remoteLogger';
 import type { VoiceState } from '../hooks/useVoiceChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { useSleepTimer } from '../hooks/useSleepTimer';
+import { useGreeting } from '../hooks/useGreeting';
 import { AvatarFace } from '../components/AvatarFace';
 import { LayeredAvatar, type AvatarId } from '../components/LayeredAvatar';
 import { ConversationPeek } from '../components/ConversationPeek';
@@ -62,6 +63,7 @@ export function HomeScreen() {
   const { state, transcript, reply, error, forceFinalize, pauseConversation } = useVoiceChat(sessionId);
 
   const sleeping = useSleepTimer(state === 'idle', SLEEP_AFTER_MS);
+  useGreeting(state === 'idle' && !!sessionId);
 
   useEffect(() => {
     let cancelled = false;
