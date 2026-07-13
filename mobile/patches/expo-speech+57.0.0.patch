@@ -1,23 +1,124 @@
 diff --git a/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt b/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
-index 9ca869c..534db09 100644
+index 9ca869c..9f3c10f 100644
 --- a/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
 +++ b/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
-@@ -36,8 +36,16 @@ class SpeechModule : Module() {
+@@ -36,8 +36,17 @@ class SpeechModule : Module() {
        TextToSpeech.getMaxSpeechInputLength()
      }
  
 -    OnActivityDestroys {
 -      textToSpeech.shutdown()
-+    // The React module can outlive a replaced/destroyed Activity (for
-+    // example while Vass runs its overlay and opens YouTube). Shutting the
-+    // engine down on Activity destruction leaves the lazy instance marked
-+    // ready forever, so every later speak() goes to a dead TextToSpeech
-+    // object and produces neither audio nor callbacks. Keep it for the
-+    // module lifetime and release it only when the module itself dies.
 +    OnDestroy {
-+      _textToSpeech?.shutdown()
-+      _textToSpeech = null
-+      _ttsReady = false
++      resetTextToSpeech()
++    }
++
++    // Android can invalidate the TTS binder while another Activity (for
++    // example YouTube) owns the foreground. Expo's stock lazy engine cannot
++    // recover from that state. Vass invokes this after its start watchdog or
++    // voice enumeration detects a dead engine.
++    AsyncFunction<Unit>("reset") {
++      resetTextToSpeech()
++      Unit
      }
  
      AsyncFunction<Boolean>("isSpeaking") {
+@@ -130,12 +139,16 @@ class SpeechModule : Module() {
+       }
+     }
+ 
+-    textToSpeech.speak(
++    val result = textToSpeech.speak(
+       text,
+       TextToSpeech.QUEUE_ADD,
+       params,
+       id
+     )
++    if (result == TextToSpeech.ERROR) {
++      sendEvent(speakingErrorEvent, idToMap(id))
++      resetTextToSpeech()
++    }
+   }
+ 
+   // TextToSpeech object related code
+@@ -143,13 +156,24 @@ class SpeechModule : Module() {
+   private val isTextToSpeechReady
+     get() = _ttsReady
+ 
+-  private val textToSpeech: TextToSpeech by lazy {
+-    val newTtsInstance = TextToSpeech(appContext.reactContext) { status: Int ->
+-      if (status == TextToSpeech.SUCCESS) {
+-        // synchronize because in some cases this runs on another thread and _textToSpeech is null
+-        synchronized(this@SpeechModule) {
++  private val textToSpeech: TextToSpeech
++    get() = synchronized(this) {
++      _textToSpeech ?: createTextToSpeech().also { _textToSpeech = it }
++    }
++
++  private fun createTextToSpeech(): TextToSpeech {
++    lateinit var newTtsInstance: TextToSpeech
++    newTtsInstance = TextToSpeech(appContext.reactContext) { status: Int ->
++      synchronized(this@SpeechModule) {
++        // Ignore a delayed callback from an engine that has already been
++        // reset and replaced.
++        if (_textToSpeech !== newTtsInstance) {
++          return@synchronized
++        }
++
++        if (status == TextToSpeech.SUCCESS) {
+           _ttsReady = true
+-          _textToSpeech!!.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
++          newTtsInstance.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+ 
+             override fun onStart(utteranceId: String) {
+               sendEvent(speakingStartedEvent, idToMap(utteranceId))
+@@ -176,17 +200,36 @@ class SpeechModule : Module() {
+               sendEvent(speakingErrorEvent, idToMap(utteranceId))
+             }
+           })
+-          for ((id, text, options) in delayedUtterances) {
++          while (delayedUtterances.isNotEmpty()) {
++            val (id, text, options) = delayedUtterances.remove()
+             speakOut(id, text, options)
+           }
+-          for (promise in delayedGetVoices) {
+-            promise.resolve(getVoices())
++          while (delayedGetVoices.isNotEmpty()) {
++            delayedGetVoices.remove().resolve(getVoices())
++          }
++        } else {
++          _ttsReady = false
++          while (delayedUtterances.isNotEmpty()) {
++            sendEvent(speakingErrorEvent, idToMap(delayedUtterances.remove().id))
++          }
++          while (delayedGetVoices.isNotEmpty()) {
++            delayedGetVoices.remove().reject(SpeechUnableToGetVoicesException())
+           }
++          _textToSpeech = null
+         }
+       }
+     }
+-    _textToSpeech = newTtsInstance
+-    newTtsInstance
++    return newTtsInstance
++  }
++
++  private fun resetTextToSpeech() {
++    val oldInstance = synchronized(this) {
++      _ttsReady = false
++      delayedUtterances.clear()
++      _textToSpeech.also { _textToSpeech = null }
++    }
++    oldInstance?.stop()
++    oldInstance?.shutdown()
+   }
+ 
+   // Helpers
+@@ -200,7 +243,7 @@ class SpeechModule : Module() {
+     val options: SpeechOptions
+   )
+ 
+-  // do not refer to these - they're only needed when initializing `textToSpeech`
++  // Mutable so the engine can be recreated after Android invalidates it.
+   private var _textToSpeech: TextToSpeech? = null
+   private var _ttsReady = false
+ }

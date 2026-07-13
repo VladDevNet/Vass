@@ -1,5 +1,7 @@
 import * as Speech from 'expo-speech';
 import * as SecureStore from 'expo-secure-store';
+import { requireNativeModule } from 'expo-modules-core';
+import { Platform } from 'react-native';
 import { log } from '../logging/remoteLogger';
 
 const VOICE_PREFERENCE_KEY = 'vass_voice_id';
@@ -36,6 +38,40 @@ const MAX_CHUNK_START_MS = 5_000;
 // undefined = not looked up yet this session, null = no Russian voice found.
 let cachedRussianVoice: string | null | undefined;
 
+interface RecoverableSpeechModule {
+  reset(): Promise<void>;
+}
+
+let recoverableSpeechModule: RecoverableSpeechModule | null | undefined;
+
+function getRecoverableSpeechModule(): RecoverableSpeechModule | null {
+  if (recoverableSpeechModule !== undefined) return recoverableSpeechModule;
+  if (Platform.OS !== 'android') {
+    recoverableSpeechModule = null;
+    return null;
+  }
+  try {
+    recoverableSpeechModule = requireNativeModule<RecoverableSpeechModule>('ExpoSpeech');
+  } catch {
+    recoverableSpeechModule = null;
+  }
+  return recoverableSpeechModule;
+}
+
+async function resetSpeechEngine(reason: string): Promise<void> {
+  const module = getRecoverableSpeechModule();
+  if (!module) return;
+  try {
+    await module.reset();
+    log('info', 'tts', 'on-device speech engine reset', { reason });
+  } catch (err) {
+    log('warn', 'tts', 'on-device speech engine reset failed', {
+      reason,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 export type VoiceGender = 'male' | 'female';
 
 // undefined = not loaded yet this session. Separate from cachedRussianVoice
@@ -43,7 +79,16 @@ export type VoiceGender = 'male' | 'female';
 let cachedGenderTags: Record<string, VoiceGender> | undefined;
 
 export async function listRussianVoices(): Promise<Speech.Voice[]> {
-  const voices = await Speech.getAvailableVoicesAsync();
+  let voices: Speech.Voice[];
+  try {
+    voices = await Speech.getAvailableVoicesAsync();
+  } catch (err) {
+    log('warn', 'tts', 'voice enumeration failed; retrying with a fresh engine', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    await resetSpeechEngine('voice enumeration failed');
+    voices = await Speech.getAvailableVoicesAsync();
+  }
   return voices.filter((v) => v.language.toLowerCase().startsWith('ru'));
 }
 
@@ -413,6 +458,9 @@ async function speakChunkSafely(
   });
   try {
     await Promise.race([playback, startDeadline, finishDeadline]);
+  } catch (err) {
+    await resetSpeechEngine('utterance playback failed');
+    throw err;
   } finally {
     if (startTimeoutId) clearTimeout(startTimeoutId);
     if (finishTimeoutId) clearTimeout(finishTimeoutId);

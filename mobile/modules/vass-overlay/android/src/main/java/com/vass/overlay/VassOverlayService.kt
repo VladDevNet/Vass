@@ -93,6 +93,7 @@ class VassOverlayService : Service() {
     enabled = intent.getBooleanExtra(OverlayContract.EXTRA_ENABLED, enabled)
     persistSnapshot()
     avatarView?.update(state, avatarId)
+    syncOverlayKeepScreenOn()
     updateNotification()
     syncOverlayVisibility()
   }
@@ -157,7 +158,8 @@ class VassOverlayService : Service() {
       WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
       WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
         WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+        if (state != "paused") WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON else 0,
       PixelFormat.TRANSLUCENT,
     ).apply {
       gravity = Gravity.TOP or Gravity.START
@@ -168,10 +170,10 @@ class VassOverlayService : Service() {
     val view = OverlayAvatarView(
       context = this,
       onDrag = { deltaX, deltaY, finished -> moveOverlay(deltaX, deltaY, finished) },
-      onSingleTap = {
-        if (state == "paused") openApp()
-        OverlayEventBridge.emit("controlPress")
-      },
+      // A floating control must always provide a reliable way back into the
+      // app. Background JS can be frozen, so a controlPress-only tap can be
+      // lost and leave the user stranded over another application.
+      onSingleTap = { openApp() },
       onLongPress = { requestPauseToggle() },
       onDoubleTap = { openApp() },
     ).apply {
@@ -203,6 +205,21 @@ class VassOverlayService : Service() {
     windowManager.updateViewLayout(view, params)
   }
 
+  private fun syncOverlayKeepScreenOn() {
+    val view = avatarView ?: return
+    val params = layoutParams ?: return
+    params.flags = if (state != "paused") {
+      params.flags or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+    } else {
+      params.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON.inv()
+    }
+    try {
+      windowManager.updateViewLayout(view, params)
+    } catch (_: IllegalArgumentException) {
+      // The overlay can detach while an update command is in flight.
+    }
+  }
+
   private fun removeOverlay() {
     val view = avatarView ?: return
     try {
@@ -219,8 +236,10 @@ class VassOverlayService : Service() {
     val intent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
       addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
     } ?: return
-    startActivity(intent)
+    // Let the runtime remember that it should resume before Activity/JS
+    // receives the foreground transition.
     OverlayEventBridge.emit("openApp")
+    startActivity(intent)
   }
 
   private fun requestPauseToggle() {
@@ -233,6 +252,7 @@ class VassOverlayService : Service() {
       state = "paused"
       persistSnapshot()
       avatarView?.update(state, avatarId)
+      syncOverlayKeepScreenOn()
       updateNotification()
     } else {
       // A microphone foreground service cannot be cold-started safely from

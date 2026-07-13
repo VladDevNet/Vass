@@ -156,6 +156,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 14,
     fontSize: 16,
+    color: '#111827',
     marginBottom: 12,
   },
   codeInput: {

@@ -78,6 +78,7 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
           void actionsRef.current.configureBackgroundRecording(false, false);
           break;
         case 'openApp':
+          requestResume();
           break;
       }
     });
