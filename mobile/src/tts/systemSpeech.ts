@@ -39,7 +39,7 @@ const MAX_CHUNK_START_MS = 5_000;
 let cachedRussianVoice: string | null | undefined;
 
 interface RecoverableSpeechModule {
-  reset(): Promise<void>;
+  reset?: () => Promise<void>;
 }
 
 let recoverableSpeechModule: RecoverableSpeechModule | null | undefined;
@@ -60,7 +60,10 @@ function getRecoverableSpeechModule(): RecoverableSpeechModule | null {
 
 async function resetSpeechEngine(reason: string): Promise<void> {
   const module = getRecoverableSpeechModule();
-  if (!module) return;
+  if (!module?.reset) {
+    log('warn', 'tts', 'on-device speech engine reset is unavailable');
+    return;
+  }
   try {
     await module.reset();
     log('info', 'tts', 'on-device speech engine reset', { reason });

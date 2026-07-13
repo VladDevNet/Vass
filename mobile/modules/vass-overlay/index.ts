@@ -30,9 +30,11 @@ interface NativeVassOverlayModule {
   requestOverlayPermission(): Promise<void>;
   openAppDetails(): Promise<void>;
   openApp(): Promise<void>;
+  openExternalUrl(url: string): Promise<void>;
   start(snapshot: OverlaySnapshot, appVisible: boolean): Promise<void>;
   update(snapshot: OverlaySnapshot): void;
   setAppVisible(visible: boolean): void;
+  suspendForExternalMedia(): Promise<void>;
   stop(): Promise<void>;
   addListener(eventName: 'onOverlayEvent', listener: (event: OverlayEvent) => void): EventSubscription;
 }
@@ -75,6 +77,11 @@ export const VassOverlay = {
     await nativeModule.openApp();
   },
 
+  async openExternalUrl(url: string): Promise<void> {
+    if (!nativeModule) throw new Error('Android external actions are unavailable in this build');
+    await nativeModule.openExternalUrl(url);
+  },
+
   async start(snapshot: OverlaySnapshot, appVisible = true): Promise<void> {
     if (!nativeModule) throw new Error('Android overlay недоступен в этой сборке');
     await nativeModule.start(snapshot, appVisible);
@@ -86,6 +93,10 @@ export const VassOverlay = {
 
   setAppVisible(visible: boolean): void {
     nativeModule?.setAppVisible(visible);
+  },
+
+  async suspendForExternalMedia(): Promise<void> {
+    await nativeModule?.suspendForExternalMedia();
   },
 
   async stop(): Promise<void> {

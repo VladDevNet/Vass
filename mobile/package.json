@@ -32,5 +32,14 @@
     "ios": "expo start --ios",
     "web": "expo start --web"
   },
+  "expo": {
+    "autolinking": {
+      "android": {
+        "buildFromSource": [
+          "expo-speech"
+        ]
+      }
+    }
+  },
   "private": true
 }

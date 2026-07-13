@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useKeepAwake } from 'expo-keep-awake';
 import { StatusBar } from 'expo-status-bar';
 import { useAuth } from '../context/AuthContext';
 import { log } from '../logging/remoteLogger';
@@ -9,6 +8,7 @@ import type { VoiceState } from '../hooks/useVoiceChat';
 import { useConversationRuntime } from '../context/ConversationRuntimeContext';
 import { useSleepTimer } from '../hooks/useSleepTimer';
 import { useGreeting } from '../hooks/useGreeting';
+import { useConversationKeepAwake } from '../hooks/useConversationKeepAwake';
 import { AvatarFace } from '../components/AvatarFace';
 import { LayeredAvatar, type AvatarId } from '../components/LayeredAvatar';
 import { ConversationPeek } from '../components/ConversationPeek';
@@ -44,12 +44,6 @@ const PRESENCE_LABEL: Record<VoiceState, string> = {
 };
 
 export function HomeScreen() {
-  // A slower-paced conversation with pauses between turns is normal here —
-  // the screen locking mid-conversation would be more disruptive than a
-  // phone that stays awake while this screen is open, so this covers the
-  // whole screen, not just the active recording/speaking states.
-  useKeepAwake();
-
   const { assistantName, avatarId } = useAuth();
   const displayAvatarId: AvatarId = avatarId === 'male' ? 'male' : 'olga';
   const [showSettings, setShowSettings] = useState(false);
@@ -68,6 +62,7 @@ export function HomeScreen() {
     pauseConversation,
     micArmed,
   } = useConversationRuntime();
+  useConversationKeepAwake(state !== 'paused');
 
   const sleeping = useSleepTimer(state === 'idle', SLEEP_AFTER_MS);
   // micArmed, not just state === 'idle' -- see useVoiceChat.ts's own

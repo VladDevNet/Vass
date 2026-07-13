@@ -7,6 +7,7 @@ internal object OverlayContract {
   const val ACTION_UPDATE = "com.vass.overlay.action.UPDATE"
   const val ACTION_VISIBILITY = "com.vass.overlay.action.VISIBILITY"
   const val ACTION_PAUSE = "com.vass.overlay.action.PAUSE"
+  const val ACTION_SUSPEND_EXTERNAL_MEDIA = "com.vass.overlay.action.SUSPEND_EXTERNAL_MEDIA"
   const val ACTION_STOP = "com.vass.overlay.action.STOP"
   const val ACTION_STOP_FROM_APP = "com.vass.overlay.action.STOP_FROM_APP"
 

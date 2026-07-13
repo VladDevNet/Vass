@@ -55,6 +55,7 @@ class VassOverlayService : Service() {
         syncOverlayVisibility()
       }
       OverlayContract.ACTION_PAUSE -> requestPauseToggle()
+      OverlayContract.ACTION_SUSPEND_EXTERNAL_MEDIA -> suspendForExternalMedia()
       OverlayContract.ACTION_STOP -> stopFromUser(notifyRuntime = true)
       OverlayContract.ACTION_STOP_FROM_APP -> stopFromUser(notifyRuntime = false)
       else -> if (!enabled) stopSelf()
@@ -261,6 +262,15 @@ class VassOverlayService : Service() {
       openApp()
     }
     OverlayEventBridge.emit("pauseToggle", mapOf("paused" to shouldPause))
+  }
+
+  private fun suspendForExternalMedia() {
+    stopExpoAudioRecording()
+    state = "paused"
+    persistSnapshot()
+    avatarView?.update(state, avatarId)
+    syncOverlayKeepScreenOn()
+    updateNotification()
   }
 
   private fun stopFromUser(notifyRuntime: Boolean) {

@@ -1,6 +1,7 @@
 package com.vass.overlay
 
 import android.content.Context
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -70,6 +71,29 @@ class VassOverlayModule : Module() {
       null
     }
 
+    AsyncFunction("openExternalUrl") { rawUrl: String ->
+      val context = requireContext()
+      val uri = Uri.parse(rawUrl)
+      if (uri.scheme !in setOf("http", "https")) {
+        throw IllegalArgumentException("Only HTTP(S) external URLs are supported")
+      }
+      val genericIntent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      val preferredIntent = if (
+        uri.host?.endsWith("youtube.com", ignoreCase = true) == true ||
+        uri.host?.endsWith("youtu.be", ignoreCase = true) == true
+      ) {
+        Intent(genericIntent).setPackage("com.google.android.youtube")
+      } else {
+        genericIntent
+      }
+      try {
+        context.startActivity(preferredIntent)
+      } catch (_: ActivityNotFoundException) {
+        context.startActivity(genericIntent)
+      }
+      null
+    }
+
     AsyncFunction("start") { snapshot: Map<String, Any?>, appVisible: Boolean ->
       val context = requireContext()
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
@@ -99,6 +123,13 @@ class VassOverlayModule : Module() {
         Intent(requireContext(), VassOverlayService::class.java)
           .setAction(OverlayContract.ACTION_VISIBILITY)
           .putExtra(OverlayContract.EXTRA_APP_VISIBLE, visible),
+      )
+    }
+
+    AsyncFunction("suspendForExternalMedia") {
+      sendServiceCommand(
+        Intent(requireContext(), VassOverlayService::class.java)
+          .setAction(OverlayContract.ACTION_SUSPEND_EXTERNAL_MEDIA),
       )
     }
 

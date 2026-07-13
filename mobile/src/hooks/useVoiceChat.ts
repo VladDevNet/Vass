@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import {
   RecordingPresets,
@@ -25,6 +25,7 @@ import type { StreamingSpeech } from '../tts/systemSpeech';
 import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
 import { executeExternalAction, ExternalActionExecutionError } from '../actions/externalActions';
+import { VassOverlay } from '../../modules/vass-overlay';
 
 export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking' | 'paused';
 
@@ -71,6 +72,9 @@ const DISCARD_COOLDOWN_MS = 750;
 // doesn't translate directly onto a log scale).
 const INTERRUPTION_FRAMES = 10;
 const INTERRUPTION_THRESHOLD_DB = DEFAULT_THRESHOLD_DB + 8;
+const OVERLAY_INTERRUPTION_FRAMES = 8;
+const OVERLAY_INTERRUPTION_THRESHOLD_DB = DEFAULT_THRESHOLD_DB + 4;
+const EXTERNAL_MEDIA_STOP_TIMEOUT_MS = 1_500;
 
 // Continuation-confirmation timing — yolo.js's exact SILENCE_TIMEOUT. Once
 // broadly "shadow capture only during THINKING," now the single mechanism
@@ -198,6 +202,7 @@ function extractCompleteSentences(buffer: string): { sentences: string[]; rest: 
 
 export function useVoiceChat(sessionId: number | null) {
   const [state, setState] = useState<VoiceState>('idle');
+  const [appState, setAppState] = useState(AppState.currentState);
   const [micArmed, setMicArmed] = useState(false);
   // Bumped on every successful armMic() — passed to the main useVad call as
   // resetKey (see its comment) so VAD's internal hasSpoken/speechStartAt
@@ -229,6 +234,11 @@ export function useVoiceChat(sessionId: number | null) {
   const [error, setError] = useState<string | null>(null);
   const recorder = useAudioRecorder(RECORDING_OPTIONS);
   const shadowRecorder = useAudioRecorder(RECORDING_OPTIONS);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', setAppState);
+    return () => subscription.remove();
+  }, []);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
   // Mirrors `state` into a ref so useVad's stable onSpeechStart callback can
@@ -901,15 +911,21 @@ export function useVoiceChat(sessionId: number | null) {
           if (opensExternalMedia) {
             externalMediaWaitingRef.current = true;
             pausedRef.current = true;
-            await stopRecorderIfLive();
-            await stopShadowRecorderIfLive();
             setState('paused');
-            log('info', 'external-action', 'listening suspended for external media');
-            // Let React commit the paused snapshot to the native overlay
-            // before Linking opens another Activity and background timers
-            // can be frozen. The later overlay tap then reliably follows
-            // the paused/resume path instead of acting like a barge-in.
-            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            await VassOverlay.suspendForExternalMedia();
+            const stopOperations = Promise.all([
+              stopRecorderIfLive(),
+              stopShadowRecorderIfLive(),
+            ]);
+            let stopTimedOut = false;
+            await Promise.race([
+              stopOperations,
+              new Promise<void>((resolve) => setTimeout(() => {
+                stopTimedOut = true;
+                resolve();
+              }, EXTERNAL_MEDIA_STOP_TIMEOUT_MS)),
+            ]);
+            log('info', 'external-action', 'listening suspended for external media', { stopTimedOut });
           }
           try {
             await executeExternalAction(pendingExternalAction);
@@ -1054,15 +1070,13 @@ export function useVoiceChat(sessionId: number | null) {
       firstSegmentInFlightRef.current = true;
       if (activeSpeechMs < MIN_SPEECH_MS) {
         log('debug', 'turn', 'discarding short sound before first segment', { activeSpeechMs });
-        firstSegmentInFlightRef.current = false;
-        // Re-arm after a short cooldown rather than immediately, so
-        // continuous background noise can't retrigger this in a tight loop
-        // — mirrors yolo.js's identical 750ms cooldown in the same spot.
-        // armMicUnlessPaused, not armMic — this timer is independent of
-        // VAD polling (which does stop immediately on pause), so a
-        // long-press landing inside this exact 750ms window would
-        // otherwise still fire an un-pausing armMic() call on its own.
-        setTimeout(() => void armMicUnlessPaused(), DISCARD_COOLDOWN_MS);
+        // Keep the guard raised for the entire cooldown. Clearing it here
+        // used to let every 50ms overlay heartbeat schedule another re-arm,
+        // producing dozens of concurrent recorder operations at once.
+        setTimeout(() => {
+          firstSegmentInFlightRef.current = false;
+          void armMicUnlessPaused();
+        }, DISCARD_COOLDOWN_MS);
         return;
       }
       void sendSegment(false);
@@ -1113,6 +1127,13 @@ export function useVoiceChat(sessionId: number | null) {
   }, []);
 
   const isSpeaking = state === 'speaking';
+  const usesOverlayBargeIn = isSpeaking && appState !== 'active';
+  const interruptionThresholdDb = usesOverlayBargeIn
+    ? OVERLAY_INTERRUPTION_THRESHOLD_DB
+    : INTERRUPTION_THRESHOLD_DB;
+  const interruptionFrames = usesOverlayBargeIn
+    ? OVERLAY_INTERRUPTION_FRAMES
+    : INTERRUPTION_FRAMES;
   // Diagnostic only, scoped to 'speaking' (barge-in) — logs are otherwise
   // silent whenever nothing crosses INTERRUPTION_THRESHOLD_DB, so a real
   // interruption attempt that stayed just under the boosted bar leaves no
@@ -1124,15 +1145,16 @@ export function useVoiceChat(sessionId: number | null) {
     log('debug', 'vad', 'speaking level sample', {
       peakSmoothedDb,
       peakRawMetering,
-      thresholdDb: INTERRUPTION_THRESHOLD_DB,
+      thresholdDb: interruptionThresholdDb,
+      overlay: usesOverlayBargeIn,
     });
-  }, []);
+  }, [interruptionThresholdDb, usesOverlayBargeIn]);
   useVad({
     recorder,
     active: micArmed && (state === 'idle' || state === 'recording' || isSpeaking),
     resetKey: micGeneration,
-    thresholdDb: isSpeaking ? INTERRUPTION_THRESHOLD_DB : undefined,
-    startFrames: isSpeaking ? INTERRUPTION_FRAMES : undefined,
+    thresholdDb: isSpeaking ? interruptionThresholdDb : undefined,
+    startFrames: isSpeaking ? interruptionFrames : undefined,
     onSpeechStart: handleSpeechStart,
     onSpeechResume: handleSpeechResume,
     onSilenceTick: handleSilenceTick,

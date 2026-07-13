@@ -46,7 +46,11 @@ export async function executeExternalAction(action: ExternalActionEvent): Promis
   if (!url) throw new ExternalActionExecutionError('Не удалось распознать, что открыть в YouTube.');
 
   try {
-    await Linking.openURL(url);
+    if (Platform.OS === 'android' && VassOverlay.isAvailable()) {
+      await VassOverlay.openExternalUrl(url);
+    } else {
+      await Linking.openURL(url);
+    }
   } catch (error) {
     throw new ExternalActionExecutionError('Не удалось открыть YouTube или браузер.', { cause: error });
   }
