@@ -1,0 +1,17 @@
+diff --git a/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt b/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
+--- a/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
++++ b/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
+@@ -41,2 +41,10 @@ class SpeechModule : Module() {
+-    OnActivityDestroys {
+-      textToSpeech.shutdown()
++    // The React module can outlive a replaced/destroyed Activity (for
++    // example while Vass runs its overlay and opens YouTube). Shutting the
++    // engine down on Activity destruction leaves the lazy instance marked
++    // ready forever, so every later speak() goes to a dead TextToSpeech
++    // object and produces neither audio nor callbacks. Keep it for the
++    // module lifetime and release it only when the module itself dies.
++    OnDestroy {
++      _textToSpeech?.shutdown()
++      _textToSpeech = null
++      _ttsReady = false
+     }

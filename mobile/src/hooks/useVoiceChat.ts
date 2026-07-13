@@ -2,13 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import {
-  createAudioPlayer,
   RecordingPresets,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
   useAudioRecorder,
 } from 'expo-audio';
-import { File } from 'expo-file-system';
 import { api, sendMessage, type ExternalActionEvent } from '../api/client';
 import { getReminderDeviceContext, scheduleAndAcknowledgeReminder } from '../reminders/localReminders';
 import {
@@ -21,6 +19,7 @@ import {
   speakSystemNotice,
   stopSpeaking,
   stripMarkdownForSpeechChunk,
+  stripMarkupForDisplay,
 } from '../tts/systemSpeech';
 import type { StreamingSpeech } from '../tts/systemSpeech';
 import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
@@ -230,7 +229,6 @@ export function useVoiceChat(sessionId: number | null) {
   const [error, setError] = useState<string | null>(null);
   const recorder = useAudioRecorder(RECORDING_OPTIONS);
   const shadowRecorder = useAudioRecorder(RECORDING_OPTIONS);
-  const playerRef = useRef<ReturnType<typeof createAudioPlayer> | null>(null);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
   // Mirrors `state` into a ref so useVad's stable onSpeechStart callback can
@@ -300,6 +298,10 @@ export function useVoiceChat(sessionId: number | null) {
   // bargedInRef/firstSegmentInFlightRef already exist to close for their
   // own races. This is the same fix, for pause.
   const pausedRef = useRef(false);
+  // A successful YouTube launch deliberately suspends listening until the
+  // user taps the paused overlay and Vass returns to the foreground. This
+  // prevents phone-speaker audio from becoming a giant user utterance.
+  const externalMediaWaitingRef = useRef(false);
   // Background recording is enabled only after the user explicitly turns
   // on Android overlay mode. Keeping it off by default avoids a microphone
   // foreground-service notification during ordinary fullscreen use.
@@ -385,7 +387,6 @@ export function useVoiceChat(sessionId: number | null) {
   useEffect(() => {
     return () => {
       mountedRef.current = false;
-      playerRef.current?.release();
       stopSpeaking();
     };
   }, []);
@@ -678,6 +679,7 @@ export function useVoiceChat(sessionId: number | null) {
       // closure ran by then; a property access doesn't have that problem.
       const streamingHolder: { current: StreamingSpeech | null } = { current: null };
       let sentenceBuffer = '';
+      let visibleReplyBuffer = '';
       const pendingExternalActionHolder: { current: ExternalActionEvent | null } = { current: null };
 
       const handleChunk = (chunk: string) => {
@@ -702,7 +704,8 @@ export function useVoiceChat(sessionId: number | null) {
           streamingHolder.current?.abort();
           return;
         }
-        setReply((prev) => prev + chunk);
+        visibleReplyBuffer += chunk;
+        setReply(stripMarkupForDisplay(visibleReplyBuffer));
 
         if (!streamingHolder.current) {
           streamingHolder.current = createStreamingSpeech(async () => {
@@ -879,36 +882,13 @@ export function useVoiceChat(sessionId: number | null) {
           try {
             await streamingHolder.current.finish();
           } catch (err) {
-            log('warn', 'tts', 'on-device speech failed, falling back to network TTS', {
+            // Local speech is the only runtime TTS path. The former Piper
+            // fallback could add 10-80 seconds of silence after a local
+            // engine failure and kept the turn busy throughout. Keep the
+            // answer visible and finish the turn instead.
+            log('warn', 'tts', 'on-device speech failed; reply left as text', {
               error: err instanceof Error ? err.message : String(err),
             });
-            // Falls back for the FULL reply, not just whatever's left
-            // unspoken — accepts a small chance of repeating a sentence or
-            // two already heard, in exchange for not having to track
-            // exactly how much got through before the failure. On-device
-            // TTS failing mid-reply is already a rare path (missing voice,
-            // a transient engine error); trading a little precision for
-            // simplicity here is a proportionate call, not a shortcut.
-            const audioUri = await api.synthesizeSpeech(fullReply);
-            try {
-              await playToCompletion(audioUri, playerRef);
-            } finally {
-              // PROJECT-AUDIT-2026-07-10 MOB-02: synthesizeSpeech writes a
-              // new tts-{timestamp}.wav to the cache dir every call and
-              // never cleaned it up -- harmless for one turn, but this
-              // fallback path can fire repeatedly in a long conversation.
-              // Deleted only after the player has fully released the file
-              // (playToCompletion always resolves, never rejects, so this
-              // finally block runs after every attempt regardless of how
-              // playback ended).
-              try {
-                new File(audioUri).delete();
-              } catch (err) {
-                log('warn', 'tts', 'failed to delete cached TTS file after playback', {
-                  error: err instanceof Error ? err.message : String(err),
-                });
-              }
-            }
           }
         }
         const pendingExternalAction = pendingExternalActionHolder.current;
@@ -916,7 +896,31 @@ export function useVoiceChat(sessionId: number | null) {
             myGeneration === segmentGenerationRef.current &&
             myTurn === turnGenerationRef.current &&
             !bargedInRef.current) {
-          await executeExternalAction(pendingExternalAction);
+          const opensExternalMedia = pendingExternalAction.type === 'youtube_search' ||
+            pendingExternalAction.type === 'youtube_watch';
+          if (opensExternalMedia) {
+            externalMediaWaitingRef.current = true;
+            pausedRef.current = true;
+            await stopRecorderIfLive();
+            await stopShadowRecorderIfLive();
+            setState('paused');
+            log('info', 'external-action', 'listening suspended for external media');
+            // Let React commit the paused snapshot to the native overlay
+            // before Linking opens another Activity and background timers
+            // can be frozen. The later overlay tap then reliably follows
+            // the paused/resume path instead of acting like a barge-in.
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          }
+          try {
+            await executeExternalAction(pendingExternalAction);
+          } catch (err) {
+            if (opensExternalMedia) {
+              externalMediaWaitingRef.current = false;
+              pausedRef.current = false;
+              await armMic();
+            }
+            throw err;
+          }
           log('info', 'external-action', 'action opened after speech', { type: pendingExternalAction.type });
         }
         log('info', 'turn', 'finalize done', { totalMs: Date.now() - turnStartedAt });
@@ -959,7 +963,7 @@ export function useVoiceChat(sessionId: number | null) {
         }
       }
     },
-    [armMicUnlessPaused, stopRecorderIfLive, stopShadowRecorderIfLive, armShadowRecorder, rearmRecorderOnly, pendingText]
+    [armMicUnlessPaused, armMic, stopRecorderIfLive, stopShadowRecorderIfLive, armShadowRecorder, rearmRecorderOnly, pendingText]
   );
 
   // Confirmed as real, sustained continuation speech (not yet committed —
@@ -1193,6 +1197,19 @@ export function useVoiceChat(sessionId: number | null) {
   const resumeConversation = useCallback(async () => {
     if (!pausedRef.current) return;
     pausedRef.current = false;
+    if (externalMediaWaitingRef.current) {
+      externalMediaWaitingRef.current = false;
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        allowsRecording: true,
+        interruptionMode: 'doNotMix',
+        shouldPlayInBackground: backgroundRecordingEnabledRef.current,
+        allowsBackgroundRecording: backgroundRecordingEnabledRef.current,
+      });
+      log('info', 'external-action', 'external media wait ended, audio session restored');
+      await armMic();
+      return;
+    }
     if (hasSpeechToResume()) {
       log('info', 'turn', 'resumed by user — continuing paused speech');
       await rearmRecorderOnly();
@@ -1325,33 +1342,4 @@ export function useVoiceChat(sessionId: number | null) {
     configureBackgroundRecording,
     micArmed,
   };
-}
-
-// Generous cap on how long a synthesized reply could plausibly run — a
-// safety net so a broken TTS file (bad decode, no didJustFinish event)
-// can't leave the UI stuck in 'speaking' forever with the mic disabled.
-const MAX_PLAYBACK_MS = 60_000;
-
-function playToCompletion(
-  uri: string,
-  playerRef: React.MutableRefObject<ReturnType<typeof createAudioPlayer> | null>
-): Promise<void> {
-  return new Promise((resolve) => {
-    const player = createAudioPlayer(uri);
-    playerRef.current = player;
-
-    const finish = () => {
-      clearTimeout(timeoutId);
-      subscription.remove();
-      player.release();
-      if (playerRef.current === player) playerRef.current = null;
-      resolve();
-    };
-
-    const timeoutId = setTimeout(finish, MAX_PLAYBACK_MS);
-    const subscription = player.addListener('playbackStatusUpdate', (status) => {
-      if (status.didJustFinish || status.error) finish();
-    });
-    player.play();
-  });
 }

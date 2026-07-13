@@ -228,7 +228,10 @@ export function stripMarkdownForSpeechChunk(text: string): string {
       /[\u{1F300}-\u{1F6FF}\u{1F900}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F000}-\u{1F02F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu,
       ''
     )
-    .replace(/\[([^\]|]+)\|[^\]]*\]/g, '$1') // [word|translation] → word
+    .replace(/\[([^\]]+)\]\([^\s)]+\)/g, '$1') // markdown link -> label
+    .replace(/\[(?:\d+(?:\s*[,;–-]\s*\d+)*)\]/g, '') // grounding citations: [6], [2-4]
+    .replace(/\[([^\]|]+)\|[^\]]*\]/g, '$1') // [word|translation] -> word
+    .replace(/https?:\/\/[^\s`]+/gi, '') // URLs are useful in chat, never in speech
     .replace(/\*{1,3}/g, '') // *, **, ***
     .replace(/^-{3,}$/gm, '') // --- horizontal rules
     .replace(/^[\s]*[-•]\s+/gm, '') // bullet points
@@ -239,6 +242,21 @@ export function stripMarkdownForSpeechChunk(text: string): string {
     .replace(/\n{2,}/g, '. ') // multiple newlines → pause
     .replace(/\n/g, ' ') // single newlines → space
     .replace(/\s{2,}/g, ' '); // collapse spaces
+}
+
+// ConversationPeek is plain React Native Text, not a markdown renderer.
+// Keep links visible for reference/context, but remove formatting syntax and
+// Google grounding citation artifacts so the chat does not show raw ** or [6].
+export function stripMarkupForDisplay(text: string): string {
+  return text
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '$1 ($2)')
+    .replace(/\[(?:\d+(?:\s*[,;–-]\s*\d+)*)\]/g, '')
+    .replace(/\*{1,3}/g, '')
+    .replace(/`{1,3}/g, '')
+    .replace(/^\s*#+\s*/gm, '')
+    .replace(/^\s*[-•]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/[ \t]{2,}/g, ' ');
 }
 
 function splitIntoChunks(text: string, maxLength: number): string[] {
@@ -371,8 +389,8 @@ async function speakChunkSafely(
   const timeoutMs = Math.max(MIN_CHUNK_SPEECH_MS, text.length * MAX_CHUNK_SPEECH_MS_PER_CHAR);
   let startTimeoutId: ReturnType<typeof setTimeout> | undefined;
   let finishTimeoutId: ReturnType<typeof setTimeout> | undefined;
-  const stopForTimeout = (message: string, reject: (reason: Error) => void) => {
-    log('warn', 'tts', message, { chunkIndex, totalChunks, timeoutMs });
+  const stopForTimeout = (message: string, deadlineMs: number, reject: (reason: Error) => void) => {
+    log('warn', 'tts', message, { chunkIndex, totalChunks, timeoutMs: deadlineMs });
     markExpectedStop();
     Speech.stop();
     reject(new Error(message));
@@ -380,13 +398,13 @@ async function speakChunkSafely(
 
   const startDeadline = new Promise<never>((_, reject) => {
     startTimeoutId = setTimeout(
-      () => stopForTimeout('chunk playback did not start', reject),
+      () => stopForTimeout('chunk playback did not start', MAX_CHUNK_START_MS, reject),
       MAX_CHUNK_START_MS
     );
   });
   const finishDeadline = new Promise<never>((_, reject) => {
     finishTimeoutId = setTimeout(
-      () => stopForTimeout('chunk speech safety timeout hit', reject),
+      () => stopForTimeout('chunk speech safety timeout hit', timeoutMs, reject),
       timeoutMs
     );
   });

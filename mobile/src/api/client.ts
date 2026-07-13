@@ -1,6 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { fetch as expoFetch } from 'expo/fetch';
-import { File, Paths } from 'expo-file-system';
+import { File } from 'expo-file-system';
 import { Blob as ExpoBlob } from 'expo-blob';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://vass.it-consult.services';
@@ -79,7 +79,6 @@ function timeoutSignal(ms: number): { signal: AbortSignal; cancel: () => void } 
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const UPLOAD_TIMEOUT_MS = 30_000;
-const TTS_TIMEOUT_MS = 30_000;
 // Short — this gates real-time turn-taking responsiveness (a hung check
 // shouldn't stall the conversation for as long as a full audio upload
 // reasonably might). check-utterance is a short snippet + one fast Gemini
@@ -387,39 +386,6 @@ export const api = {
     return res.json();
   },
 
-  // Synthesizes the full reply as one WAV clip (buffered, not the sentence-by-
-  // sentence PCM stream the web client uses — see docs/react-native/tts-and-avatar.md;
-  // that optimization matters less once TTS moves on-device in Phase 2).
-  // Returns a local file:// URI ready for createAudioPlayer().
-  synthesizeSpeech: async (text: string): Promise<string> => {
-    const { signal, cancel } = timeoutSignal(TTS_TIMEOUT_MS);
-    let res: Awaited<ReturnType<typeof expoFetch>>;
-    try {
-      res = await expoFetch(`${API_URL}/api/v1/chat/tts`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ text }),
-        signal,
-      });
-    } catch (err) {
-      if (signal.aborted) throw new ApiError('Превышено время ожидания синтеза речи');
-      throw err;
-    } finally {
-      cancel();
-    }
-    if (res.status === 401) {
-      await handleUnauthorized();
-      throw new ApiError('Unauthorized');
-    }
-    if (!res.ok) throw new ApiError(`TTS failed: ${res.status}`);
-
-    const file = new File(Paths.cache, `tts-${Date.now()}.wav`);
-    await file.write(await res.bytes());
-    return file.uri;
-  },
 };
 
 export interface SendMessageParams {
