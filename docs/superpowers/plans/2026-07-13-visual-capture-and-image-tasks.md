@@ -14,7 +14,8 @@
 - [x] Multimodal Gemini request for the current turn only, with attachment history and session cleanup.
 - [x] Mobile pickers, pending-image runtime bridge, voice-turn attachment and history thumbnails.
 - [x] Backend unit/integration tests, TypeScript and Expo configuration checks, signed arm64 release APK.
-- [ ] Deploy the backend migration to VPS and smoke-test capture on a physical device.
+- [x] Backend migration deployed to VPS; external readiness, admin SPA and `visual_storage` checks are healthy.
+- [ ] Smoke-test capture on a physical device: rear camera, selfie, gallery, file/screenshot, retry after a failed request and attachment history.
 
 ## Decisions That Supersede The Older Draft
 
