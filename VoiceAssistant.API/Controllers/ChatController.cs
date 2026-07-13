@@ -28,6 +28,7 @@ public class ChatController : ControllerBase
     private readonly LongTermMemoryService _longTermMemory;
     private readonly ReminderService _reminders;
     private readonly ExternalActionService _externalActions;
+    private readonly ScreenAnalysisIntentService _screenAnalysis;
     private readonly VisualAssetService _visualAssets;
     private readonly IConfiguration _config;
     private readonly ILogger<ChatController> _logger;
@@ -41,6 +42,7 @@ public class ChatController : ControllerBase
         LongTermMemoryService longTermMemory,
         ReminderService reminders,
         ExternalActionService externalActions,
+        ScreenAnalysisIntentService screenAnalysis,
         VisualAssetService visualAssets,
         PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
@@ -56,6 +58,7 @@ public class ChatController : ControllerBase
         _longTermMemory = longTermMemory;
         _reminders = reminders;
         _externalActions = externalActions;
+        _screenAnalysis = screenAnalysis;
         _visualAssets = visualAssets;
         _ttsService = ttsService;
         _config = config;
@@ -145,7 +148,8 @@ public class ChatController : ControllerBase
         string? DeviceId = null,
         string? TimeZoneId = null,
         bool SupportsExternalActions = false,
-        Guid? VisualAssetId = null);
+        Guid? VisualAssetId = null,
+        bool SupportsScreenAnalysis = false);
 
     private const long MaxAudioSize = 5 * 1024 * 1024; // 5MB
     private const long MaxImageSize = 10 * 1024 * 1024; // 10MB
@@ -499,6 +503,35 @@ public class ChatController : ControllerBase
                 await Response.WriteAsJsonAsync(new { error = "Не удалось прочитать прикрепленное изображение." });
                 return;
             }
+        }
+
+        // Screen analysis is a preflight, not an external action: the image
+        // must exist before this user message is persisted and Gemini starts
+        // generating its first answer. Old clients never opt in.
+        if (req.SupportsScreenAnalysis && visualAsset is null &&
+            await _screenAnalysis.IsScreenAnalysisRequestAsync(messageText, geminiKey, HttpContext.RequestAborted))
+        {
+            Response.ContentType = "text/event-stream";
+            Response.Headers.CacheControl = "no-cache";
+            Response.Headers.Connection = "keep-alive";
+            if (transcription is not null)
+            {
+                var transcriptionData = JsonSerializer.Serialize(new { transcription });
+                await Response.WriteAsync($"data: {transcriptionData}\n\n");
+            }
+            var screenCaptureData = JsonSerializer.Serialize(new { screenCapture = new { prompt = messageText } });
+            await Response.WriteAsync($"data: {screenCaptureData}\n\n");
+            await Response.WriteAsync("data: [DONE]\n\n");
+            await Response.Body.FlushAsync();
+
+            // This audio was uploaded solely to obtain the transcription. It
+            // has no Message owner because the real turn will be text+image.
+            if (validatedAudioFileName is not null && TryResolveSafeAudioPath(_audioPath, validatedAudioFileName, out var transientAudioPath))
+            {
+                try { System.IO.File.Delete(transientAudioPath); }
+                catch (Exception ex) { _logger.LogWarning(ex, "Could not delete screen-analysis preflight audio"); }
+            }
+            return;
         }
 
         // Save user message

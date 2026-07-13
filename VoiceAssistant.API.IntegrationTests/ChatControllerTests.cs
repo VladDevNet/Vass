@@ -133,6 +133,26 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Fact]
+    public async Task Send_ScreenAnalysisCapable_RequestsCaptureBeforePersistingMessage()
+    {
+        var client = await CreateAuthenticatedClientAsync();
+        var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
+        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>()).EnumerateArray().First().GetProperty("id").GetInt32();
+
+        var response = await client.PostAsJsonAsync("/api/v1/chat/send",
+            new ChatController.SendRequest(sessionId, "Объясни, что сейчас на экране", SupportsScreenAnalysis: true));
+
+        response.EnsureSuccessStatusCode();
+        var raw = await response.Content.ReadAsStringAsync();
+        Assert.Contains("screenCapture", raw);
+        Assert.Contains("data: [DONE]", raw);
+        Assert.DoesNotContain(FakeGeminiHandler.DefaultReplyText, raw);
+
+        var detail = await client.GetFromJsonAsync<JsonElement>($"/api/v1/chat/sessions/{sessionId}");
+        Assert.Empty(detail.GetProperty("messages").EnumerateArray());
+    }
+
+    [Fact]
     public async Task Send_LaunchFollowUp_UsesVideoFromPreviousAssistantReply()
     {
         var client = await CreateAuthenticatedClientAsync();

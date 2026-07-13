@@ -32,13 +32,20 @@ public class FakeGeminiHandler : HttpMessageHandler
     private static readonly string CustomInstructionCheckMarker = $"\"maxOutputTokens\":{ChatController.CustomInstructionCheckMaxTokens}";
     private static readonly string ReminderParseMarker = $"\"maxOutputTokens\":{ReminderService.ParseMaxTokens}";
     private static readonly string ExternalActionParseMarker = $"\"maxOutputTokens\":{ExternalActionService.ParseMaxTokens}";
+    private static readonly string ScreenAnalysisParseMarker = $"\"maxOutputTokens\":{ScreenAnalysisIntentService.ParseMaxTokens}";
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
 
         var replyText = DefaultReplyText;
-        if (body.Contains(ExternalActionParseMarker, StringComparison.Ordinal))
+        if (body.Contains(ScreenAnalysisParseMarker, StringComparison.Ordinal))
+        {
+            replyText = ReadPromptText(body).Contains("объясни", StringComparison.OrdinalIgnoreCase)
+                ? "{\"type\":\"screen_analyze\"}"
+                : "{\"type\":\"chat\"}";
+        }
+        else if (body.Contains(ExternalActionParseMarker, StringComparison.Ordinal))
         {
             replyText = ReadPromptText(body).Contains("Высоцкого", StringComparison.Ordinal)
                 ? "{\"type\":\"youtube_search\",\"query\":\"песни Высоцкого\",\"videoId\":null}"
