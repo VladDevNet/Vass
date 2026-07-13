@@ -5,6 +5,8 @@ import { useVoiceChat, type VoiceState } from '../hooks/useVoiceChat';
 import { useAuth } from './AuthContext';
 import { VassOverlay, type OverlayEvent } from '../../modules/vass-overlay';
 import { log } from '../logging/remoteLogger';
+import { useVisualInput } from '../hooks/useVisualInput';
+import type { PendingVisualInput, StageVisualAssetInput, VisualInputStatus, VisualSource } from '../visual/types';
 
 interface ConversationRuntimeValue {
   sessionId: number | null;
@@ -19,6 +21,13 @@ interface ConversationRuntimeValue {
   resumeConversation: () => Promise<void>;
   prepareOverlayMode: () => Promise<void>;
   disableOverlayMode: (resumeWhenVisible: boolean) => Promise<void>;
+  pendingVisual: PendingVisualInput | null;
+  visualStatus: VisualInputStatus;
+  visualError: string | null;
+  visualUploadingUri: string | null;
+  pickVisual: (source: VisualSource) => Promise<void>;
+  removePendingVisual: () => Promise<void>;
+  stageVisualAsset: (input: StageVisualAssetInput) => Promise<void>;
 }
 
 const ConversationRuntimeContext = createContext<ConversationRuntimeValue | null>(null);
@@ -27,7 +36,11 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
   const { avatarId } = useAuth();
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
-  const runtime = useVoiceChat(sessionId);
+  const visual = useVisualInput();
+  const runtime = useVoiceChat(sessionId, {
+    getPendingVisual: visual.getPendingVisual,
+    consumePendingVisual: visual.consumePendingVisual,
+  });
   const stateRef = useRef(runtime.state);
   const actionsRef = useRef(runtime);
   const resumeRequestedRef = useRef(false);
@@ -163,6 +176,13 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
         resumeConversation: runtime.resumeConversation,
         prepareOverlayMode,
         disableOverlayMode,
+        pendingVisual: visual.pendingVisual,
+        visualStatus: visual.status,
+        visualError: visual.error,
+        visualUploadingUri: visual.uploadingUri,
+        pickVisual: visual.pickVisual,
+        removePendingVisual: visual.removePendingVisual,
+        stageVisualAsset: visual.stageVisualAsset,
       }}
     >
       {children}

@@ -162,6 +162,20 @@ export interface ChatMessage {
   content: string;
   createdAt: string;
   audioFileName: string | null;
+  attachments: ChatAttachment[];
+}
+
+export interface ChatAttachment {
+  id: string;
+  kind: 'image';
+  mimeType: string;
+  sizeBytes: number;
+}
+
+export interface VisualAsset {
+  id: string;
+  mimeType: string;
+  sizeBytes: number;
 }
 
 // Not `extends ChatSession` — GET /chat/sessions/{id} (unlike the list
@@ -336,6 +350,50 @@ export const api = {
     return res.json();
   },
 
+  uploadVisual: async (uri: string, mimeType: string, originalName?: string): Promise<VisualAsset> => {
+    const bytes = await new File(uri).bytes();
+    const blob = new ExpoBlob([bytes], { type: mimeType });
+    const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType.split('/')[1] ?? 'image';
+    const name = originalName?.trim() || `image.${extension}`;
+    Object.defineProperty(blob, 'name', { value: name, configurable: true });
+
+    const form = new FormData();
+    form.append('file', blob as unknown as Blob, name);
+    const { signal, cancel } = timeoutSignal(UPLOAD_TIMEOUT_MS);
+    let res: Awaited<ReturnType<typeof expoFetch>>;
+    try {
+      res = await expoFetch(`${API_URL}/api/v1/chat/visual-assets`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: form,
+        signal,
+      });
+    } catch (err) {
+      if (signal.aborted) throw new ApiError('Превышено время ожидания загрузки изображения');
+      throw err;
+    } finally {
+      cancel();
+    }
+    if (res.status === 401) {
+      await handleUnauthorized();
+      throw new ApiError('Unauthorized');
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new ApiError(body?.error ?? `Не удалось загрузить изображение: ${res.status}`);
+    }
+    return res.json() as Promise<VisualAsset>;
+  },
+
+  deletePendingVisual: async (id: string): Promise<void> => {
+    await request<void>(`/chat/visual-assets/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  visualAssetContentSource: (id: string): { uri: string; headers?: Record<string, string> } => ({
+    uri: `${API_URL}/api/v1/chat/visual-assets/${encodeURIComponent(id)}/content`,
+    ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+  }),
+
   // Transcribes a continuation segment WITHOUT triggering a full model
   // reply — POST /chat/check-utterance, already used by the web client
   // (frontend/js/api.js's checkUtteranceComplete) and needing no backend
@@ -395,6 +453,7 @@ export interface SendMessageParams {
   deviceId?: string;
   timeZoneId?: string;
   supportsExternalActions?: boolean;
+  visualAssetId?: string;
 }
 
 export type ExternalActionEvent =
@@ -538,7 +597,7 @@ export async function sendMessage(params: SendMessageParams, callbacks: SendMess
       }
     }
 
-    return fullText;
+    throw new ApiError('Ответ сервера прервался до завершения. Попробуйте еще раз.');
   } finally {
     cancel();
   }

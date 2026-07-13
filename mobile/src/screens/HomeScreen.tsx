@@ -16,6 +16,10 @@ import { VoiceControlDock } from '../components/VoiceControlDock';
 import { amoled } from '../theme/amoled';
 import { ProfileScreen } from './ProfileScreen';
 import { ChatHistoryScreen } from './ChatHistoryScreen';
+import { VisualInputButton } from '../components/VisualInputButton';
+import { VisualSourceSheet } from '../components/VisualSourceSheet';
+import { PendingVisualPreview } from '../components/PendingVisualPreview';
+import type { VisualSource } from '../visual/types';
 
 const SLEEP_AFTER_MS = 90_000;
 
@@ -48,6 +52,7 @@ export function HomeScreen() {
   const displayAvatarId: AvatarId = avatarId === 'male' ? 'male' : 'olga';
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showVisualSources, setShowVisualSources] = useState(false);
   // Ошибка загрузки любого слоя LayeredAvatar — падаем на AvatarFace
   // на остаток сессии, без retry-петли. См. spec, «Обработка ошибок».
   const [assetsFailed, setAssetsFailed] = useState(false);
@@ -61,6 +66,12 @@ export function HomeScreen() {
     forceFinalize,
     pauseConversation,
     micArmed,
+    pendingVisual,
+    visualStatus,
+    visualError,
+    visualUploadingUri,
+    pickVisual,
+    removePendingVisual,
   } = useConversationRuntime();
   useConversationKeepAwake(state !== 'paused');
 
@@ -109,6 +120,11 @@ export function HomeScreen() {
   function openHistory() {
     log('debug', 'app', 'history opened', { state, sleeping, hasSession: !!sessionId });
     setShowHistory(true);
+  }
+
+  function selectVisualSource(source: VisualSource) {
+    setShowVisualSources(false);
+    void pickVisual(source);
   }
 
   return (
@@ -160,6 +176,20 @@ export function HomeScreen() {
         </View>
 
         <ConversationPeek transcript={transcript} reply={reply} state={state} />
+        <View style={styles.visualArea}>
+          <VisualInputButton
+            disabled={disabled || state === 'thinking'}
+            status={visualStatus}
+            onPress={() => setShowVisualSources(true)}
+          />
+          <PendingVisualPreview
+            pending={pendingVisual}
+            uploadingUri={visualUploadingUri}
+            status={visualStatus}
+            error={visualError}
+            onRemove={() => void removePendingVisual()}
+          />
+        </View>
         {error && <Text style={styles.error}>{error}</Text>}
 
         <VoiceControlDock
@@ -171,6 +201,11 @@ export function HomeScreen() {
           historyDisabled={historyDisabled}
         />
       </View>
+      <VisualSourceSheet
+        visible={showVisualSources}
+        onClose={() => setShowVisualSources(false)}
+        onSelect={selectVisualSource}
+      />
     </SafeAreaView>
   );
 }
@@ -247,5 +282,8 @@ const styles = StyleSheet.create({
     color: '#F87171',
     marginBottom: 12,
     textAlign: 'center',
+  },
+  visualArea: {
+    gap: 4,
   },
 });

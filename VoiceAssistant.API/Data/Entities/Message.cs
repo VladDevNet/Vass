@@ -9,4 +9,5 @@ public class Message
     public string Content { get; set; } = null!;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public string? AudioFileName { get; set; }
+    public ICollection<MessageAttachment> Attachments { get; set; } = [];
 }

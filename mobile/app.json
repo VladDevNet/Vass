@@ -13,7 +13,8 @@
     "android": {
       "package": "com.vass.assistant",
       "permissions": [
-        "android.permission.SCHEDULE_EXACT_ALARM"
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.CAMERA"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -36,6 +37,14 @@
         }
       ],
       "expo-asset",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Vass нужен доступ к камере, чтобы вы могли показать ассистенту предмет или документ.",
+          "photosPermission": "Vass нужен доступ к фотографиям, чтобы вы могли выбрать изображение для разбора."
+        }
+      ],
+      "expo-document-picker",
       "expo-notifications",
       "./modules/vass-overlay/app.plugin.js"
     ]

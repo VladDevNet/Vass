@@ -25,6 +25,8 @@ public class AppDbContext : IdentityDbContext<User>
     public DbSet<MemoryFact> MemoryFacts => Set<MemoryFact>();
     public DbSet<Reminder> Reminders => Set<Reminder>();
     public DbSet<ReminderDelivery> ReminderDeliveries => Set<ReminderDelivery>();
+    public DbSet<VisualAsset> VisualAssets => Set<VisualAsset>();
+    public DbSet<MessageAttachment> MessageAttachments => Set<MessageAttachment>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -56,6 +58,27 @@ public class AppDbContext : IdentityDbContext<User>
             e.HasOne(m => m.ChatSession).WithMany(s => s.Messages)
                 .HasForeignKey(m => m.ChatSessionId).OnDelete(DeleteBehavior.Cascade);
             e.Property(m => m.Role).HasMaxLength(10);
+        });
+
+        builder.Entity<VisualAsset>(e =>
+        {
+            e.HasOne(a => a.User).WithMany(u => u.VisualAssets)
+                .HasForeignKey(a => a.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(a => a.StorageFileName).HasMaxLength(80);
+            e.Property(a => a.MimeType).HasMaxLength(50);
+            e.Property(a => a.OriginalFileName).HasMaxLength(255);
+            e.HasIndex(a => a.StorageFileName).IsUnique();
+            e.HasIndex(a => new { a.UserId, a.CreatedAt });
+        });
+
+        builder.Entity<MessageAttachment>(e =>
+        {
+            e.HasOne(a => a.Message).WithMany(m => m.Attachments)
+                .HasForeignKey(a => a.MessageId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(a => a.VisualAsset).WithMany(v => v.MessageAttachments)
+                .HasForeignKey(a => a.VisualAssetId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(a => a.Kind).HasMaxLength(20);
+            e.HasIndex(a => new { a.MessageId, a.VisualAssetId }).IsUnique();
         });
 
         builder.Entity<UserSettings>(e =>

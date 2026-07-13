@@ -123,6 +123,7 @@ builder.Services.AddHttpClient();
 
 // Services
 builder.Services.AddSingleton<GeminiService>();
+builder.Services.AddSingleton<VisualAssetService>();
 builder.Services.AddSingleton<PiperTtsService>();
 builder.Services.AddSingleton<CompanionPromptService>();
 builder.Services.AddSingleton<AudioAnalysisService>();
@@ -411,6 +412,29 @@ app.MapGet("/api/health/ready", async (
         checks["storage"] = "unavailable";
         ready = false;
         readinessLogger.LogWarning(ex, "Readiness check: audio storage not writable");
+    }
+
+    try
+    {
+        var visualPath = VisualAssetService.ResolveVisualPath(configuration["Visual:Path"], hostEnv.ContentRootPath);
+        Directory.CreateDirectory(visualPath);
+        var probeFile = Path.Combine(visualPath, $".readiness-probe-{Guid.NewGuid():N}");
+        await File.WriteAllBytesAsync(probeFile, "readiness"u8.ToArray());
+        checks["visual_storage"] = "ok";
+        try
+        {
+            File.Delete(probeFile);
+        }
+        catch (Exception deleteEx)
+        {
+            readinessLogger.LogWarning(deleteEx, "Readiness check: failed to delete visual probe file {ProbeFile}", probeFile);
+        }
+    }
+    catch (Exception ex)
+    {
+        checks["visual_storage"] = "unavailable";
+        ready = false;
+        readinessLogger.LogWarning(ex, "Readiness check: visual storage not writable");
     }
 
     checks["gemini"] = string.IsNullOrWhiteSpace(configuration["Gemini:ApiKey"]) ? "not_configured" : "configured";

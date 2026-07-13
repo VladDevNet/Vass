@@ -11,6 +11,39 @@ namespace VoiceAssistant.API.Tests;
 public class GeminiServiceTests
 {
     [Fact]
+    public async Task StreamResponseAsync_MultimodalMessage_SendsInlineImageAlongsideText()
+    {
+        string? requestBody = null;
+        var handler = new DelegateHandler(async request =>
+        {
+            requestBody = await request.Content!.ReadAsStringAsync();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]}}]}\n\n", Encoding.UTF8, "text/event-stream")
+            };
+        });
+        var service = CreateService(handler);
+        var image = new byte[] { 0xFF, 0xD8, 0xFF, 0xE0 };
+        var messages = new List<GeminiMessage>
+        {
+            new("user", new GeminiPart[]
+            {
+                new(Text: "Что на этом изображении?"),
+                new(MimeType: "image/jpeg", Data: image),
+            })
+        };
+
+        await foreach (var _ in service.StreamResponseAsync("system", messages, enableGrounding: false)) { }
+
+        using var document = JsonDocument.Parse(requestBody!);
+        var parts = document.RootElement.GetProperty("contents")[0].GetProperty("parts");
+        Assert.Equal("Что на этом изображении?", parts[0].GetProperty("text").GetString());
+        var inlineData = parts[1].GetProperty("inline_data");
+        Assert.Equal("image/jpeg", inlineData.GetProperty("mime_type").GetString());
+        Assert.Equal(Convert.ToBase64String(image), inlineData.GetProperty("data").GetString());
+    }
+
+    [Fact]
     public async Task GenerateEmbeddingAsync_ParsesExpectedDimensionsAndRequestContract()
     {
         string? requestBody = null;

@@ -26,8 +26,14 @@ import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
 import { executeExternalAction, ExternalActionExecutionError } from '../actions/externalActions';
 import { VassOverlay } from '../../modules/vass-overlay';
+import type { PendingVisualInput } from '../visual/types';
 
 export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking' | 'paused';
+
+interface VisualTurnBridge {
+  getPendingVisual: () => PendingVisualInput | null;
+  consumePendingVisual: (assetId: string) => void;
+}
 
 // android.audioSource defaults to MediaRecorder.AudioSource.MIC — raw,
 // unprocessed input (verified in expo-audio's own AudioRecorder.kt) — unlike
@@ -200,7 +206,7 @@ function extractCompleteSentences(buffer: string): { sentences: string[]; rest: 
   return { sentences, rest: buffer.slice(consumed) };
 }
 
-export function useVoiceChat(sessionId: number | null) {
+export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurnBridge) {
   const [state, setState] = useState<VoiceState>('idle');
   const [appState, setAppState] = useState(AppState.currentState);
   const [micArmed, setMicArmed] = useState(false);
@@ -241,6 +247,8 @@ export function useVoiceChat(sessionId: number | null) {
   }, []);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
+  const visualBridgeRef = useRef(visualBridge);
+  visualBridgeRef.current = visualBridge;
   // Mirrors `state` into a ref so useVad's stable onSpeechStart callback can
   // read the CURRENT state (barge-in only applies during 'speaking') without
   // needing to be recreated — and therefore without needing to be in
@@ -653,6 +661,9 @@ export function useVoiceChat(sessionId: number | null) {
       // Bumped once per attempt, whether this turns out to be the ONLY
       // attempt or gets superseded down the line — see the field comment.
       const myGeneration = ++segmentGenerationRef.current;
+      // Capture the asset for this attempt. A new image selected while Vass
+      // speaks belongs to the following turn and must not be consumed here.
+      const visualAssetId = visualBridgeRef.current?.getPendingVisual()?.assetId;
 
       if (!fromShadow) {
         setState('thinking');
@@ -827,6 +838,7 @@ export function useVoiceChat(sessionId: number | null) {
             deviceId: reminderDevice.deviceId,
             timeZoneId: reminderDevice.timeZoneId,
             supportsExternalActions: true,
+            visualAssetId,
           }, {
             onChunk: handleChunk,
             onReminder: handleReminder,
@@ -842,6 +854,7 @@ export function useVoiceChat(sessionId: number | null) {
               deviceId: reminderDevice.deviceId,
               timeZoneId: reminderDevice.timeZoneId,
               supportsExternalActions: true,
+              visualAssetId,
             },
             {
               onTranscription: (text) => {
@@ -883,6 +896,7 @@ export function useVoiceChat(sessionId: number | null) {
 
         log('info', 'turn', 'reply received', { sendMs: Date.now() - turnStartedAt, replyLength: fullReply.length });
         pendingSegmentsRef.current.clear();
+        if (visualAssetId) visualBridgeRef.current?.consumePendingVisual(visualAssetId);
 
         if (streamingHolder.current) {
           // Flush whatever's left in the buffer even if it never reached

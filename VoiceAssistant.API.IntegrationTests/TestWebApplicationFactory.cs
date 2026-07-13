@@ -18,6 +18,7 @@ namespace VoiceAssistant.API.IntegrationTests;
 public class TestWebApplicationFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
     private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"vass-it-{Guid.NewGuid():N}.db");
+    private readonly string _visualPath = Path.Combine(Path.GetTempPath(), $"vass-visual-it-{Guid.NewGuid():N}");
 
     // Program.cs's original options.UseNpgsql(...) call registers Npgsql's own
     // internal EF Core services (IDatabaseProvider etc.) directly into the
@@ -72,6 +73,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>, IAsyncL
                 // throw GeminiApiException before ever reaching FakeGeminiHandler --
                 // never sent anywhere real, the HTTP client itself is faked below.
                 ["Gemini:ApiKey"] = "test-fake-gemini-key",
+                ["Visual:Path"] = _visualPath,
             });
         });
 
@@ -132,5 +134,6 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>, IAsyncL
         }
 
         try { if (File.Exists(_dbPath)) File.Delete(_dbPath); } catch { }
+        try { if (Directory.Exists(_visualPath)) Directory.Delete(_visualPath, recursive: true); } catch { }
     }
 }

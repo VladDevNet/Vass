@@ -6,7 +6,31 @@ using Microsoft.Extensions.Logging;
 
 namespace VoiceAssistant.API.Services;
 
-public record GeminiMessage(string Role, string Content);
+public record GeminiPart(string? Text = null, string? MimeType = null, byte[]? Data = null);
+
+// Content remains available for the existing text-only side-call services.
+// Parts lets the primary conversation add one inline image without changing
+// their contracts or accidentally feeding private image bytes into them.
+public record GeminiMessage(string Role, string Content)
+{
+    public IReadOnlyList<GeminiPart> Parts { get; init; } = [new(Text: Content)];
+
+    public GeminiMessage(string role, IReadOnlyList<GeminiPart> parts)
+        : this(role, ExtractText(parts))
+    {
+        Parts = parts;
+    }
+
+    private static string ExtractText(IReadOnlyList<GeminiPart> parts)
+    {
+        var text = new StringBuilder();
+        foreach (var part in parts)
+        {
+            if (part.Text is not null) text.Append(part.Text);
+        }
+        return text.ToString();
+    }
+}
 
 // Typed error channel for StreamResponseAsync's infrastructure failures
 // (missing key, non-2xx HTTP, connection error) -- previously these were
@@ -134,11 +158,12 @@ public class GeminiService
             throw new GeminiApiException("Ошибка: отсутствует API-ключ Gemini.", isRetryable: false);
         }
 
-        // Format request body for Gemini API: roles must be "user" or "model"
+        // Format request body for Gemini API: roles must be "user" or "model".
+        // Text-only callers retain the exact same JSON shape as before.
         var contents = messages.Select(m => new
         {
             role = m.Role.ToLower() == "user" ? "user" : "model",
-            parts = new[] { new { text = m.Content } }
+            parts = SerializeParts(m.Parts)
         }).ToArray();
 
         var payload = new
@@ -242,5 +267,30 @@ public class GeminiService
                 }
             }
         }
+    }
+
+    private static object[] SerializeParts(IReadOnlyList<GeminiPart> parts)
+    {
+        if (parts.Count == 0) throw new ArgumentException("A Gemini message must contain at least one part.", nameof(parts));
+
+        var serialized = new object[parts.Count];
+        for (var index = 0; index < parts.Count; index++)
+        {
+            var part = parts[index];
+            if (part.Data is not null)
+            {
+                if (part.Data.Length == 0 || part.Data.Length > ImageContentInspector.MaxVisualSize)
+                    throw new ArgumentException("Visual content has an invalid size.", nameof(parts));
+                if (!ImageContentInspector.IsVisualCaptureMimeType(part.MimeType ?? ""))
+                    throw new ArgumentException("Visual content has an unsupported MIME type.", nameof(parts));
+                serialized[index] = new { inline_data = new { mime_type = part.MimeType, data = Convert.ToBase64String(part.Data) } };
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(part.Text))
+                throw new ArgumentException("Text content cannot be empty.", nameof(parts));
+            serialized[index] = new { text = part.Text };
+        }
+        return serialized;
     }
 }

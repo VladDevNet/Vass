@@ -11,4 +11,5 @@ public class User : IdentityUser
     public DateTime LastActiveAt { get; set; } = DateTime.UtcNow;
 
     public ICollection<ChatSession> ChatSessions { get; set; } = [];
+    public ICollection<VisualAsset> VisualAssets { get; set; } = [];
 }

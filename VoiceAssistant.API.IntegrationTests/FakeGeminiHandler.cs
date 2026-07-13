@@ -92,12 +92,15 @@ public class FakeGeminiHandler : HttpMessageHandler
         {
             using var document = JsonDocument.Parse(body);
             if (!document.RootElement.TryGetProperty("contents", out var contents)) return "";
-            return string.Join(
-                '\n',
-                contents
-                    .EnumerateArray()
-                    .SelectMany(content => content.GetProperty("parts").EnumerateArray())
-                    .Select(part => part.GetProperty("text").GetString()));
+            var text = new List<string>();
+            foreach (var content in contents.EnumerateArray())
+            {
+                foreach (var part in content.GetProperty("parts").EnumerateArray())
+                {
+                    if (part.TryGetProperty("text", out var value)) text.Add(value.GetString() ?? "");
+                }
+            }
+            return string.Join('\n', text);
         }
         catch (JsonException)
         {

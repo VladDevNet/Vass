@@ -28,6 +28,7 @@ public class ChatController : ControllerBase
     private readonly LongTermMemoryService _longTermMemory;
     private readonly ReminderService _reminders;
     private readonly ExternalActionService _externalActions;
+    private readonly VisualAssetService _visualAssets;
     private readonly IConfiguration _config;
     private readonly ILogger<ChatController> _logger;
     private readonly string _audioPath;
@@ -40,6 +41,7 @@ public class ChatController : ControllerBase
         LongTermMemoryService longTermMemory,
         ReminderService reminders,
         ExternalActionService externalActions,
+        VisualAssetService visualAssets,
         PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
@@ -54,6 +56,7 @@ public class ChatController : ControllerBase
         _longTermMemory = longTermMemory;
         _reminders = reminders;
         _externalActions = externalActions;
+        _visualAssets = visualAssets;
         _ttsService = ttsService;
         _config = config;
         _logger = logger;
@@ -102,42 +105,11 @@ public class ChatController : ControllerBase
         return true;
     }
 
-    // Content-Type on a multipart file part is a client-supplied string field,
-    // not a verified fact about the bytes — any part can claim "image/jpeg"
-    // regardless of what it actually contains (PROJECT-AUDIT-2026-07-10
-    // SEC-07). The magic-byte signature is what's actually true about the
-    // file, and what gets forwarded to Gemini's inline_data.mime_type instead
-    // of trusting the caller's claim.
-    private static readonly (byte[] Signature, string MimeType)[] ImageSignatures =
-    [
-        (new byte[] { 0xFF, 0xD8, 0xFF }, "image/jpeg"),
-        (new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }, "image/png"),
-        (new byte[] { 0x47, 0x49, 0x46, 0x38 }, "image/gif"),
-    ];
-
-    public static bool TryDetectImageMimeType(byte[] content, out string mimeType)
-    {
-        foreach (var (signature, mime) in ImageSignatures)
-        {
-            if (content.Length >= signature.Length && content.AsSpan(0, signature.Length).SequenceEqual(signature))
-            {
-                mimeType = mime;
-                return true;
-            }
-        }
-
-        // WebP: "RIFF" (bytes 0-3), 4-byte size (bytes 4-7), "WEBP" (bytes 8-11).
-        if (content.Length >= 12 &&
-            content.AsSpan(0, 4).SequenceEqual("RIFF"u8) &&
-            content.AsSpan(8, 4).SequenceEqual("WEBP"u8))
-        {
-            mimeType = "image/webp";
-            return true;
-        }
-
-        mimeType = "";
-        return false;
-    }
+    // Kept as a public compatibility seam for existing security tests and
+    // OCR. Visual Capture uses the same byte-level inspector, so MIME rules
+    // cannot silently diverge between the two image paths.
+    public static bool TryDetectImageMimeType(byte[] content, out string mimeType) =>
+        ImageContentInspector.TryDetectMimeType(content, out mimeType);
 
     // The Send action used to pass settings.DisplayName as GetSystemPrompt's
     // userName UNCONDITIONALLY, then separately PREPEND a second "Сейчас с
@@ -172,7 +144,8 @@ public class ChatController : ControllerBase
         string? AudioFileName = null,
         string? DeviceId = null,
         string? TimeZoneId = null,
-        bool SupportsExternalActions = false);
+        bool SupportsExternalActions = false,
+        Guid? VisualAssetId = null);
 
     private const long MaxAudioSize = 5 * 1024 * 1024; // 5MB
     private const long MaxImageSize = 10 * 1024 * 1024; // 10MB
@@ -295,6 +268,12 @@ public class ChatController : ControllerBase
 
         if (session == null) return NotFound();
 
+        var visualAssetIds = await _db.MessageAttachments
+            .Where(attachment => attachment.Message.ChatSessionId == id)
+            .Select(attachment => attachment.VisualAssetId)
+            .Distinct()
+            .ToListAsync(HttpContext.RequestAborted);
+
         foreach (var msg in session.Messages)
         {
             // Re-validated here too, not just at the one write site that
@@ -311,6 +290,22 @@ public class ChatController : ControllerBase
 
         _db.ChatSessions.Remove(session);
         await _db.SaveChangesAsync();
+
+        // An asset can be referenced by repeated/superseding attempts. Remove
+        // only files whose last message link disappeared with this session.
+        var orphanedVisualAssets = await _db.VisualAssets
+            .Where(asset => visualAssetIds.Contains(asset.Id) && !asset.MessageAttachments.Any())
+            .ToListAsync(HttpContext.RequestAborted);
+        _db.VisualAssets.RemoveRange(orphanedVisualAssets);
+        await _db.SaveChangesAsync(HttpContext.RequestAborted);
+        foreach (var asset in orphanedVisualAssets)
+        {
+            try { await _visualAssets.DeleteIfExistsAsync(asset.StorageFileName); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not delete orphaned visual asset file after session deletion: AssetId={AssetId}", asset.Id);
+            }
+        }
         return NoContent();
     }
 
@@ -333,7 +328,12 @@ public class ChatController : ControllerBase
             query = query.Where(m => m.Id < before.Value);
         }
 
-        var page = await query.OrderByDescending(m => m.Id).Take(limit).ToListAsync();
+        var page = await query
+            .Include(message => message.Attachments)
+            .ThenInclude(attachment => attachment.VisualAsset)
+            .OrderByDescending(m => m.Id)
+            .Take(limit)
+            .ToListAsync();
         page.Reverse(); // chronological order, matching the non-paginated response this replaces
 
         return Ok(new
@@ -341,7 +341,21 @@ public class ChatController : ControllerBase
             session.Id,
             session.Mode,
             session.Title,
-            Messages = page.Select(m => new { m.Id, m.Role, m.Content, m.CreatedAt, m.AudioFileName }),
+            Messages = page.Select(m => new
+            {
+                m.Id,
+                m.Role,
+                m.Content,
+                m.CreatedAt,
+                m.AudioFileName,
+                Attachments = m.Attachments.Select(attachment => new
+                {
+                    id = attachment.VisualAssetId,
+                    kind = attachment.Kind,
+                    mimeType = attachment.VisualAsset.MimeType,
+                    sizeBytes = attachment.VisualAsset.SizeBytes,
+                })
+            }),
             HasMore = page.Count == limit
         });
     }
@@ -465,8 +479,38 @@ public class ChatController : ControllerBase
             return;
         }
 
+        VisualAsset? visualAsset = null;
+        byte[]? visualContent = null;
+        if (req.VisualAssetId is { } visualAssetId)
+        {
+            visualAsset = await _db.VisualAssets
+                .FirstOrDefaultAsync(asset => asset.Id == visualAssetId && asset.UserId == userId, HttpContext.RequestAborted);
+            if (visualAsset is null)
+            {
+                Response.StatusCode = 400;
+                await Response.WriteAsJsonAsync(new { error = "Изображение недоступно. Выберите его еще раз." });
+                return;
+            }
+
+            visualContent = await _visualAssets.ReadAsync(visualAsset.StorageFileName, HttpContext.RequestAborted);
+            if (visualContent is null || !ImageContentInspector.IsVisualCaptureMimeType(visualAsset.MimeType))
+            {
+                Response.StatusCode = 400;
+                await Response.WriteAsJsonAsync(new { error = "Не удалось прочитать прикрепленное изображение." });
+                return;
+            }
+        }
+
         // Save user message
         var userMessage = new Message { Role = "user", Content = messageText, AudioFileName = validatedAudioFileName };
+        if (visualAsset is not null)
+        {
+            userMessage.Attachments.Add(new MessageAttachment
+            {
+                VisualAssetId = visualAsset.Id,
+                Kind = "image",
+            });
+        }
         session.Messages.Add(userMessage);
         await _db.SaveChangesAsync();
 
@@ -536,10 +580,17 @@ public class ChatController : ControllerBase
         }
         windowed.Reverse(); // back to chronological order for the API
 
-        var messages = windowed.Select(m => new GeminiMessage(
-            m.Role == "user" ? "user" : "assistant",
-            m.Content
-        )).ToList();
+        var messages = windowed.Select(m =>
+        {
+            var role = m.Role == "user" ? "user" : "assistant";
+            return m.Id == userMessage.Id && visualAsset is not null && visualContent is not null
+                ? new GeminiMessage(role,
+                [
+                    new GeminiPart(Text: m.Content),
+                    new GeminiPart(MimeType: visualAsset.MimeType, Data: visualContent),
+                ])
+                : new GeminiMessage(role, m.Content);
+        }).ToList();
 
         var systemPrompt = _tutor.GetSystemPrompt(
             settings?.CustomSystemPrompt,
@@ -547,6 +598,14 @@ public class ChatController : ControllerBase
             settings?.AssistantName,
             session.MediumTermSummary,
             recalledFacts);
+
+        if (visualAsset is not null)
+        {
+            systemPrompt = "Пользователь приложил изображение к текущей реплике. Отвечай на его конкретную просьбу с учетом изображения. " +
+                           "Если чего-то не видно, честно скажи об этом и задай один короткий уточняющий вопрос. " +
+                           "Не распознавай личность по лицу и не выдавай медицинские, юридические или финансовые выводы за достоверные.\n\n" +
+                           systemPrompt;
+        }
 
         if (reminderInterpretation.State == ReminderInterpretationState.NeedsClarification)
         {

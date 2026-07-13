@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { api, type ChatMessage } from '../api/client';
+import { ChatAttachmentThumbnail } from '../components/ChatAttachmentThumbnail';
 
 interface ChatHistoryScreenProps {
   sessionId: number;
@@ -84,6 +85,9 @@ export function ChatHistoryScreen({ sessionId, onDone }: ChatHistoryScreenProps)
             return (
               <View style={[styles.bubble, !isUser && styles.bubbleReply]}>
                 <Text style={styles.bubbleLabel}>{isUser ? 'Вы' : assistantName ?? 'Ассистент'}</Text>
+                {message.attachments?.map((attachment) => (
+                  <ChatAttachmentThumbnail key={attachment.id} attachment={attachment} />
+                ))}
                 <Text style={styles.bubbleText}>{message.content}</Text>
               </View>
             );
