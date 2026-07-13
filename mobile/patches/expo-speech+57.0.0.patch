@@ -1,7 +1,11 @@
 diff --git a/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt b/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
+index 9ca869c..534db09 100644
 --- a/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
 +++ b/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
-@@ -41,2 +41,10 @@ class SpeechModule : Module() {
+@@ -36,8 +36,16 @@ class SpeechModule : Module() {
+       TextToSpeech.getMaxSpeechInputLength()
+     }
+ 
 -    OnActivityDestroys {
 -      textToSpeech.shutdown()
 +    // The React module can outlive a replaced/destroyed Activity (for
@@ -15,3 +19,5 @@ diff --git a/node_modules/expo-speech/android/src/main/java/expo/modules/speech/
 +      _textToSpeech = null
 +      _ttsReady = false
      }
+ 
+     AsyncFunction<Boolean>("isSpeaking") {
