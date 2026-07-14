@@ -120,14 +120,16 @@ export const VassOverlay = {
   },
 
   async getSharedImage(): Promise<SharedImageResult> {
-    if (!nativeModule) {
+    if (!nativeModule || typeof nativeModule.getSharedImage !== 'function') {
       return { requestId: null, status: null, uri: null, mimeType: null, originalName: null, error: null };
     }
     return nativeModule.getSharedImage();
   },
 
   async acknowledgeSharedImage(requestId: string): Promise<void> {
-    await nativeModule?.acknowledgeSharedImage(requestId);
+    if (typeof nativeModule?.acknowledgeSharedImage === 'function') {
+      await nativeModule.acknowledgeSharedImage(requestId);
+    }
   },
 
   async start(snapshot: OverlaySnapshot, appVisible = true): Promise<void> {

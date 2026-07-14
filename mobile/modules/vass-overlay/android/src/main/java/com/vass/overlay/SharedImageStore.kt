@@ -85,7 +85,8 @@ internal object SharedImageStore {
 
   @Suppress("DEPRECATION")
   private fun extractUri(intent: Intent): Uri? =
-    intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+    (intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri)
+      ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
 
   private fun displayName(resolver: ContentResolver, uri: Uri): String? {
     var cursor: Cursor? = null

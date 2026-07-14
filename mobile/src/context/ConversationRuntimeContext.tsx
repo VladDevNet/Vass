@@ -3,7 +3,7 @@ import { AppState } from 'react-native';
 import { api } from '../api/client';
 import { useVoiceChat, type VoiceState } from '../hooks/useVoiceChat';
 import { useAuth } from './AuthContext';
-import { VassOverlay, type OverlayEvent } from '../../modules/vass-overlay';
+import { VassOverlay, type OverlayEvent, type SharedImageResult } from '../../modules/vass-overlay';
 import { log } from '../logging/remoteLogger';
 import { useVisualInput } from '../hooks/useVisualInput';
 import type { PendingVisualInput, StageVisualAssetInput, VisualInputStatus, VisualSource } from '../visual/types';
@@ -71,8 +71,20 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
     if (!user || !VassOverlay.isAvailable()) return;
     let cancelled = false;
 
-    const receiveSharedImage = async () => {
-      const shared = await VassOverlay.getSharedImage();
+    const receiveSharedImage = async (sharedFromEvent?: Extract<OverlayEvent, { type: 'sharedImage' }>) => {
+      // Some Android share targets deliver the URI through the native event
+      // before JS can query SharedPreferences. Use that payload directly;
+      // the getter remains the recovery path if the app was cold-started.
+      const shared: SharedImageResult = sharedFromEvent
+        ? {
+            requestId: sharedFromEvent.requestId,
+            status: sharedFromEvent.status,
+            uri: sharedFromEvent.uri ?? null,
+            mimeType: sharedFromEvent.mimeType ?? null,
+            originalName: sharedFromEvent.originalName ?? null,
+            error: sharedFromEvent.error ?? null,
+          }
+        : await VassOverlay.getSharedImage();
       if (cancelled || !shared.requestId || !shared.status) return;
       if (sharedImageAttemptRef.current === shared.requestId) return;
       sharedImageAttemptRef.current = shared.requestId;
@@ -108,7 +120,7 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
     const removeListener = VassOverlay.addListener((event) => {
       if (event.type !== 'sharedImage') return;
       sharedImageAttemptRef.current = null;
-      void receiveSharedImage();
+      void receiveSharedImage(event);
     });
     return () => {
       cancelled = true;
