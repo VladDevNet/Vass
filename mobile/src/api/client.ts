@@ -180,6 +180,39 @@ export interface VisualAsset {
   originalFileName: string | null;
 }
 
+export interface MemoryStatus {
+  availability: 'available' | 'disabled' | 'temporarily_unavailable';
+  activeCount: number;
+  semanticSearchAvailable: boolean;
+}
+
+export interface MemoryItem {
+  id: string;
+  text: string;
+  kind: string;
+  revision: number;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  lastRecalledAt: string | null;
+  embeddingState: 'pending' | 'ready' | 'failed';
+}
+
+export interface MemorySearchResult {
+  status: 'ok' | 'not_found' | 'disabled' | 'invalid';
+  retrieval: 'hybrid' | 'lexical' | 'none';
+  items: MemoryItem[];
+}
+
+export interface MemoryOperationResult {
+  operationId: string;
+  status: string;
+  code: string;
+  memoryItemId: string | null;
+  confirmationToken?: string | null;
+  confirmationExpiresAt?: string | null;
+}
+
 // Not `extends ChatSession` — GET /chat/sessions/{id} (unlike the list
 // endpoint) doesn't return the session's own createdAt, only each
 // message's (see ChatController.cs's GetSession).
@@ -273,6 +306,40 @@ export const api = {
     request<Settings>('/settings', {
       method: 'PATCH',
       body: JSON.stringify({ avatarId } satisfies SettingsPatch),
+    }),
+
+  getMemoryStatus: (): Promise<MemoryStatus> => request<MemoryStatus>('/memory/status'),
+
+  getMemoryItems: (): Promise<MemoryItem[]> => request<MemoryItem[]>('/memory/items'),
+
+  searchMemory: (query: string): Promise<MemorySearchResult> =>
+    request<MemorySearchResult>(`/memory/search?query=${encodeURIComponent(query)}`),
+
+  remember: (text: string, operationId?: string): Promise<MemoryOperationResult> =>
+    request<MemoryOperationResult>('/memory/remember', {
+      method: 'POST',
+      body: JSON.stringify({ text, operationId }),
+    }),
+
+  correctMemory: (id: string, text: string, operationId?: string): Promise<MemoryOperationResult> =>
+    request<MemoryOperationResult>('/memory/correct', {
+      method: 'POST',
+      body: JSON.stringify({ id, text, operationId }),
+    }),
+
+  forgetMemory: (id: string, operationId?: string): Promise<MemoryOperationResult> =>
+    request<MemoryOperationResult>('/memory/forget', {
+      method: 'POST',
+      body: JSON.stringify({ id, operationId }),
+    }),
+
+  prepareMemoryClear: (): Promise<MemoryOperationResult> =>
+    request<MemoryOperationResult>('/memory/clear/prepare', { method: 'POST', body: '{}' }),
+
+  clearMemory: (operationId: string, confirmationToken: string): Promise<MemoryOperationResult> =>
+    request<MemoryOperationResult>('/memory/clear', {
+      method: 'POST',
+      body: JSON.stringify({ operationId, confirmationToken }),
     }),
 
   getReminders: (deviceId: string): Promise<ReminderSyncItem[]> =>

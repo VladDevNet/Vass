@@ -48,21 +48,73 @@ public class MemoryControllerTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Fact]
-    public async Task DeleteAllFacts_RemovesOnlyCurrentUsersMemory()
+    public async Task LegacyDeleteAll_IsRejectedBecauseClearNeedsConfirmation()
     {
         var first = await RegisterClientAsync("memory-clear-first");
-        var second = await RegisterClientAsync("memory-clear-second");
         await SeedFactAsync(first.Email, "Факт первого пользователя");
         await SeedFactAsync(first.Email, "Ещё один факт первого пользователя");
-        await SeedFactAsync(second.Email, "Факт второго пользователя");
 
         var response = await first.Client.DeleteAsync("/api/v1/memory/facts");
 
-        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
-        Assert.Empty((await first.Client.GetFromJsonAsync<List<MemoryController.MemoryFactResponse>>(
-            "/api/v1/memory/facts"))!);
-        Assert.Single((await second.Client.GetFromJsonAsync<List<MemoryController.MemoryFactResponse>>(
-            "/api/v1/memory/facts"))!);
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal(2, (await first.Client.GetFromJsonAsync<List<MemoryController.MemoryFactResponse>>(
+            "/api/v1/memory/facts"))!.Count);
+    }
+
+    [Fact]
+    public async Task VerifiedRemember_IsIdempotent_AndMemoryItemsStayPrivate()
+    {
+        var first = await RegisterClientAsync("verified-memory-first");
+        var second = await RegisterClientAsync("verified-memory-second");
+        var operationId = Guid.NewGuid();
+
+        var firstWrite = await first.Client.PostAsJsonAsync("/api/v1/memory/remember",
+            new MemoryController.RememberRequest("Влад предпочитает зеленый чай", operationId));
+        firstWrite.EnsureSuccessStatusCode();
+        var receipt = await firstWrite.Content.ReadFromJsonAsync<MemoryOperationResult>();
+        Assert.NotNull(receipt);
+        Assert.Equal("remembered", receipt!.Code);
+        Assert.NotNull(receipt.MemoryItemId);
+
+        var retry = await first.Client.PostAsJsonAsync("/api/v1/memory/remember",
+            new MemoryController.RememberRequest("Влад предпочитает зеленый чай", operationId));
+        var retryReceipt = await retry.Content.ReadFromJsonAsync<MemoryOperationResult>();
+        Assert.Equal("remembered", retryReceipt!.Code);
+
+        var firstItems = await first.Client.GetFromJsonAsync<List<MemoryItemResponse>>("/api/v1/memory/items");
+        var item = Assert.Single(firstItems!);
+        Assert.Equal("Влад предпочитает зеленый чай", item.Text);
+
+        var foreignForget = await second.Client.PostAsJsonAsync("/api/v1/memory/forget",
+            new MemoryController.ForgetRequest(item.Id, Guid.NewGuid()));
+        var foreignReceipt = await foreignForget.Content.ReadFromJsonAsync<MemoryOperationResult>();
+        Assert.Equal("not_found", foreignReceipt!.Code);
+        Assert.Single((await first.Client.GetFromJsonAsync<List<MemoryItemResponse>>("/api/v1/memory/items"))!);
+    }
+
+    [Fact]
+    public async Task ClearRequiresBoundConfirmationToken()
+    {
+        var user = await RegisterClientAsync("verified-memory-clear");
+        await user.Client.PostAsJsonAsync("/api/v1/memory/remember",
+            new MemoryController.RememberRequest("Пользователь любит прогулки", Guid.NewGuid()));
+
+        var prepare = await user.Client.PostAsJsonAsync("/api/v1/memory/clear/prepare",
+            new MemoryController.PrepareClearRequest(Guid.NewGuid()));
+        var prepared = await prepare.Content.ReadFromJsonAsync<MemoryOperationResult>();
+        Assert.NotNull(prepared?.ConfirmationToken);
+
+        var rejected = await user.Client.PostAsJsonAsync("/api/v1/memory/clear",
+            new MemoryController.ClearRequest(prepared!.OperationId, "wrong-token"));
+        var rejectedReceipt = await rejected.Content.ReadFromJsonAsync<MemoryOperationResult>();
+        Assert.Equal("confirmation_invalid", rejectedReceipt!.Code);
+        Assert.Single((await user.Client.GetFromJsonAsync<List<MemoryItemResponse>>("/api/v1/memory/items"))!);
+
+        var clear = await user.Client.PostAsJsonAsync("/api/v1/memory/clear",
+            new MemoryController.ClearRequest(prepared.OperationId, prepared.ConfirmationToken!));
+        var clearReceipt = await clear.Content.ReadFromJsonAsync<MemoryOperationResult>();
+        Assert.Equal("cleared", clearReceipt!.Code);
+        Assert.Empty((await user.Client.GetFromJsonAsync<List<MemoryItemResponse>>("/api/v1/memory/items"))!);
     }
 
     private async Task<(HttpClient Client, string Email)> RegisterClientAsync(string prefix)

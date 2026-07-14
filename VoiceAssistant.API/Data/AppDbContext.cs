@@ -23,6 +23,8 @@ public class AppDbContext : IdentityDbContext<User>
     public DbSet<DeviceLinkCode> DeviceLinkCodes => Set<DeviceLinkCode>();
     public DbSet<ClientLogEntry> ClientLogEntries => Set<ClientLogEntry>();
     public DbSet<MemoryFact> MemoryFacts => Set<MemoryFact>();
+    public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
+    public DbSet<MemoryOperation> MemoryOperations => Set<MemoryOperation>();
     public DbSet<Reminder> Reminders => Set<Reminder>();
     public DbSet<ReminderDelivery> ReminderDeliveries => Set<ReminderDelivery>();
     public DbSet<VisualAsset> VisualAssets => Set<VisualAsset>();
@@ -58,6 +60,7 @@ public class AppDbContext : IdentityDbContext<User>
             e.HasOne(m => m.ChatSession).WithMany(s => s.Messages)
                 .HasForeignKey(m => m.ChatSessionId).OnDelete(DeleteBehavior.Cascade);
             e.Property(m => m.Role).HasMaxLength(10);
+            e.Property(m => m.CapabilitySnapshotJson).HasMaxLength(4000);
         });
 
         builder.Entity<VisualAsset>(e =>
@@ -155,6 +158,47 @@ public class AppDbContext : IdentityDbContext<User>
                     value => VectorToBytes(value),
                     value => BytesToVector(value)));
             }
+        });
+
+        builder.Entity<MemoryItem>(e =>
+        {
+            e.HasOne(m => m.User).WithMany()
+                .HasForeignKey(m => m.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(m => m.Kind).HasMaxLength(40);
+            e.Property(m => m.Text).HasMaxLength(1000);
+            e.Property(m => m.ContentHash).HasMaxLength(64);
+            e.Property(m => m.Status).HasMaxLength(20);
+            e.Property(m => m.EmbeddingModel).HasMaxLength(50);
+            e.Property(m => m.EmbeddingState).HasMaxLength(20);
+            e.HasIndex(m => new { m.UserId, m.ContentHash }).IsUnique();
+            e.HasIndex(m => new { m.UserId, m.Status, m.UpdatedAt });
+            e.HasIndex(m => m.LegacyMemoryFactId).IsUnique();
+
+            if (Database.IsNpgsql())
+            {
+                e.Property(m => m.Embedding).HasColumnType("vector(768)");
+                e.HasIndex(m => m.Embedding)
+                    .HasMethod("hnsw")
+                    .HasOperators("vector_cosine_ops");
+            }
+            else
+            {
+                e.Property(m => m.Embedding).HasConversion(new ValueConverter<Vector?, byte[]?>(
+                    value => value == null ? null : VectorToBytes(value),
+                    value => value == null ? null : BytesToVector(value)));
+            }
+        });
+
+        builder.Entity<MemoryOperation>(e =>
+        {
+            e.HasOne(o => o.User).WithMany()
+                .HasForeignKey(o => o.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(o => o.Operation).HasMaxLength(30);
+            e.Property(o => o.ArgumentsHash).HasMaxLength(64);
+            e.Property(o => o.Status).HasMaxLength(30);
+            e.Property(o => o.ResultCode).HasMaxLength(40);
+            e.Property(o => o.ConfirmationTokenHash).HasMaxLength(64);
+            e.HasIndex(o => new { o.UserId, o.CreatedAt });
         });
 
         builder.Entity<Reminder>(e =>

@@ -17,17 +17,20 @@ public class LongTermMemoryService
 
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
     private readonly GeminiService _gemini;
+    private readonly MemoryItemService _memoryItems;
     private readonly ILogger<LongTermMemoryService> _logger;
     private readonly bool _enabled;
 
     public LongTermMemoryService(
         IDbContextFactory<AppDbContext> dbFactory,
         GeminiService gemini,
+        MemoryItemService memoryItems,
         IConfiguration configuration,
         ILogger<LongTermMemoryService> logger)
     {
         _dbFactory = dbFactory;
         _gemini = gemini;
+        _memoryItems = memoryItems;
         _logger = logger;
         _enabled = configuration.GetValue("Features:LongTermMemoryEnabled", true);
     }
@@ -45,9 +48,10 @@ public class LongTermMemoryService
 
         try
         {
-            var hasMemories = await db.MemoryFacts.AnyAsync(memory =>
+            var hasMemories = await db.MemoryItems.AnyAsync(memory =>
                 memory.UserId == userId &&
-                memory.IsActive &&
+                memory.Status == "active" &&
+                memory.EmbeddingState == "ready" &&
                 memory.EmbeddingModel == GeminiService.EmbeddingModel,
                 cancellationToken);
             if (!hasMemories) return [];
@@ -55,14 +59,15 @@ public class LongTermMemoryService
             var queryText = $"task: search result | query: {userMessage.Trim()}";
             var queryVector = new Vector(await _gemini.GenerateEmbeddingAsync(queryText, geminiApiKey, cancellationToken));
 
-            var matches = await db.MemoryFacts
+            var matches = await db.MemoryItems
                 .Where(memory => memory.UserId == userId &&
-                                 memory.IsActive &&
+                                 memory.Status == "active" &&
+                                 memory.EmbeddingState == "ready" &&
                                  memory.EmbeddingModel == GeminiService.EmbeddingModel)
                 .Select(memory => new
                 {
                     Memory = memory,
-                    Distance = memory.Embedding.CosineDistance(queryVector)
+                    Distance = memory.Embedding!.CosineDistance(queryVector)
                 })
                 .Where(match => match.Distance <= MaxCosineDistance)
                 .OrderBy(match => match.Distance)
@@ -80,7 +85,7 @@ public class LongTermMemoryService
             }
             await db.SaveChangesAsync(cancellationToken);
 
-            return matches.Select(match => match.Memory.Fact).ToList();
+            return matches.Select(match => match.Memory.Text).ToList();
         }
         catch (OperationCanceledException)
         {
@@ -140,31 +145,10 @@ public class LongTermMemoryService
             var facts = ParseFacts(response.ToString());
             if (facts.Count == 0) return;
 
-            await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
-            var storedCount = 0;
             foreach (var fact in facts)
-            {
-                var hash = ComputeContentHash(fact);
-                if (await db.MemoryFacts.AnyAsync(m => m.UserId == userId && m.ContentHash == hash, cancellationToken))
-                    continue;
-
-                var documentText = $"title: personal memory | text: {fact}";
-                var embedding = await _gemini.GenerateEmbeddingAsync(documentText, geminiApiKey, cancellationToken);
-                db.MemoryFacts.Add(new MemoryFact
-                {
-                    UserId = userId,
-                    Fact = fact,
-                    ContentHash = hash,
-                    Embedding = new Vector(embedding),
-                    EmbeddingModel = GeminiService.EmbeddingModel,
-                    SourceMessageId = sourceMessageId
-                });
-                storedCount++;
-            }
-
-            await db.SaveChangesAsync(cancellationToken);
-            if (storedCount > 0)
-                _logger.LogInformation("Stored {Count} long-term memory facts for user {UserId}", storedCount, userId);
+                await _memoryItems.StorePassiveAsync(userId, sourceMessageId, fact, cancellationToken);
+            if (facts.Count > 0)
+                _logger.LogInformation("Processed {Count} extracted long-term memory facts for user {UserId}", facts.Count, userId);
         }
         catch (OperationCanceledException)
         {

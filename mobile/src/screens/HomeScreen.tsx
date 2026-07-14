@@ -16,6 +16,7 @@ import { VoiceControlDock } from '../components/VoiceControlDock';
 import { amoled } from '../theme/amoled';
 import { ProfileScreen } from './ProfileScreen';
 import { ChatHistoryScreen } from './ChatHistoryScreen';
+import { MemoryScreen } from './MemoryScreen';
 import { VisualInputButton } from '../components/VisualInputButton';
 import { VisualSourceSheet } from '../components/VisualSourceSheet';
 import { PendingVisualPreview } from '../components/PendingVisualPreview';
@@ -52,6 +53,7 @@ export function HomeScreen() {
   const displayAvatarId: AvatarId = avatarId === 'male' ? 'male' : 'olga';
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
   const [showVisualSources, setShowVisualSources] = useState(false);
   // Ошибка загрузки любого слоя LayeredAvatar — падаем на AvatarFace
   // на остаток сессии, без retry-петли. См. spec, «Обработка ошибок».
@@ -86,7 +88,11 @@ export function HomeScreen() {
   useGreeting(micArmed && state === 'idle' && !!sessionId);
 
   if (showSettings) {
-    return <ProfileScreen mode="settings" onDone={() => setShowSettings(false)} />;
+    return <ProfileScreen mode="settings" onDone={() => setShowSettings(false)} onOpenMemory={() => { setShowSettings(false); setShowMemory(true); }} />;
+  }
+
+  if (showMemory) {
+    return <MemoryScreen onDone={() => setShowMemory(false)} />;
   }
 
   if (showHistory && sessionId) {

@@ -26,10 +26,12 @@ public class ChatController : ControllerBase
     private readonly SpeakerRegistryService _speakerRegistry;
     private readonly ConversationMemoryService _conversationMemory;
     private readonly LongTermMemoryService _longTermMemory;
+    private readonly MemoryItemService _memoryItems;
     private readonly ReminderService _reminders;
     private readonly ExternalActionService _externalActions;
     private readonly ScreenAnalysisIntentService _screenAnalysis;
     private readonly VisualAssetService _visualAssets;
+    private readonly AssistantCapabilityRegistry _capabilities;
     private readonly IConfiguration _config;
     private readonly ILogger<ChatController> _logger;
     private readonly string _audioPath;
@@ -40,10 +42,12 @@ public class ChatController : ControllerBase
         GeminiService gemini, CompanionPromptService tutor,
         AudioAnalysisService audioAnalysis, SpeakerRegistryService speakerRegistry, ConversationMemoryService conversationMemory,
         LongTermMemoryService longTermMemory,
+        MemoryItemService memoryItems,
         ReminderService reminders,
         ExternalActionService externalActions,
         ScreenAnalysisIntentService screenAnalysis,
         VisualAssetService visualAssets,
+        AssistantCapabilityRegistry capabilities,
         PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
@@ -56,10 +60,12 @@ public class ChatController : ControllerBase
         _speakerRegistry = speakerRegistry;
         _conversationMemory = conversationMemory;
         _longTermMemory = longTermMemory;
+        _memoryItems = memoryItems;
         _reminders = reminders;
         _externalActions = externalActions;
         _screenAnalysis = screenAnalysis;
         _visualAssets = visualAssets;
+        _capabilities = capabilities;
         _ttsService = ttsService;
         _config = config;
         _logger = logger;
@@ -93,6 +99,13 @@ public class ChatController : ControllerBase
     private static readonly Regex SafeAudioFileNamePattern =
         new(@"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.webm\z", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    // Transitional server-side command adapter. The model still does not
+    // receive a free-form tool call; this recognizes only a direct user
+    // request and returns a durable receipt before the model can confirm it.
+    private static readonly Regex RememberCommandPattern = new(
+        @"\A\s*(?:пожалуйста\s*,?\s*)?запомни(?:те)?\s*(?:,?\s*что\s*)?(?<text>.+?)\s*\z",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
     // Static and parameterized on audioRootPath (not reading _audioPath
     // directly) so it's testable without constructing a full ChatController.
     public static bool TryResolveSafeAudioPath(string audioRootPath, string fileName, out string filePath)
@@ -106,6 +119,19 @@ public class ChatController : ControllerBase
 
         filePath = candidate;
         return true;
+    }
+
+    private async Task<MemoryOperationResult?> TryRememberCommandAsync(
+        string userId, int sourceMessageId, string messageText, CancellationToken cancellationToken)
+    {
+        var match = RememberCommandPattern.Match(messageText);
+        if (!match.Success) return null;
+        return await _memoryItems.RememberAsync(
+            userId,
+            match.Groups["text"].Value,
+            sourceMessageId,
+            Guid.NewGuid(),
+            cancellationToken);
     }
 
     // Kept as a public compatibility seam for existing security tests and
@@ -536,8 +562,22 @@ public class ChatController : ControllerBase
             return;
         }
 
+        // Persist a content-free record of the runtime capabilities the model
+        // sees for this turn. It makes a later diagnosis reproducible without
+        // logging the prompt, user text, attachment, or provider payload.
+        var capabilityContext = new AssistantRuntimeContext(
+            visualAsset is not null,
+            req.SupportsScreenAnalysis);
+        var capabilitySnapshot = _capabilities.GetSnapshot(capabilityContext);
+
         // Save user message
-        var userMessage = new Message { Role = "user", Content = messageText, AudioFileName = validatedAudioFileName };
+        var userMessage = new Message
+        {
+            Role = "user",
+            Content = messageText,
+            AudioFileName = validatedAudioFileName,
+            CapabilitySnapshotJson = AssistantCapabilityRegistry.SerializeContentFreeSnapshot(capabilitySnapshot)
+        };
         if (visualAsset is not null)
         {
             userMessage.Attachments.Add(new MessageAttachment
@@ -571,6 +611,8 @@ public class ChatController : ControllerBase
             req.TimeZoneId,
             geminiKey,
             HttpContext.RequestAborted);
+        var explicitMemoryReceipt = await TryRememberCommandAsync(
+            userId, userMessage.Id, messageText, HttpContext.RequestAborted);
         // Check (in parallel, doesn't block the response) whether the user asked the
         // assistant to remember a persistent behavior preference ("говори медленнее",
         // "давай на ты", etc.) so future turns' system prompts reflect it. Awaited at
@@ -585,7 +627,7 @@ public class ChatController : ControllerBase
         // path. Extraction of facts from this turn starts immediately afterwards
         // on its own factory-created DbContext and runs alongside the main answer.
         var recalledFactsTask = _longTermMemory.RecallAsync(userId, messageText, geminiKey, HttpContext.RequestAborted);
-        var memoryUpdateTask = reminderInterpretation.State == ReminderInterpretationState.None
+        var memoryUpdateTask = reminderInterpretation.State == ReminderInterpretationState.None && explicitMemoryReceipt is null
             ? _longTermMemory.ExtractAndStoreAsync(
                 userId, userMessage.Id, messageText, geminiKey, HttpContext.RequestAborted)
             : Task.CompletedTask;
@@ -633,6 +675,15 @@ public class ChatController : ControllerBase
             settings?.AssistantName,
             session.MediumTermSummary,
             recalledFacts);
+
+        systemPrompt = _capabilities.BuildPromptManifest(capabilityContext) + "\n\n" + systemPrompt;
+
+        if (explicitMemoryReceipt is not null)
+        {
+            systemPrompt = explicitMemoryReceipt.Code is "remembered" or "already_known"
+                ? "Получен подтвержденный server receipt явной операции памяти. Коротко и естественно подтверди, что запись сохранена; не добавляй деталей о внутренней реализации.\n\n" + systemPrompt
+                : "Явная операция памяти не была подтверждена. Не говори, что что-либо запомнила; коротко объясни, что сохранение не состоялось.\n\n" + systemPrompt;
+        }
 
         if (visualAsset is not null)
         {

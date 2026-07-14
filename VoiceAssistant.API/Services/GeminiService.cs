@@ -251,8 +251,9 @@ public class GeminiService
                             grounding.TryGetProperty("webSearchQueries", out var queries) &&
                             queries.ValueKind == JsonValueKind.Array)
                         {
-                            var queryList = string.Join(", ", queries.EnumerateArray().Select(q => q.GetString()));
-                            _logger.LogInformation("Gemini used Google Search grounding, queries: [{Queries}]", queryList);
+                            // Search terms are user content. Retain only a
+                            // content-free operational signal in application logs.
+                            _logger.LogInformation("Gemini used Google Search grounding ({QueryCount} query/queries)", queries.GetArrayLength());
                         }
                     }
                 }

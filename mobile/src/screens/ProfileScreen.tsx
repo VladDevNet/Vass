@@ -24,6 +24,7 @@ import {
 } from '../tts/systemSpeech';
 import type { AvatarId } from '../components/LayeredAvatar';
 import { OverlaySettings } from '../components/OverlaySettings';
+import { BrainCircuit } from 'lucide-react-native';
 
 interface ProfileScreenProps {
   mode: 'onboarding' | 'settings';
@@ -32,9 +33,10 @@ interface ProfileScreenProps {
   // (settings just closes; onboarding also persists dismissal so a skip
   // doesn't re-prompt on every future launch).
   onDone: () => void;
+  onOpenMemory?: () => void;
 }
 
-export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
+export function ProfileScreen({ mode, onDone, onOpenMemory }: ProfileScreenProps) {
   const { displayName, assistantName, avatarId, refreshProfile, logout } = useAuth();
   const [name, setName] = useState(displayName ?? '');
   const [assistantNameInput, setAssistantNameInput] = useState(assistantName ?? '');
@@ -257,6 +259,13 @@ export function ProfileScreen({ mode, onDone }: ProfileScreenProps) {
         <>
           <View style={styles.divider} />
           <OverlaySettings avatarId={avatarId === 'male' ? 'male' : 'olga'} />
+          <View style={styles.divider} />
+          <Text style={styles.label}>Память</Text>
+          <Text style={styles.hint}>Просматривайте, исправляйте и удаляйте сохраненные записи.</Text>
+          <Pressable style={styles.memoryButton} onPress={onOpenMemory}>
+            <BrainCircuit size={20} color="#4a6fa5" />
+            <Text style={styles.memoryButtonText}>Открыть память</Text>
+          </Pressable>
         </>
       )}
 
@@ -494,6 +503,22 @@ const styles = StyleSheet.create({
     letterSpacing: 8,
     color: '#4a6fa5',
     marginVertical: 6,
+  },
+  memoryButton: {
+    minHeight: 52,
+    borderWidth: 1,
+    borderColor: '#4a6fa5',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  memoryButtonText: {
+    color: '#4a6fa5',
+    fontSize: 16,
+    fontWeight: '600',
   },
   logoutButton: {
     borderWidth: 1,
