@@ -22,7 +22,15 @@ export type OverlayEvent =
   | { type: 'pauseToggle'; paused: boolean }
   | { type: 'openApp' }
   | { type: 'stopRequested' }
-  | { type: 'vadTick'; timestamp: number };
+  | { type: 'vadTick'; timestamp: number }
+  | { type: 'screenCapture'; requestId: string; status: 'ready' | 'cancelled' | 'error'; uri?: string | null; error?: string | null };
+
+export interface ScreenCaptureResult {
+  requestId: string | null;
+  status: 'ready' | 'cancelled' | 'error' | null;
+  uri: string | null;
+  error: string | null;
+}
 
 interface NativeVassOverlayModule {
   canDrawOverlays(): Promise<boolean>;
@@ -31,6 +39,9 @@ interface NativeVassOverlayModule {
   openAppDetails(): Promise<void>;
   openApp(): Promise<void>;
   openExternalUrl(url: string): Promise<void>;
+  requestScreenCapture(requestId: string): Promise<void>;
+  getScreenCaptureResult(): Promise<ScreenCaptureResult>;
+  clearScreenCaptureResult(requestId: string): Promise<void>;
   start(snapshot: OverlaySnapshot, appVisible: boolean): Promise<void>;
   update(snapshot: OverlaySnapshot): void;
   setAppVisible(visible: boolean): void;
@@ -80,6 +91,20 @@ export const VassOverlay = {
   async openExternalUrl(url: string): Promise<void> {
     if (!nativeModule) throw new Error('Android external actions are unavailable in this build');
     await nativeModule.openExternalUrl(url);
+  },
+
+  async requestScreenCapture(requestId: string): Promise<void> {
+    if (!nativeModule) throw new Error('Разбор экрана недоступен в этой сборке');
+    await nativeModule.requestScreenCapture(requestId);
+  },
+
+  async getScreenCaptureResult(): Promise<ScreenCaptureResult> {
+    if (!nativeModule) return { requestId: null, status: null, uri: null, error: null };
+    return nativeModule.getScreenCaptureResult();
+  },
+
+  async clearScreenCaptureResult(requestId: string): Promise<void> {
+    await nativeModule?.clearScreenCaptureResult(requestId);
   },
 
   async start(snapshot: OverlaySnapshot, appVisible = true): Promise<void> {

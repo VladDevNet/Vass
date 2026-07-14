@@ -28,6 +28,7 @@ class VassOverlayService : Service() {
   private var avatarId = "olga"
   private var appVisible = true
   private var enabled = false
+  private var captureInProgress = false
   private val vadHandler = Handler(Looper.getMainLooper())
   private var vadTickerRunning = false
   private val vadTicker = object : Runnable {
@@ -56,6 +57,14 @@ class VassOverlayService : Service() {
       }
       OverlayContract.ACTION_PAUSE -> requestPauseToggle()
       OverlayContract.ACTION_SUSPEND_EXTERNAL_MEDIA -> suspendForExternalMedia()
+      OverlayContract.ACTION_CAPTURE_STARTED -> {
+        captureInProgress = true
+        syncOverlayVisibility()
+      }
+      OverlayContract.ACTION_CAPTURE_FINISHED -> {
+        captureInProgress = false
+        syncOverlayVisibility()
+      }
       OverlayContract.ACTION_STOP -> stopFromUser(notifyRuntime = true)
       OverlayContract.ACTION_STOP_FROM_APP -> stopFromUser(notifyRuntime = false)
       else -> if (!enabled) stopSelf()
@@ -133,7 +142,7 @@ class VassOverlayService : Service() {
   }
 
   private fun syncOverlayVisibility() {
-    val shouldShow = enabled && !appVisible && Settings.canDrawOverlays(this)
+    val shouldShow = enabled && !appVisible && !captureInProgress && Settings.canDrawOverlays(this)
     if (shouldShow) showOverlay() else removeOverlay()
     setVadTickerRunning(shouldShow)
   }

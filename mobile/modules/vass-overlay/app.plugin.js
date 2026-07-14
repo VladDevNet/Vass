@@ -3,6 +3,8 @@ const path = require('path');
 const { AndroidConfig, withAndroidManifest, withDangerousMod } = require('expo/config-plugins');
 
 const SERVICE_NAME = 'com.vass.overlay.VassOverlayService';
+const SCREEN_CAPTURE_SERVICE = 'com.vass.overlay.VassMediaProjectionService';
+const SCREEN_CAPTURE_ACTIVITY = 'com.vass.overlay.ScreenCapturePermissionActivity';
 const SPECIAL_USE_PROPERTY = 'android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE';
 
 function addPermission(manifest, name) {
@@ -19,6 +21,7 @@ function withOverlayManifest(config) {
     addPermission(manifest, 'android.permission.SYSTEM_ALERT_WINDOW');
     addPermission(manifest, 'android.permission.FOREGROUND_SERVICE');
     addPermission(manifest, 'android.permission.FOREGROUND_SERVICE_SPECIAL_USE');
+    addPermission(manifest, 'android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION');
 
     const application = manifest.application?.[0];
     if (!application) throw new Error('AndroidManifest is missing the application element');
@@ -42,6 +45,27 @@ function withOverlayManifest(config) {
       },
     ];
     if (!existing) application.service.push(service);
+
+    const captureService = application.service.find((item) => item.$?.['android:name'] === SCREEN_CAPTURE_SERVICE) ?? { $: {} };
+    captureService.$ = {
+      ...captureService.$,
+      'android:name': SCREEN_CAPTURE_SERVICE,
+      'android:exported': 'false',
+      'android:foregroundServiceType': 'mediaProjection',
+      'android:stopWithTask': 'false',
+    };
+    if (!application.service.includes(captureService)) application.service.push(captureService);
+
+    application.activity = application.activity ?? [];
+    const captureActivity = application.activity.find((item) => item.$?.['android:name'] === SCREEN_CAPTURE_ACTIVITY) ?? { $: {} };
+    captureActivity.$ = {
+      ...captureActivity.$,
+      'android:name': SCREEN_CAPTURE_ACTIVITY,
+      'android:exported': 'false',
+      'android:excludeFromRecents': 'true',
+      'android:theme': '@style/AppTheme',
+    };
+    if (!application.activity.includes(captureActivity)) application.activity.push(captureActivity);
     return mod;
   });
 }

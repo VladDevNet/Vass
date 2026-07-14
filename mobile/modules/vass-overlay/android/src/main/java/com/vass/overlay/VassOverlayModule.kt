@@ -94,6 +94,29 @@ class VassOverlayModule : Module() {
       null
     }
 
+    AsyncFunction("requestScreenCapture") { requestId: String ->
+      val context = requireContext()
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+        throw IllegalStateException("Screen analysis requires Android 8 or newer")
+      }
+      sendServiceCommand(Intent(context, VassOverlayService::class.java).setAction(OverlayContract.ACTION_CAPTURE_STARTED))
+      context.startActivity(
+        Intent(context, ScreenCapturePermissionActivity::class.java)
+          .putExtra(OverlayContract.EXTRA_CAPTURE_REQUEST_ID, requestId)
+          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+      )
+      null
+    }
+
+    AsyncFunction("getScreenCaptureResult") {
+      ScreenCaptureStore.read(requireContext())
+    }
+
+    AsyncFunction("clearScreenCaptureResult") { requestId: String ->
+      ScreenCaptureStore.clear(requireContext(), requestId)
+      null
+    }
+
     AsyncFunction("start") { snapshot: Map<String, Any?>, appVisible: Boolean ->
       val context = requireContext()
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {

@@ -10,6 +10,12 @@ internal object OverlayContract {
   const val ACTION_SUSPEND_EXTERNAL_MEDIA = "com.vass.overlay.action.SUSPEND_EXTERNAL_MEDIA"
   const val ACTION_STOP = "com.vass.overlay.action.STOP"
   const val ACTION_STOP_FROM_APP = "com.vass.overlay.action.STOP_FROM_APP"
+  const val ACTION_CAPTURE_STARTED = "com.vass.overlay.action.CAPTURE_STARTED"
+  const val ACTION_CAPTURE_FINISHED = "com.vass.overlay.action.CAPTURE_FINISHED"
+
+  const val EXTRA_CAPTURE_REQUEST_ID = "captureRequestId"
+  const val EXTRA_CAPTURE_RESULT_CODE = "captureResultCode"
+  const val EXTRA_CAPTURE_RESULT_DATA = "captureResultData"
 
   const val EXTRA_STATE = "state"
   const val EXTRA_AVATAR_ID = "avatarId"
