@@ -33,7 +33,7 @@ interface ConversationRuntimeValue {
 const ConversationRuntimeContext = createContext<ConversationRuntimeValue | null>(null);
 
 export function ConversationRuntimeProvider({ children }: { children: ReactNode }) {
-  const { avatarId } = useAuth();
+  const { avatarId, user } = useAuth();
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const visual = useVisualInput();
@@ -47,6 +47,7 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
   const resumeRequestedRef = useRef(false);
   const pausedForBackgroundRef = useRef(false);
   const restoredOverlayAudioRef = useRef(false);
+  const sharedImageAttemptRef = useRef<string | null>(null);
 
   stateRef.current = runtime.state;
   actionsRef.current = runtime;
@@ -65,6 +66,57 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!user || !VassOverlay.isAvailable()) return;
+    let cancelled = false;
+
+    const receiveSharedImage = async () => {
+      const shared = await VassOverlay.getSharedImage();
+      if (cancelled || !shared.requestId || !shared.status) return;
+      if (sharedImageAttemptRef.current === shared.requestId) return;
+      sharedImageAttemptRef.current = shared.requestId;
+
+      if (shared.status === 'error' || !shared.uri || !shared.mimeType) {
+        visual.reportVisualError(
+          shared.error === 'unsupported_image_type'
+            ? 'Через Share можно отправить JPEG, PNG или WebP изображение.'
+            : 'Не удалось получить изображение. Размер файла не должен превышать 10 МБ.',
+        );
+        await VassOverlay.acknowledgeSharedImage(shared.requestId);
+        return;
+      }
+
+      const staged = await visual.stageVisualAsset({
+        uri: shared.uri,
+        mimeType: shared.mimeType,
+        originalName: shared.originalName,
+      });
+      if (cancelled) return;
+      if (!staged) {
+        sharedImageAttemptRef.current = null;
+        return;
+      }
+      await VassOverlay.acknowledgeSharedImage(shared.requestId);
+      log('info', 'visual', 'shared image staged for next voice turn', { mimeType: shared.mimeType });
+    };
+
+    void receiveSharedImage().catch((err) => {
+      sharedImageAttemptRef.current = null;
+      log('error', 'visual', 'failed to receive shared image', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    const removeListener = VassOverlay.addListener((event) => {
+      if (event.type !== 'sharedImage') return;
+      sharedImageAttemptRef.current = null;
+      void receiveSharedImage();
+    });
+    return () => {
+      cancelled = true;
+      removeListener();
+    };
+  }, [user?.id, visual.reportVisualError, visual.stageVisualAsset]);
 
   const requestResume = useCallback(() => {
     if (AppState.currentState === 'active') {

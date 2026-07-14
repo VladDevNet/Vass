@@ -23,12 +23,22 @@ export type OverlayEvent =
   | { type: 'openApp' }
   | { type: 'stopRequested' }
   | { type: 'vadTick'; timestamp: number }
-  | { type: 'screenCapture'; requestId: string; status: 'ready' | 'cancelled' | 'error'; uri?: string | null; error?: string | null };
+  | { type: 'screenCapture'; requestId: string; status: 'ready' | 'cancelled' | 'error'; uri?: string | null; error?: string | null }
+  | { type: 'sharedImage'; requestId: string; status: 'ready' | 'error'; uri?: string | null; mimeType?: string | null; originalName?: string | null; error?: string | null };
 
 export interface ScreenCaptureResult {
   requestId: string | null;
   status: 'ready' | 'cancelled' | 'error' | null;
   uri: string | null;
+  error: string | null;
+}
+
+export interface SharedImageResult {
+  requestId: string | null;
+  status: 'ready' | 'error' | null;
+  uri: string | null;
+  mimeType: string | null;
+  originalName: string | null;
   error: string | null;
 }
 
@@ -42,6 +52,8 @@ interface NativeVassOverlayModule {
   requestScreenCapture(requestId: string): Promise<void>;
   getScreenCaptureResult(): Promise<ScreenCaptureResult>;
   clearScreenCaptureResult(requestId: string): Promise<void>;
+  getSharedImage(): Promise<SharedImageResult>;
+  acknowledgeSharedImage(requestId: string): Promise<void>;
   start(snapshot: OverlaySnapshot, appVisible: boolean): Promise<void>;
   update(snapshot: OverlaySnapshot): void;
   setAppVisible(visible: boolean): void;
@@ -105,6 +117,17 @@ export const VassOverlay = {
 
   async clearScreenCaptureResult(requestId: string): Promise<void> {
     await nativeModule?.clearScreenCaptureResult(requestId);
+  },
+
+  async getSharedImage(): Promise<SharedImageResult> {
+    if (!nativeModule) {
+      return { requestId: null, status: null, uri: null, mimeType: null, originalName: null, error: null };
+    }
+    return nativeModule.getSharedImage();
+  },
+
+  async acknowledgeSharedImage(requestId: string): Promise<void> {
+    await nativeModule?.acknowledgeSharedImage(requestId);
   },
 
   async start(snapshot: OverlaySnapshot, appVisible = true): Promise<void> {

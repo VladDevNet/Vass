@@ -57,6 +57,24 @@ function withOverlayManifest(config) {
     if (!application.service.includes(captureService)) application.service.push(captureService);
 
     application.activity = application.activity ?? [];
+    const mainActivity = application.activity.find((item) => {
+      const name = item.$?.['android:name'];
+      return name === '.MainActivity' || name?.endsWith('.MainActivity');
+    });
+    if (!mainActivity) throw new Error('AndroidManifest is missing MainActivity');
+    mainActivity['intent-filter'] = mainActivity['intent-filter'] ?? [];
+    const hasImageShareFilter = mainActivity['intent-filter'].some((filter) =>
+      filter.action?.some((action) => action.$?.['android:name'] === 'android.intent.action.SEND') &&
+      filter.data?.some((data) => data.$?.['android:mimeType'] === 'image/*')
+    );
+    if (!hasImageShareFilter) {
+      mainActivity['intent-filter'].push({
+        action: [{ $: { 'android:name': 'android.intent.action.SEND' } }],
+        category: [{ $: { 'android:name': 'android.intent.category.DEFAULT' } }],
+        data: [{ $: { 'android:mimeType': 'image/*' } }],
+      });
+    }
+
     const captureActivity = application.activity.find((item) => item.$?.['android:name'] === SCREEN_CAPTURE_ACTIVITY) ?? { $: {} };
     captureActivity.$ = {
       ...captureActivity.$,

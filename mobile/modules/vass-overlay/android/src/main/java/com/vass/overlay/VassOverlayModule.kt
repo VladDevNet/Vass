@@ -23,6 +23,18 @@ class VassOverlayModule : Module() {
       OverlayEventBridge.listener = null
     }
 
+    OnCreate {
+      captureSharedImage(appContext.currentActivity?.intent)
+    }
+
+    OnActivityEntersForeground {
+      captureSharedImage(appContext.currentActivity?.intent)
+    }
+
+    OnNewIntent { intent ->
+      captureSharedImage(intent)
+    }
+
     AsyncFunction("canDrawOverlays") {
       val context = requireContext()
       Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && Settings.canDrawOverlays(context)
@@ -117,6 +129,15 @@ class VassOverlayModule : Module() {
       null
     }
 
+    AsyncFunction("getSharedImage") {
+      SharedImageStore.read(requireContext())
+    }
+
+    AsyncFunction("acknowledgeSharedImage") { requestId: String ->
+      SharedImageStore.acknowledge(requireContext(), requestId)
+      null
+    }
+
     AsyncFunction("start") { snapshot: Map<String, Any?>, appVisible: Boolean ->
       val context = requireContext()
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
@@ -173,5 +194,16 @@ class VassOverlayModule : Module() {
   private fun sendServiceCommand(intent: Intent) {
     if (!VassOverlayService.isRunning) return
     requireContext().startService(intent)
+  }
+
+  private fun captureSharedImage(intent: Intent?) {
+    if (intent?.action != Intent.ACTION_SEND || intent.getBooleanExtra(EXTRA_SHARE_HANDLED, false)) return
+    val context = appContext.reactContext?.applicationContext ?: return
+    intent.putExtra(EXTRA_SHARE_HANDLED, true)
+    Thread { SharedImageStore.capture(context, intent) }.start()
+  }
+
+  private companion object {
+    const val EXTRA_SHARE_HANDLED = "com.vass.overlay.SHARE_HANDLED"
   }
 }

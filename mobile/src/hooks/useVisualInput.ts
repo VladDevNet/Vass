@@ -43,6 +43,13 @@ export function useVisualInput() {
     setError(null);
   }, []);
 
+  const reportVisualError = useCallback((message: string) => {
+    operationRef.current += 1;
+    setStatus(pendingRef.current ? 'ready' : 'error');
+    setUploadingUri(null);
+    setError(message);
+  }, []);
+
   const stageVisualAsset = useCallback(async ({ uri, mimeType: reportedMimeType, originalName }: StageVisualAssetInput): Promise<PendingVisualInput | null> => {
     const mimeType = resolveMimeType(uri, reportedMimeType);
     if (!mimeType) {
@@ -183,6 +190,7 @@ export function useVisualInput() {
     uploadingUri,
     getPendingVisual,
     consumePendingVisual,
+    reportVisualError,
     stageVisualAsset,
     pickVisual,
     removePendingVisual,
