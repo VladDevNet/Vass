@@ -77,7 +77,9 @@ function withOverlayManifest(config) {
       'android:exported': 'true',
       'android:excludeFromRecents': 'true',
       'android:noHistory': 'true',
-      'android:theme': '@android:style/Theme.NoDisplay',
+      // Theme.NoDisplay requires finish() before onResume(), but this
+      // activity must remain alive while it copies a shared stream.
+      'android:theme': '@android:style/Theme.Translucent.NoTitleBar',
     };
     shareActivity['intent-filter'] = [{
       action: [{ $: { 'android:name': 'android.intent.action.SEND' } }],
