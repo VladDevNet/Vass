@@ -358,6 +358,7 @@ public class ChatController : ControllerBase
                     kind = attachment.Kind,
                     mimeType = attachment.VisualAsset.MimeType,
                     sizeBytes = attachment.VisualAsset.SizeBytes,
+                    originalName = attachment.VisualAsset.OriginalFileName,
                 })
             }),
             HasMore = page.Count == limit
@@ -492,15 +493,16 @@ public class ChatController : ControllerBase
             if (visualAsset is null)
             {
                 Response.StatusCode = 400;
-                await Response.WriteAsJsonAsync(new { error = "Изображение недоступно. Выберите его еще раз." });
+                await Response.WriteAsJsonAsync(new { error = "Вложение недоступно. Выберите его еще раз." });
                 return;
             }
 
             visualContent = await _visualAssets.ReadAsync(visualAsset.StorageFileName, HttpContext.RequestAborted);
-            if (visualContent is null || !ImageContentInspector.IsVisualCaptureMimeType(visualAsset.MimeType))
+            if (visualContent is null || visualContent.Length == 0 || visualContent.Length > ImageContentInspector.MaxAttachmentSize ||
+                !ImageContentInspector.TryNormalizeAttachmentMimeType(visualAsset.MimeType, out _))
             {
                 Response.StatusCode = 400;
-                await Response.WriteAsJsonAsync(new { error = "Не удалось прочитать прикрепленное изображение." });
+                await Response.WriteAsJsonAsync(new { error = "Не удалось прочитать прикрепленное вложение." });
                 return;
             }
         }
@@ -541,7 +543,7 @@ public class ChatController : ControllerBase
             userMessage.Attachments.Add(new MessageAttachment
             {
                 VisualAssetId = visualAsset.Id,
-                Kind = "image",
+                Kind = ImageContentInspector.IsImageMimeType(visualAsset.MimeType) ? "image" : "document",
             });
         }
         session.Messages.Add(userMessage);
@@ -634,8 +636,11 @@ public class ChatController : ControllerBase
 
         if (visualAsset is not null)
         {
-            systemPrompt = "Пользователь приложил изображение к текущей реплике. Отвечай на его конкретную просьбу с учетом изображения. " +
-                           "Если чего-то не видно, честно скажи об этом и задай один короткий уточняющий вопрос. " +
+            var attachmentDescription = ImageContentInspector.IsImageMimeType(visualAsset.MimeType)
+                ? "изображение"
+                : "файл";
+            systemPrompt = $"Пользователь приложил {attachmentDescription} к текущей реплике. Отвечай на его конкретную просьбу с учетом вложения. " +
+                           "Если нужных данных в нем нет или формат не читается, честно скажи об этом и задай один короткий уточняющий вопрос. " +
                            "Не распознавай личность по лицу и не выдавай медицинские, юридические или финансовые выводы за достоверные.\n\n" +
                            systemPrompt;
         }

@@ -11,22 +11,18 @@ import java.io.FileOutputStream
 import java.util.UUID
 
 internal object SharedImageStore {
-  private const val PREFS = "vass_shared_image"
+  private const val PREFS = "vass_shared_attachment"
   private const val KEY_REQUEST_ID = "requestId"
   private const val KEY_STATUS = "status"
   private const val KEY_URI = "uri"
   private const val KEY_MIME_TYPE = "mimeType"
   private const val KEY_ORIGINAL_NAME = "originalName"
   private const val KEY_ERROR = "error"
-  private const val MAX_BYTES = 10L * 1024L * 1024L
+  private const val MAX_BYTES = 50L * 1024L * 1024L
 
   fun capture(context: Context, intent: Intent) {
     val uri = extractUri(intent) ?: return
-    val mimeType = (context.contentResolver.getType(uri) ?: intent.type)?.lowercase()
-    if (mimeType !in SUPPORTED_MIME_TYPES) {
-      save(context, UUID.randomUUID().toString(), "error", error = "unsupported_image_type")
-      return
-    }
+    val mimeType = normalizeMimeType(context.contentResolver.getType(uri) ?: intent.type)
 
     val requestId = UUID.randomUUID().toString()
     try {
@@ -34,7 +30,7 @@ internal object SharedImageStore {
       val copiedUri = copyToCache(context, uri, mimeType)
       save(context, requestId, "ready", copiedUri, mimeType, originalName)
     } catch (exception: Exception) {
-      save(context, requestId, "error", error = "shared_image_unavailable")
+      save(context, requestId, "error", error = "shared_attachment_unavailable")
     }
   }
 
@@ -50,8 +46,8 @@ internal object SharedImageStore {
     )
   }
 
-  // The staged visual keeps using this cache file for its thumbnail until the
-  // assistant consumes it, so acknowledgement clears the pending intent only.
+  // The staged attachment keeps using this cache file until the assistant
+  // consumes it, so acknowledgement clears the pending intent only.
   fun acknowledge(context: Context, requestId: String) {
     val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     if (prefs.getString(KEY_REQUEST_ID, null) == requestId) prefs.edit().clear().apply()
@@ -106,7 +102,7 @@ internal object SharedImageStore {
   }
 
   private fun copyToCache(context: Context, uri: Uri, mimeType: String): String {
-    val directory = File(context.cacheDir, "vass-shared-images").apply { mkdirs() }
+    val directory = File(context.cacheDir, "vass-shared-files").apply { mkdirs() }
     val file = File(directory, "share-${UUID.randomUUID()}.${extensionFor(mimeType)}")
     try {
       context.contentResolver.openInputStream(uri)?.use { input ->
@@ -117,12 +113,12 @@ internal object SharedImageStore {
             val count = input.read(buffer)
             if (count < 0) break
             total += count
-            if (total > MAX_BYTES) throw IllegalArgumentException("Shared image exceeds upload limit")
+            if (total > MAX_BYTES) throw IllegalArgumentException("Shared attachment exceeds upload limit")
             output.write(buffer, 0, count)
           }
         }
-      } ?: throw IllegalStateException("Shared image stream is unavailable")
-      if (file.length() == 0L) throw IllegalStateException("Shared image is empty")
+      } ?: throw IllegalStateException("Shared attachment stream is unavailable")
+      if (file.length() == 0L) throw IllegalStateException("Shared attachment is empty")
       return "file://${file.absolutePath}"
     } catch (exception: Exception) {
       file.delete()
@@ -134,8 +130,16 @@ internal object SharedImageStore {
     "image/jpeg" -> "jpg"
     "image/png" -> "png"
     "image/webp" -> "webp"
-    else -> throw IllegalArgumentException("Unsupported image MIME type")
+    "application/pdf" -> "pdf"
+    else -> "bin"
   }
 
-  private val SUPPORTED_MIME_TYPES = setOf("image/jpeg", "image/png", "image/webp")
+  private fun normalizeMimeType(rawMimeType: String?): String {
+    val mimeType = rawMimeType?.substringBefore(';')?.trim()?.lowercase()
+    return if (mimeType?.matches(Regex("[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+")) == true) {
+      mimeType
+    } else {
+      "application/octet-stream"
+    }
+  }
 }

@@ -1,5 +1,5 @@
 import { Pressable, StyleSheet } from 'react-native';
-import { ImagePlus } from 'lucide-react-native';
+import { Paperclip } from 'lucide-react-native';
 import type { VisualInputStatus } from '../visual/types';
 import { amoled } from '../theme/amoled';
 
@@ -17,10 +17,10 @@ export function VisualInputButton({ disabled, status, onPress }: VisualInputButt
       onPress={onPress}
       disabled={disabled || busy}
       accessibilityRole="button"
-      accessibilityLabel="Добавить изображение"
-      accessibilityHint="Сделать фотографию или выбрать картинку"
+      accessibilityLabel="Добавить вложение"
+      accessibilityHint="Сделать фотографию или выбрать файл"
     >
-      <ImagePlus size={22} color={amoled.textPrimary} strokeWidth={2} />
+      <Paperclip size={22} color={amoled.textPrimary} strokeWidth={2} />
     </Pressable>
   );
 }

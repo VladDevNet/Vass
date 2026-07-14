@@ -5,6 +5,7 @@ export interface PendingVisualInput {
   localUri: string;
   mimeType: string;
   sizeBytes: number;
+  originalName: string | null;
 }
 
 export interface StageVisualAssetInput {

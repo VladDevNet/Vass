@@ -63,15 +63,17 @@ function withOverlayManifest(config) {
     });
     if (!mainActivity) throw new Error('AndroidManifest is missing MainActivity');
     mainActivity['intent-filter'] = mainActivity['intent-filter'] ?? [];
-    const hasImageShareFilter = mainActivity['intent-filter'].some((filter) =>
+    const shareFilter = mainActivity['intent-filter'].find((filter) =>
       filter.action?.some((action) => action.$?.['android:name'] === 'android.intent.action.SEND') &&
-      filter.data?.some((data) => data.$?.['android:mimeType'] === 'image/*')
+      filter.category?.some((category) => category.$?.['android:name'] === 'android.intent.category.DEFAULT')
     );
-    if (!hasImageShareFilter) {
+    if (shareFilter) {
+      shareFilter.data = [{ $: { 'android:mimeType': '*/*' } }];
+    } else {
       mainActivity['intent-filter'].push({
         action: [{ $: { 'android:name': 'android.intent.action.SEND' } }],
         category: [{ $: { 'android:name': 'android.intent.category.DEFAULT' } }],
-        data: [{ $: { 'android:mimeType': 'image/*' } }],
+        data: [{ $: { 'android:mimeType': '*/*' } }],
       });
     }
 

@@ -36,6 +36,15 @@ public class VisualAssetsControllerTests : IClassFixture<TestWebApplicationFacto
         return content;
     }
 
+    private static MultipartFormDataContent PdfUpload(byte[]? bytes = null)
+    {
+        var content = new MultipartFormDataContent();
+        var pdf = new ByteArrayContent(bytes ?? "%PDF-1.7\n%Vass\n"u8.ToArray());
+        pdf.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+        content.Add(pdf, "file", "notes.pdf");
+        return content;
+    }
+
     [Fact]
     public async Task UploadReadDelete_OwnerCanManagePendingAsset()
     {
@@ -57,6 +66,38 @@ public class VisualAssetsControllerTests : IClassFixture<TestWebApplicationFacto
         var deleteResponse = await client.DeleteAsync($"/api/v1/chat/visual-assets/{id}");
         Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/v1/chat/visual-assets/{id}/content")).StatusCode);
+    }
+
+    [Fact]
+    public async Task UploadPdfAndSend_PersistsDocumentAttachment()
+    {
+        var client = await CreateAuthenticatedClientAsync();
+        var bytes = "%PDF-1.7\n%Vass\n"u8.ToArray();
+        using var upload = PdfUpload(bytes);
+        var uploadResponse = await client.PostAsync("/api/v1/chat/visual-assets", upload);
+
+        Assert.Equal(HttpStatusCode.OK, uploadResponse.StatusCode);
+        var uploaded = await uploadResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var id = uploaded.GetProperty("id").GetGuid();
+        Assert.Equal("application/pdf", uploaded.GetProperty("mimeType").GetString());
+        Assert.Equal("notes.pdf", uploaded.GetProperty("originalFileName").GetString());
+
+        var readResponse = await client.GetAsync($"/api/v1/chat/visual-assets/{id}/content");
+        Assert.Equal(HttpStatusCode.OK, readResponse.StatusCode);
+        Assert.Equal(bytes, await readResponse.Content.ReadAsByteArrayAsync());
+        Assert.Equal("nosniff", readResponse.Headers.GetValues("X-Content-Type-Options").Single());
+
+        var sessions = await client.GetFromJsonAsync<JsonElement>("/api/v1/chat/sessions");
+        var sessionId = sessions.EnumerateArray().First().GetProperty("id").GetInt32();
+        var send = await client.PostAsJsonAsync("/api/v1/chat/send",
+            new ChatController.SendRequest(sessionId, "Кратко перескажи приложенный PDF.", VisualAssetId: id));
+        Assert.Equal(HttpStatusCode.OK, send.StatusCode);
+
+        var history = await client.GetFromJsonAsync<JsonElement>($"/api/v1/chat/sessions/{sessionId}");
+        var attachment = history.GetProperty("messages").EnumerateArray().First()
+            .GetProperty("attachments").EnumerateArray().Single();
+        Assert.Equal("document", attachment.GetProperty("kind").GetString());
+        Assert.Equal("notes.pdf", attachment.GetProperty("originalName").GetString());
     }
 
     [Fact]

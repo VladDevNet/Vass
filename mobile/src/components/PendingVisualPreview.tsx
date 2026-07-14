@@ -1,5 +1,5 @@
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
-import { X } from 'lucide-react-native';
+import { FileText, X } from 'lucide-react-native';
 import type { PendingVisualInput, VisualInputStatus } from '../visual/types';
 import { amoled } from '../theme/amoled';
 
@@ -15,18 +15,31 @@ export function PendingVisualPreview({ pending, uploadingUri, status, error, onR
   const uri = pending?.localUri ?? uploadingUri;
   if (!uri && !error) return null;
   const uploading = status === 'uploading';
+  const isImage = pending?.mimeType?.startsWith('image/') ?? false;
+  const title = uploading
+    ? 'Загружаю вложение'
+    : pending
+      ? 'Вложение прикреплено'
+      : 'Не удалось добавить вложение';
+  const subtitle = error ?? (pending?.originalName || (pending ? 'Скажите, что сделать' : 'Попробуйте выбрать другой файл'));
 
   return (
     <View style={styles.root}>
-      {uri ? <Image source={{ uri }} style={styles.thumbnail} resizeMode="cover" /> : <View style={styles.thumbnail} />}
+      {uri && isImage ? (
+        <Image source={{ uri }} style={styles.thumbnail} resizeMode="cover" />
+      ) : (
+        <View style={[styles.thumbnail, styles.fileThumbnail]}>
+          <FileText size={24} color={amoled.textSecondary} />
+        </View>
+      )}
       <View style={styles.copy}>
-        <Text style={styles.title}>{uploading ? 'Загружаю изображение' : pending ? 'Изображение прикреплено' : 'Не удалось добавить изображение'}</Text>
-        <Text style={styles.subtitle}>{error ?? (pending ? 'Скажите, что сделать' : 'Попробуйте выбрать другое изображение')}</Text>
+        <Text style={styles.title}>{title}</Text>
+        <Text style={styles.subtitle} numberOfLines={2}>{subtitle}</Text>
       </View>
       {uploading ? (
         <ActivityIndicator color={amoled.textPrimary} />
       ) : pending ? (
-        <Pressable style={styles.remove} onPress={onRemove} accessibilityLabel="Удалить прикрепленное изображение">
+        <Pressable style={styles.remove} onPress={onRemove} accessibilityLabel="Удалить прикрепленное вложение">
           <X size={18} color={amoled.textSecondary} />
         </Pressable>
       ) : null}
@@ -47,6 +60,10 @@ const styles = StyleSheet.create({
     height: 58,
     borderRadius: 6,
     backgroundColor: amoled.glassBackgroundStrong,
+  },
+  fileThumbnail: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   copy: {
     flex: 1,

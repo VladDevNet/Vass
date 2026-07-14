@@ -79,9 +79,7 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
 
       if (shared.status === 'error' || !shared.uri || !shared.mimeType) {
         visual.reportVisualError(
-          shared.error === 'unsupported_image_type'
-            ? 'Через Share можно отправить JPEG, PNG или WebP изображение.'
-            : 'Не удалось получить изображение. Размер файла не должен превышать 10 МБ.',
+          'Не удалось получить вложение. Размер файла не должен превышать 50 МБ.',
         );
         await VassOverlay.acknowledgeSharedImage(shared.requestId);
         return;
@@ -98,12 +96,12 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
         return;
       }
       await VassOverlay.acknowledgeSharedImage(shared.requestId);
-      log('info', 'visual', 'shared image staged for next voice turn', { mimeType: shared.mimeType });
+      log('info', 'visual', 'shared attachment staged for next voice turn', { mimeType: shared.mimeType });
     };
 
     void receiveSharedImage().catch((err) => {
       sharedImageAttemptRef.current = null;
-      log('error', 'visual', 'failed to receive shared image', {
+      log('error', 'visual', 'failed to receive shared attachment', {
         error: err instanceof Error ? err.message : String(err),
       });
     });

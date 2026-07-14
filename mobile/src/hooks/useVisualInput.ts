@@ -9,12 +9,28 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   jpeg: 'image/jpeg',
   png: 'image/png',
   webp: 'image/webp',
+  pdf: 'application/pdf',
+  txt: 'text/plain',
+  md: 'text/markdown',
+  csv: 'text/csv',
+  html: 'text/html',
+  htm: 'text/html',
+  json: 'application/json',
+  xml: 'application/xml',
+  rtf: 'application/rtf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 };
 
-function resolveMimeType(uri: string, reportedMimeType?: string | null): string | null {
-  if (reportedMimeType?.startsWith('image/')) return reportedMimeType;
+function resolveMimeType(uri: string, reportedMimeType?: string | null): string {
+  const reported = reportedMimeType?.split(';', 1)[0]?.trim().toLowerCase();
+  if (reported && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(reported)) return reported;
   const extension = uri.split('?')[0].split('.').pop()?.toLowerCase();
-  return extension ? MIME_BY_EXTENSION[extension] ?? null : null;
+  return (extension ? MIME_BY_EXTENSION[extension] : undefined) ?? 'application/octet-stream';
 }
 
 export function useVisualInput() {
@@ -52,12 +68,6 @@ export function useVisualInput() {
 
   const stageVisualAsset = useCallback(async ({ uri, mimeType: reportedMimeType, originalName }: StageVisualAssetInput): Promise<PendingVisualInput | null> => {
     const mimeType = resolveMimeType(uri, reportedMimeType);
-    if (!mimeType) {
-      setStatus('error');
-      setError('Не удалось определить формат изображения. Выберите JPEG, PNG или WebP.');
-      return null;
-    }
-
     const operation = ++operationRef.current;
     const previous = pendingRef.current;
     setStatus('uploading');
@@ -75,6 +85,7 @@ export function useVisualInput() {
         localUri: uri,
         mimeType: uploaded.mimeType,
         sizeBytes: uploaded.sizeBytes,
+        originalName: uploaded.originalFileName ?? originalName ?? null,
       };
       pendingRef.current = next;
       setPendingVisual(next);
@@ -88,7 +99,7 @@ export function useVisualInput() {
       if (!mountedRef.current || operation !== operationRef.current) return null;
       setStatus(previous ? 'ready' : 'error');
       setUploadingUri(null);
-      setError(err instanceof Error ? err.message : 'Не удалось загрузить изображение.');
+      setError(err instanceof Error ? err.message : 'Не удалось загрузить вложение.');
       return null;
     }
   }, []);
@@ -138,7 +149,7 @@ export function useVisualInput() {
       }
 
       const result = await DocumentPicker.getDocumentAsync({
-        type: 'image/*',
+        type: '*/*',
         copyToCacheDirectory: true,
         multiple: false,
       });
@@ -153,7 +164,7 @@ export function useVisualInput() {
     } catch (err) {
       if (!mountedRef.current || operation !== operationRef.current) return;
       setStatus(pendingRef.current ? 'ready' : 'error');
-      setError(err instanceof Error ? err.message : 'Не удалось выбрать изображение.');
+      setError(err instanceof Error ? err.message : 'Не удалось выбрать вложение.');
     }
   }, [stageVisualAsset]);
 
@@ -164,8 +175,8 @@ export function useVisualInput() {
     try {
       await api.deletePendingVisual(pending.assetId);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Не удалось удалить изображение.';
-      // A race with a completed server turn means the image is already safe
+      const message = err instanceof Error ? err.message : 'Не удалось удалить вложение.';
+      // A race with a completed server turn means the attachment is already safe
       // in history; locally it should no longer appear as a pending input.
       if (!message.includes('уже прикреплено')) {
         if (mountedRef.current && operation === operationRef.current) {

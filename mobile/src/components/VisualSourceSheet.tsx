@@ -1,5 +1,5 @@
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Camera, FileImage, Images, SwitchCamera, X } from 'lucide-react-native';
+import { Camera, FileText, Images, SwitchCamera, X } from 'lucide-react-native';
 import type { ComponentType } from 'react';
 import type { LucideProps } from 'lucide-react-native';
 import type { VisualSource } from '../visual/types';
@@ -15,17 +15,17 @@ const actions: Array<{ source: VisualSource; label: string; Icon: ComponentType<
   { source: 'camera', label: 'Сфотографировать', Icon: Camera },
   { source: 'selfie', label: 'Селфи', Icon: SwitchCamera },
   { source: 'gallery', label: 'Из галереи', Icon: Images },
-  { source: 'file', label: 'Файл или скриншот', Icon: FileImage },
+  { source: 'file', label: 'Файл, документ или скриншот', Icon: FileText },
 ];
 
 export function VisualSourceSheet({ visible, onClose, onSelect }: VisualSourceSheetProps) {
   return (
     <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
       <View style={styles.backdrop}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Закрыть выбор изображения" />
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Закрыть выбор вложения" />
         <View style={styles.sheet}>
           <View style={styles.header}>
-            <Text style={styles.title}>Добавить изображение</Text>
+            <Text style={styles.title}>Добавить вложение</Text>
             <Pressable style={styles.closeButton} onPress={onClose} accessibilityLabel="Закрыть">
               <X size={20} color={amoled.textSecondary} />
             </Pressable>

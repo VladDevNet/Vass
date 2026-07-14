@@ -2,7 +2,10 @@ namespace VoiceAssistant.API.Services;
 
 public static class ImageContentInspector
 {
-    public const long MaxVisualSize = 10 * 1024 * 1024;
+    // Gemini accepts inline PDFs up to 50 MiB. Keeping the same ceiling for
+    // every shared attachment makes the client contract predictable while
+    // still allowing normal documents, screenshots, and photos.
+    public const long MaxAttachmentSize = 50 * 1024 * 1024;
 
     private static readonly (byte[] Signature, string MimeType)[] Signatures =
     [
@@ -37,11 +40,28 @@ public static class ImageContentInspector
     public static bool IsVisualCaptureMimeType(string mimeType) =>
         mimeType is "image/jpeg" or "image/png" or "image/webp";
 
+    public static bool IsImageMimeType(string mimeType) =>
+        mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
+
+    public static bool TryNormalizeAttachmentMimeType(string? rawMimeType, out string mimeType)
+    {
+        var candidate = rawMimeType?.Split(';', 2)[0].Trim().ToLowerInvariant();
+        if (!string.IsNullOrWhiteSpace(candidate) &&
+            System.Text.RegularExpressions.Regex.IsMatch(candidate, @"\A[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+\z"))
+        {
+            mimeType = candidate;
+            return true;
+        }
+
+        mimeType = "application/octet-stream";
+        return false;
+    }
+
     public static string ExtensionForMimeType(string mimeType) => mimeType switch
     {
         "image/jpeg" => "jpg",
         "image/png" => "png",
         "image/webp" => "webp",
-        _ => throw new ArgumentOutOfRangeException(nameof(mimeType), mimeType, "Unsupported visual asset MIME type"),
+        _ => "bin",
     };
 }

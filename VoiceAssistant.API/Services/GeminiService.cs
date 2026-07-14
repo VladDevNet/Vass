@@ -9,8 +9,8 @@ namespace VoiceAssistant.API.Services;
 public record GeminiPart(string? Text = null, string? MimeType = null, byte[]? Data = null);
 
 // Content remains available for the existing text-only side-call services.
-// Parts lets the primary conversation add one inline image without changing
-// their contracts or accidentally feeding private image bytes into them.
+// Parts lets the primary conversation add one inline attachment without
+// changing side-call contracts or accidentally feeding private bytes into them.
 public record GeminiMessage(string Role, string Content)
 {
     public IReadOnlyList<GeminiPart> Parts { get; init; } = [new(Text: Content)];
@@ -185,7 +185,7 @@ public class GeminiService
         var url = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={key}";
 
         using var http = _httpClientFactory.CreateClient();
-        http.Timeout = TimeSpan.FromSeconds(60);
+        http.Timeout = TimeSpan.FromSeconds(120);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
@@ -279,11 +279,11 @@ public class GeminiService
             var part = parts[index];
             if (part.Data is not null)
             {
-                if (part.Data.Length == 0 || part.Data.Length > ImageContentInspector.MaxVisualSize)
-                    throw new ArgumentException("Visual content has an invalid size.", nameof(parts));
-                if (!ImageContentInspector.IsVisualCaptureMimeType(part.MimeType ?? ""))
-                    throw new ArgumentException("Visual content has an unsupported MIME type.", nameof(parts));
-                serialized[index] = new { inline_data = new { mime_type = part.MimeType, data = Convert.ToBase64String(part.Data) } };
+                if (part.Data.Length == 0 || part.Data.Length > ImageContentInspector.MaxAttachmentSize)
+                    throw new ArgumentException("Attachment content has an invalid size.", nameof(parts));
+                if (!ImageContentInspector.TryNormalizeAttachmentMimeType(part.MimeType, out var mimeType))
+                    throw new ArgumentException("Attachment content has an invalid MIME type.", nameof(parts));
+                serialized[index] = new { inline_data = new { mime_type = mimeType, data = Convert.ToBase64String(part.Data) } };
                 continue;
             }
 

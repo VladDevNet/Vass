@@ -78,7 +78,7 @@ function timeoutSignal(ms: number): { signal: AbortSignal; cancel: () => void } 
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-const UPLOAD_TIMEOUT_MS = 30_000;
+const UPLOAD_TIMEOUT_MS = 90_000;
 // Short — this gates real-time turn-taking responsiveness (a hung check
 // shouldn't stall the conversation for as long as a full audio upload
 // reasonably might). check-utterance is a short snippet + one fast Gemini
@@ -167,15 +167,17 @@ export interface ChatMessage {
 
 export interface ChatAttachment {
   id: string;
-  kind: 'image';
+  kind: 'image' | 'document';
   mimeType: string;
   sizeBytes: number;
+  originalName: string | null;
 }
 
 export interface VisualAsset {
   id: string;
   mimeType: string;
   sizeBytes: number;
+  originalFileName: string | null;
 }
 
 // Not `extends ChatSession` — GET /chat/sessions/{id} (unlike the list
@@ -353,8 +355,10 @@ export const api = {
   uploadVisual: async (uri: string, mimeType: string, originalName?: string): Promise<VisualAsset> => {
     const bytes = await new File(uri).bytes();
     const blob = new ExpoBlob([bytes], { type: mimeType });
-    const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType.split('/')[1] ?? 'image';
-    const name = originalName?.trim() || `image.${extension}`;
+    const extension = mimeType === 'image/jpeg'
+      ? 'jpg'
+      : mimeType.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'bin';
+    const name = originalName?.trim() || `attachment.${extension}`;
     Object.defineProperty(blob, 'name', { value: name, configurable: true });
 
     const form = new FormData();
@@ -369,7 +373,7 @@ export const api = {
         signal,
       });
     } catch (err) {
-      if (signal.aborted) throw new ApiError('Превышено время ожидания загрузки изображения');
+      if (signal.aborted) throw new ApiError('Превышено время ожидания загрузки вложения');
       throw err;
     } finally {
       cancel();
@@ -380,7 +384,7 @@ export const api = {
     }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      throw new ApiError(body?.error ?? `Не удалось загрузить изображение: ${res.status}`);
+      throw new ApiError(body?.error ?? `Не удалось загрузить вложение: ${res.status}`);
     }
     return res.json() as Promise<VisualAsset>;
   },

@@ -5,7 +5,7 @@ namespace VoiceAssistant.API.Services;
 public class VisualAssetService
 {
     private static readonly Regex SafeStorageFileName =
-        new(@"\A[0-9a-f]{32}\.(jpg|png|webp)\z", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        new(@"\A[0-9a-f]{32}\.(jpg|png|webp|bin)\z", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private readonly string _rootPath;
     private readonly ILogger<VisualAssetService> _logger;

@@ -13,8 +13,8 @@ namespace VoiceAssistant.API.Controllers;
 [Authorize]
 public class VisualAssetsController : ControllerBase
 {
-    public const long MaxVisualSize = ImageContentInspector.MaxVisualSize;
-    public const long MaxVisualRequestBodySize = MaxVisualSize + 64 * 1024;
+    public const long MaxAttachmentSize = ImageContentInspector.MaxAttachmentSize;
+    public const long MaxAttachmentRequestBodySize = MaxAttachmentSize + 64 * 1024;
 
     private readonly AppDbContext _db;
     private readonly VisualAssetService _assets;
@@ -28,21 +28,19 @@ public class VisualAssetsController : ControllerBase
     }
 
     [HttpPost]
-    [RequestSizeLimit(MaxVisualRequestBodySize)]
+    [RequestSizeLimit(MaxAttachmentRequestBodySize)]
     public async Task<IActionResult> Upload(IFormFile file)
     {
-        if (file.Length == 0 || file.Length > MaxVisualSize)
-            return BadRequest(new { error = "Изображение должно быть размером от 1 байта до 10 МБ." });
+        if (file.Length == 0 || file.Length > MaxAttachmentSize)
+            return BadRequest(new { error = "Вложение должно быть размером от 1 байта до 50 МБ." });
+
+        if (!ImageContentInspector.TryNormalizeAttachmentMimeType(file.ContentType, out var mimeType))
+            return BadRequest(new { error = "Не удалось определить тип вложения." });
 
         await using var input = file.OpenReadStream();
         using var buffer = new MemoryStream((int)file.Length);
         await input.CopyToAsync(buffer, HttpContext.RequestAborted);
         var content = buffer.ToArray();
-        if (!ImageContentInspector.TryDetectMimeType(content, out var mimeType) ||
-            !ImageContentInspector.IsVisualCaptureMimeType(mimeType))
-        {
-            return BadRequest(new { error = "Поддерживаются только изображения JPEG, PNG и WebP." });
-        }
 
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
         var id = Guid.NewGuid();
@@ -71,9 +69,9 @@ public class VisualAssetsController : ControllerBase
             throw;
         }
 
-        _logger.LogInformation("Visual asset uploaded: AssetId={AssetId}, MimeType={MimeType}, SizeBytes={SizeBytes}",
+        _logger.LogInformation("Attachment uploaded: AssetId={AssetId}, MimeType={MimeType}, SizeBytes={SizeBytes}",
             asset.Id, asset.MimeType, asset.SizeBytes);
-        return Ok(new { asset.Id, asset.MimeType, asset.SizeBytes });
+        return Ok(new { asset.Id, asset.MimeType, asset.SizeBytes, asset.OriginalFileName });
     }
 
     [HttpGet("{id:guid}/content")]
@@ -82,11 +80,12 @@ public class VisualAssetsController : ControllerBase
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
         var asset = await _db.VisualAssets
             .Where(item => item.Id == id && item.UserId == userId)
-            .Select(item => new { item.StorageFileName, item.MimeType })
+            .Select(item => new { item.StorageFileName, item.MimeType, item.OriginalFileName })
             .FirstOrDefaultAsync(HttpContext.RequestAborted);
         if (asset is null || !_assets.TryOpenRead(asset.StorageFileName, out var stream)) return NotFound();
 
-        return File(stream!, asset.MimeType, enableRangeProcessing: true);
+        Response.Headers.Append("X-Content-Type-Options", "nosniff");
+        return File(stream!, asset.MimeType, asset.OriginalFileName ?? "attachment", enableRangeProcessing: true);
     }
 
     [HttpDelete("{id:guid}")]
@@ -99,7 +98,7 @@ public class VisualAssetsController : ControllerBase
 
         var isAttached = await _db.MessageAttachments
             .AnyAsync(item => item.VisualAssetId == id, HttpContext.RequestAborted);
-        if (isAttached) return Conflict(new { error = "Изображение уже прикреплено к сообщению." });
+        if (isAttached) return Conflict(new { error = "Вложение уже прикреплено к сообщению." });
 
         _db.VisualAssets.Remove(asset);
         await _db.SaveChangesAsync(HttpContext.RequestAborted);
