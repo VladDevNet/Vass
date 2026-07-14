@@ -43,12 +43,12 @@ export function useVisualInput() {
     setError(null);
   }, []);
 
-  const stageVisualAsset = useCallback(async ({ uri, mimeType: reportedMimeType, originalName }: StageVisualAssetInput) => {
+  const stageVisualAsset = useCallback(async ({ uri, mimeType: reportedMimeType, originalName }: StageVisualAssetInput): Promise<PendingVisualInput | null> => {
     const mimeType = resolveMimeType(uri, reportedMimeType);
     if (!mimeType) {
       setStatus('error');
       setError('Не удалось определить формат изображения. Выберите JPEG, PNG или WebP.');
-      return;
+      return null;
     }
 
     const operation = ++operationRef.current;
@@ -60,7 +60,7 @@ export function useVisualInput() {
       const uploaded = await api.uploadVisual(uri, mimeType, originalName ?? undefined);
       if (!mountedRef.current || operation !== operationRef.current) {
         try { await api.deletePendingVisual(uploaded.id); } catch { }
-        return;
+        return null;
       }
 
       const next: PendingVisualInput = {
@@ -76,11 +76,13 @@ export function useVisualInput() {
       if (previous && previous.assetId !== next.assetId) {
         void api.deletePendingVisual(previous.assetId).catch(() => undefined);
       }
+      return next;
     } catch (err) {
-      if (!mountedRef.current || operation !== operationRef.current) return;
+      if (!mountedRef.current || operation !== operationRef.current) return null;
       setStatus(previous ? 'ready' : 'error');
       setUploadingUri(null);
       setError(err instanceof Error ? err.message : 'Не удалось загрузить изображение.');
+      return null;
     }
   }, []);
 

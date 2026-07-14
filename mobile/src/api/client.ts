@@ -453,7 +453,12 @@ export interface SendMessageParams {
   deviceId?: string;
   timeZoneId?: string;
   supportsExternalActions?: boolean;
+  supportsScreenAnalysis?: boolean;
   visualAssetId?: string;
+}
+
+export interface ScreenCaptureRequest {
+  prompt: string;
 }
 
 export type ExternalActionEvent =
@@ -480,6 +485,7 @@ export interface SendMessageCallbacks {
   onChunk?: (text: string) => void;
   onReminder?: (reminder: ReminderEvent) => Promise<void>;
   onExternalAction?: (action: ExternalActionEvent) => Promise<void>;
+  onScreenCapture?: (request: ScreenCaptureRequest) => void;
 }
 
 function parseExternalAction(value: unknown): ExternalActionEvent | null {
@@ -493,6 +499,12 @@ function parseExternalAction(value: unknown): ExternalActionEvent | null {
     return { type: 'youtube_watch', videoId: candidate.videoId };
   }
   return null;
+}
+
+function parseScreenCapture(value: unknown): ScreenCaptureRequest | null {
+  if (!value || typeof value !== 'object') return null;
+  const prompt = (value as Record<string, unknown>).prompt;
+  return typeof prompt === 'string' && prompt.trim() ? { prompt } : null;
 }
 
 // Streams POST /chat/send (SSE-style `data: {...}` lines) and resolves with
@@ -592,6 +604,9 @@ export async function sendMessage(params: SendMessageParams, callbacks: SendMess
         } else if (parsed.externalAction && callbacks.onExternalAction) {
           const action = parseExternalAction(parsed.externalAction);
           if (action) await callbacks.onExternalAction(action);
+        } else if (parsed.screenCapture && callbacks.onScreenCapture) {
+          const request = parseScreenCapture(parsed.screenCapture);
+          if (request) callbacks.onScreenCapture(request);
         }
         // parsed.preamble / parsed.stats are not consumed yet.
       }

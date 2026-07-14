@@ -27,7 +27,7 @@ interface ConversationRuntimeValue {
   visualUploadingUri: string | null;
   pickVisual: (source: VisualSource) => Promise<void>;
   removePendingVisual: () => Promise<void>;
-  stageVisualAsset: (input: StageVisualAssetInput) => Promise<void>;
+  stageVisualAsset: (input: StageVisualAssetInput) => Promise<PendingVisualInput | null>;
 }
 
 const ConversationRuntimeContext = createContext<ConversationRuntimeValue | null>(null);
@@ -40,6 +40,7 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
   const runtime = useVoiceChat(sessionId, {
     getPendingVisual: visual.getPendingVisual,
     consumePendingVisual: visual.consumePendingVisual,
+    stageVisualAsset: visual.stageVisualAsset,
   });
   const stateRef = useRef(runtime.state);
   const actionsRef = useRef(runtime);

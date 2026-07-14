@@ -7,7 +7,7 @@ import {
   setAudioModeAsync,
   useAudioRecorder,
 } from 'expo-audio';
-import { api, sendMessage, type ExternalActionEvent } from '../api/client';
+import { api, sendMessage, type ExternalActionEvent, type ScreenCaptureRequest } from '../api/client';
 import { getReminderDeviceContext, scheduleAndAcknowledgeReminder } from '../reminders/localReminders';
 import {
   createStreamingSpeech,
@@ -26,13 +26,42 @@ import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
 import { executeExternalAction, ExternalActionExecutionError } from '../actions/externalActions';
 import { VassOverlay } from '../../modules/vass-overlay';
-import type { PendingVisualInput } from '../visual/types';
+import type { PendingVisualInput, StageVisualAssetInput } from '../visual/types';
 
 export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking' | 'paused';
 
 interface VisualTurnBridge {
   getPendingVisual: () => PendingVisualInput | null;
   consumePendingVisual: (assetId: string) => void;
+  stageVisualAsset: (input: StageVisualAssetInput) => Promise<PendingVisualInput | null>;
+}
+
+class ScreenCaptureCancelledError extends Error {
+  constructor() {
+    super('Screen capture was cancelled');
+  }
+}
+
+const SCREEN_CAPTURE_RESULT_TIMEOUT_MS = 20_000;
+const SCREEN_CAPTURE_RESULT_POLL_MS = 150;
+
+function waitFor(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function captureOneShotScreenImage(requestId: string): Promise<string> {
+  await VassOverlay.requestScreenCapture(requestId);
+  const deadline = Date.now() + SCREEN_CAPTURE_RESULT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const result = await VassOverlay.getScreenCaptureResult();
+    if (result.requestId === requestId) {
+      if (result.status === 'ready' && result.uri) return result.uri;
+      if (result.status === 'cancelled') throw new ScreenCaptureCancelledError();
+      if (result.status === 'error') throw new Error('Не удалось получить снимок экрана. Повторите запрос.');
+    }
+    await waitFor(SCREEN_CAPTURE_RESULT_POLL_MS);
+  }
+  throw new Error('Не удалось получить снимок экрана вовремя. Повторите запрос.');
 }
 
 // android.audioSource defaults to MediaRecorder.AudioSource.MIC — raw,
@@ -663,7 +692,7 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
       const myGeneration = ++segmentGenerationRef.current;
       // Capture the asset for this attempt. A new image selected while Vass
       // speaks belongs to the following turn and must not be consumed here.
-      const visualAssetId = visualBridgeRef.current?.getPendingVisual()?.assetId;
+      let visualAssetId = visualBridgeRef.current?.getPendingVisual()?.assetId;
 
       if (!fromShadow) {
         setState('thinking');
@@ -702,6 +731,8 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
       let sentenceBuffer = '';
       let visibleReplyBuffer = '';
       const pendingExternalActionHolder: { current: ExternalActionEvent | null } = { current: null };
+      const screenCaptureHolder: { current: ScreenCaptureRequest | null } = { current: null };
+      let nativeScreenCaptureRequestId: string | null = null;
 
       const handleChunk = (chunk: string) => {
         if (myGeneration !== segmentGenerationRef.current || bargedInRef.current) {
@@ -794,6 +825,12 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
           pendingExternalActionHolder.current = action;
           log('info', 'external-action', 'action queued until speech completes', { type: action.type });
         };
+        const handleScreenCapture = (request: ScreenCaptureRequest) => {
+          if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) return;
+          screenCaptureHolder.current = request;
+          log('info', 'screen-capture', 'server requested one-shot screen frame');
+        };
+        const supportsScreenAnalysis = Platform.OS === 'android' && VassOverlay.isAvailable() && !visualAssetId;
 
         if (fromShadow) {
           const { transcription } = await api.checkUtteranceComplete(uri);
@@ -838,11 +875,13 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
             deviceId: reminderDevice.deviceId,
             timeZoneId: reminderDevice.timeZoneId,
             supportsExternalActions: true,
+            supportsScreenAnalysis,
             visualAssetId,
           }, {
             onChunk: handleChunk,
             onReminder: handleReminder,
             onExternalAction: handleExternalAction,
+            onScreenCapture: handleScreenCapture,
           });
         } else {
           const { fileName } = await api.uploadAudio(uri);
@@ -854,6 +893,7 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
               deviceId: reminderDevice.deviceId,
               timeZoneId: reminderDevice.timeZoneId,
               supportsExternalActions: true,
+              supportsScreenAnalysis,
               visualAssetId,
             },
             {
@@ -865,8 +905,44 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
               onChunk: handleChunk,
               onReminder: handleReminder,
               onExternalAction: handleExternalAction,
+              onScreenCapture: handleScreenCapture,
             }
           );
+        }
+
+        // A screen-capture preflight deliberately returns no assistant text.
+        // It preserves the recognized request, obtains explicit Android
+        // consent, uploads the frame through the ordinary visual path, then
+        // retries the request with that frame attached.
+        if (screenCaptureHolder.current) {
+          const capturePrompt = screenCaptureHolder.current.prompt;
+          await stopRecorderIfLive();
+          await stopShadowRecorderIfLive();
+          nativeScreenCaptureRequestId = `screen-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          const screenUri = await captureOneShotScreenImage(nativeScreenCaptureRequestId);
+          if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) return;
+
+          const staged = await visualBridgeRef.current?.stageVisualAsset({
+            uri: screenUri,
+            mimeType: 'image/jpeg',
+            originalName: 'vass-screen.jpg',
+          });
+          if (!staged) throw new Error('Не удалось подготовить снимок экрана для разбора.');
+          visualAssetId = staged.assetId;
+
+          fullReply = await sendMessage({
+            sessionId: sid,
+            message: capturePrompt,
+            deviceId: reminderDevice.deviceId,
+            timeZoneId: reminderDevice.timeZoneId,
+            supportsExternalActions: true,
+            supportsScreenAnalysis: false,
+            visualAssetId,
+          }, {
+            onChunk: handleChunk,
+            onReminder: handleReminder,
+            onExternalAction: handleExternalAction,
+          });
         }
 
         if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current || bargedInRef.current) {
@@ -971,6 +1047,11 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
           });
           return;
         }
+        if (err instanceof ScreenCaptureCancelledError) {
+          log('info', 'screen-capture', 'screen capture cancelled by user');
+          pendingSegmentsRef.current.clear();
+          return;
+        }
         const message = err instanceof ExternalActionExecutionError
           ? err.userMessage
           : err instanceof Error ? err.message : String(err);
@@ -983,6 +1064,9 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
           await speakSystemNotice(message);
         }
       } finally {
+        if (nativeScreenCaptureRequestId) {
+          await VassOverlay.clearScreenCaptureResult(nativeScreenCaptureRequestId).catch(() => undefined);
+        }
         // Only the segment that's still current AND whose turn is still
         // alive owns turn wrap-up — a superseded (or stale-turn) segment's
         // finally must not touch armMic()/bargedInRef, since a NEWER

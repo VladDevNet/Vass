@@ -1,6 +1,8 @@
 package com.vass.overlay
 
 import android.content.Context
+import android.net.Uri
+import java.io.File
 
 internal object ScreenCaptureStore {
   private const val PREFS = "vass_screen_capture"
@@ -31,6 +33,12 @@ internal object ScreenCaptureStore {
 
   fun clear(context: Context, requestId: String) {
     val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-    if (prefs.getString(KEY_REQUEST_ID, null) == requestId) prefs.edit().clear().apply()
+    if (prefs.getString(KEY_REQUEST_ID, null) != requestId) return
+    prefs.getString(KEY_URI, null)?.let { value ->
+      if (value.startsWith("file://")) {
+        try { Uri.parse(value).path?.let { File(it).delete() } } catch (_: Exception) { }
+      }
+    }
+    prefs.edit().clear().apply()
   }
 }
