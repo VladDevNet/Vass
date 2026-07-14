@@ -122,9 +122,15 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
       sharedImageAttemptRef.current = null;
       void receiveSharedImage(event);
     });
+    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active') return;
+      sharedImageAttemptRef.current = null;
+      void receiveSharedImage();
+    });
     return () => {
       cancelled = true;
       removeListener();
+      appStateSubscription.remove();
     };
   }, [user?.id, visual.reportVisualError, visual.stageVisualAsset]);
 

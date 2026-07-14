@@ -5,6 +5,7 @@ const { AndroidConfig, withAndroidManifest, withDangerousMod } = require('expo/c
 const SERVICE_NAME = 'com.vass.overlay.VassOverlayService';
 const SCREEN_CAPTURE_SERVICE = 'com.vass.overlay.VassMediaProjectionService';
 const SCREEN_CAPTURE_ACTIVITY = 'com.vass.overlay.ScreenCapturePermissionActivity';
+const SHARE_RECEIVER_ACTIVITY = 'com.vass.overlay.ShareReceiverActivity';
 const SPECIAL_USE_PROPERTY = 'android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE';
 
 function addPermission(manifest, name) {
@@ -62,20 +63,28 @@ function withOverlayManifest(config) {
       return name === '.MainActivity' || name?.endsWith('.MainActivity');
     });
     if (!mainActivity) throw new Error('AndroidManifest is missing MainActivity');
-    mainActivity['intent-filter'] = mainActivity['intent-filter'] ?? [];
-    const shareFilter = mainActivity['intent-filter'].find((filter) =>
-      filter.action?.some((action) => action.$?.['android:name'] === 'android.intent.action.SEND') &&
-      filter.category?.some((category) => category.$?.['android:name'] === 'android.intent.category.DEFAULT')
+    // MainActivity is an Expo/React Native host. Its intent callback is not
+    // reliable while the JS runtime is cold or backgrounded, so a native
+    // activity owns ACTION_SEND and launches MainActivity only after staging.
+    mainActivity['intent-filter'] = (mainActivity['intent-filter'] ?? []).filter((filter) =>
+      !filter.action?.some((action) => action.$?.['android:name'] === 'android.intent.action.SEND')
     );
-    if (shareFilter) {
-      shareFilter.data = [{ $: { 'android:mimeType': '*/*' } }];
-    } else {
-      mainActivity['intent-filter'].push({
-        action: [{ $: { 'android:name': 'android.intent.action.SEND' } }],
-        category: [{ $: { 'android:name': 'android.intent.category.DEFAULT' } }],
-        data: [{ $: { 'android:mimeType': '*/*' } }],
-      });
-    }
+
+    const shareActivity = application.activity.find((item) => item.$?.['android:name'] === SHARE_RECEIVER_ACTIVITY) ?? { $: {} };
+    shareActivity.$ = {
+      ...shareActivity.$,
+      'android:name': SHARE_RECEIVER_ACTIVITY,
+      'android:exported': 'true',
+      'android:excludeFromRecents': 'true',
+      'android:noHistory': 'true',
+      'android:theme': '@android:style/Theme.NoDisplay',
+    };
+    shareActivity['intent-filter'] = [{
+      action: [{ $: { 'android:name': 'android.intent.action.SEND' } }],
+      category: [{ $: { 'android:name': 'android.intent.category.DEFAULT' } }],
+      data: [{ $: { 'android:mimeType': '*/*' } }],
+    }];
+    if (!application.activity.includes(shareActivity)) application.activity.push(shareActivity);
 
     const captureActivity = application.activity.find((item) => item.$?.['android:name'] === SCREEN_CAPTURE_ACTIVITY) ?? { $: {} };
     captureActivity.$ = {
