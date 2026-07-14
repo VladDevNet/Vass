@@ -3,11 +3,14 @@ package com.vass.overlay
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import java.util.concurrent.atomic.AtomicBoolean
 
 // Owns Android ACTION_SEND independently of Expo's MainActivity lifecycle.
 // The source URI permission is valid while this activity is foregrounded, so
 // copy first, then bring the regular Vass task to the front.
 class ShareReceiverActivity : Activity() {
+  private val processing = AtomicBoolean(false)
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     stageAndOpen(intent)
@@ -20,24 +23,24 @@ class ShareReceiverActivity : Activity() {
   }
 
   private fun stageAndOpen(incoming: Intent?) {
-    if (incoming?.action != Intent.ACTION_SEND) {
+    if (incoming?.action !in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) {
       finish()
       return
     }
+    if (!processing.compareAndSet(false, true)) return
 
-    Thread {
+    Thread({
       SharedImageStore.capture(applicationContext, incoming)
       runOnUiThread {
         packageManager.getLaunchIntentForPackage(packageName)?.let { launchIntent ->
           launchIntent.addFlags(
-            Intent.FLAG_ACTIVITY_NEW_TASK or
-              Intent.FLAG_ACTIVITY_CLEAR_TOP or
+            Intent.FLAG_ACTIVITY_CLEAR_TOP or
               Intent.FLAG_ACTIVITY_SINGLE_TOP,
           )
           startActivity(launchIntent)
         }
         finish()
       }
-    }.start()
+    }, "VassShareReceiver").start()
   }
 }

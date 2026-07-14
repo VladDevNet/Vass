@@ -5,12 +5,15 @@ import android.content.Context
 import android.content.Intent
 import android.database.Cursor
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
+import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
 
 internal object SharedImageStore {
+  private const val TAG = "VassShare"
   private const val PREFS = "vass_shared_attachment"
   private const val KEY_REQUEST_ID = "requestId"
   private const val KEY_STATUS = "status"
@@ -21,15 +24,15 @@ internal object SharedImageStore {
   private const val MAX_BYTES = 50L * 1024L * 1024L
 
   fun capture(context: Context, intent: Intent) {
-    val uri = extractUri(intent) ?: return
-    val mimeType = normalizeMimeType(context.contentResolver.getType(uri) ?: intent.type)
-
     val requestId = UUID.randomUUID().toString()
     try {
+      val uri = extractUri(intent) ?: throw IllegalArgumentException("Shared intent does not contain a stream URI")
+      val mimeType = normalizeMimeType(context.contentResolver.getType(uri) ?: intent.type)
       val originalName = displayName(context.contentResolver, uri)
       val copiedUri = copyToCache(context, uri, mimeType)
       save(context, requestId, "ready", copiedUri, mimeType, originalName)
     } catch (exception: Exception) {
+      Log.e(TAG, "Could not stage shared attachment", exception)
       save(context, requestId, "error", error = "shared_attachment_unavailable")
     }
   }
@@ -62,6 +65,10 @@ internal object SharedImageStore {
     originalName: String? = null,
     error: String? = null,
   ) {
+    // The receiver starts React Native immediately after this call. apply() is
+    // asynchronous, so a cold-started JS runtime could observe an empty store
+    // before Android has persisted the attachment metadata. commit() makes the
+    // hand-off durable before the launcher activity is brought forward.
     context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
       .putString(KEY_REQUEST_ID, requestId)
       .putString(KEY_STATUS, status)
@@ -69,24 +76,25 @@ internal object SharedImageStore {
       .putString(KEY_MIME_TYPE, mimeType)
       .putString(KEY_ORIGINAL_NAME, originalName)
       .putString(KEY_ERROR, error)
-      .apply()
-    OverlayEventBridge.emit(
-      "sharedImage",
-      mapOf(
-        "requestId" to requestId,
-        "status" to status,
-        "uri" to uri,
-        "mimeType" to mimeType,
-        "originalName" to originalName,
-        "error" to error,
-      ),
-    )
+      .commit()
   }
 
   @Suppress("DEPRECATION")
-  private fun extractUri(intent: Intent): Uri? =
-    (intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri)
-      ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+  private fun extractUri(intent: Intent): Uri? {
+    val direct = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+    } else {
+      intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+    }
+    if (direct != null) return direct
+
+    val firstMultiple = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)?.firstOrNull()
+    } else {
+      intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.firstOrNull()
+    }
+    return firstMultiple ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+  }
 
   private fun displayName(resolver: ContentResolver, uri: Uri): String? {
     var cursor: Cursor? = null

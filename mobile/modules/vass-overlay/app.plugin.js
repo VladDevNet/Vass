@@ -67,7 +67,10 @@ function withOverlayManifest(config) {
     // reliable while the JS runtime is cold or backgrounded, so a native
     // activity owns ACTION_SEND and launches MainActivity only after staging.
     mainActivity['intent-filter'] = (mainActivity['intent-filter'] ?? []).filter((filter) =>
-      !filter.action?.some((action) => action.$?.['android:name'] === 'android.intent.action.SEND')
+      !filter.action?.some((action) => [
+        'android.intent.action.SEND',
+        'android.intent.action.SEND_MULTIPLE',
+      ].includes(action.$?.['android:name']))
     );
 
     const shareActivity = application.activity.find((item) => item.$?.['android:name'] === SHARE_RECEIVER_ACTIVITY) ?? { $: {} };
@@ -83,6 +86,10 @@ function withOverlayManifest(config) {
     };
     shareActivity['intent-filter'] = [{
       action: [{ $: { 'android:name': 'android.intent.action.SEND' } }],
+      category: [{ $: { 'android:name': 'android.intent.category.DEFAULT' } }],
+      data: [{ $: { 'android:mimeType': '*/*' } }],
+    }, {
+      action: [{ $: { 'android:name': 'android.intent.action.SEND_MULTIPLE' } }],
       category: [{ $: { 'android:name': 'android.intent.category.DEFAULT' } }],
       data: [{ $: { 'android:mimeType': '*/*' } }],
     }];
