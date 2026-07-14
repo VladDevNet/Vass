@@ -23,14 +23,18 @@ class ShareReceiverActivity : Activity() {
   }
 
   private fun stageAndOpen(incoming: Intent?) {
-    if (incoming?.action !in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) {
+    val shareIntent = incoming ?: run {
+      finish()
+      return
+    }
+    if (shareIntent.action !in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) {
       finish()
       return
     }
     if (!processing.compareAndSet(false, true)) return
 
     Thread({
-      SharedImageStore.capture(applicationContext, incoming)
+      SharedImageStore.capture(applicationContext, shareIntent)
       runOnUiThread {
         packageManager.getLaunchIntentForPackage(packageName)?.let { launchIntent ->
           launchIntent.addFlags(
