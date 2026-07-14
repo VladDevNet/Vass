@@ -32,6 +32,7 @@ public class ChatController : ControllerBase
     private readonly ScreenAnalysisIntentService _screenAnalysis;
     private readonly VisualAssetService _visualAssets;
     private readonly AssistantCapabilityRegistry _capabilities;
+    private readonly ActionReceiptService _actionReceipts;
     private readonly IConfiguration _config;
     private readonly ILogger<ChatController> _logger;
     private readonly string _audioPath;
@@ -48,6 +49,7 @@ public class ChatController : ControllerBase
         ScreenAnalysisIntentService screenAnalysis,
         VisualAssetService visualAssets,
         AssistantCapabilityRegistry capabilities,
+        ActionReceiptService actionReceipts,
         PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
@@ -66,6 +68,7 @@ public class ChatController : ControllerBase
         _screenAnalysis = screenAnalysis;
         _visualAssets = visualAssets;
         _capabilities = capabilities;
+        _actionReceipts = actionReceipts;
         _ttsService = ttsService;
         _config = config;
         _logger = logger;
@@ -567,7 +570,9 @@ public class ChatController : ControllerBase
         // logging the prompt, user text, attachment, or provider payload.
         var capabilityContext = new AssistantRuntimeContext(
             visualAsset is not null,
-            req.SupportsScreenAnalysis);
+            req.SupportsScreenAnalysis,
+            req.SupportsExternalActions,
+            ReminderService.IsValidDeviceId(req.DeviceId));
         var capabilitySnapshot = _capabilities.GetSnapshot(capabilityContext);
 
         // Save user message
@@ -632,6 +637,9 @@ public class ChatController : ControllerBase
                 userId, userMessage.Id, messageText, geminiKey, HttpContext.RequestAborted)
             : Task.CompletedTask;
         var externalAction = await externalActionTask;
+        var actionProposal = externalAction is null
+            ? null
+            : await _actionReceipts.ProposeAsync(userId, userMessage.Id, externalAction, HttpContext.RequestAborted);
         var recalledFacts = await recalledFactsTask;
 
         // Build conversation history: this session is persistent and never rotates
@@ -703,7 +711,7 @@ public class ChatController : ControllerBase
                            systemPrompt;
         }
 
-        if (externalAction is not null)
+        if (actionProposal is not null && externalAction is not null)
         {
             systemPrompt = externalAction.Type switch
             {
@@ -734,15 +742,17 @@ public class ChatController : ControllerBase
             await Response.Body.FlushAsync();
         }
 
-        if (externalAction is not null)
+        if (actionProposal is not null)
         {
             var actionData = JsonSerializer.Serialize(new
             {
                 externalAction = new
                 {
-                    type = externalAction.Type,
-                    query = externalAction.Query,
-                    videoId = externalAction.VideoId
+                    actionId = actionProposal.ActionId,
+                    type = actionProposal.Type,
+                    taxonomy = actionProposal.Taxonomy,
+                    query = actionProposal.Query,
+                    videoId = actionProposal.VideoId
                 }
             });
             await Response.WriteAsync($"data: {actionData}\n\n");
@@ -795,7 +805,7 @@ public class ChatController : ControllerBase
         // in parallel with the real (possibly slow, search-grounded) response, so we
         // can speak a natural "hold on" phrase while the real answer is still cooking
         // instead of leaving the user in silence for several seconds.
-        var preambleTask = externalAction is null
+        var preambleTask = actionProposal is null
             ? GetPreambleIfNeededAsync(messageText, geminiKey, HttpContext.RequestAborted)
             : Task.FromResult<string?>(null);
 

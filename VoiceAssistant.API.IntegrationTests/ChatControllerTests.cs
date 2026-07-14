@@ -127,8 +127,26 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
         using var actionJson = JsonDocument.Parse(actionLine[6..]);
         var action = actionJson.RootElement.GetProperty("externalAction");
         Assert.Equal(ExternalActionTypes.YouTubeSearch, action.GetProperty("type").GetString());
+        Assert.Equal("external", action.GetProperty("taxonomy").GetString());
         Assert.Equal("песни Высоцкого", action.GetProperty("query").GetString());
         Assert.Equal(JsonValueKind.Null, action.GetProperty("videoId").ValueKind);
+        var actionId = action.GetProperty("actionId").GetGuid();
+
+        var dispatched = await client.PostAsJsonAsync("/api/v1/actions/receipts",
+            new ActionsController.RecordReceiptRequest(actionId, ActionReceiptStatuses.HandlerDispatched, "external_handler_dispatched"));
+        dispatched.EnsureSuccessStatusCode();
+        var receipt = await dispatched.Content.ReadFromJsonAsync<ActionReceiptResponse>();
+        Assert.Equal(ActionReceiptStatuses.HandlerDispatched, receipt!.Status);
+        Assert.Equal("external_handler_dispatched", receipt.ResultCode);
+
+        // A mobile retry of the exact terminal receipt is safe, but a later
+        // contradictory receipt cannot turn a dispatched handler into failure.
+        var duplicate = await client.PostAsJsonAsync("/api/v1/actions/receipts",
+            new ActionsController.RecordReceiptRequest(actionId, ActionReceiptStatuses.HandlerDispatched, "external_handler_dispatched"));
+        duplicate.EnsureSuccessStatusCode();
+        var conflicting = await client.PostAsJsonAsync("/api/v1/actions/receipts",
+            new ActionsController.RecordReceiptRequest(actionId, ActionReceiptStatuses.Failed, "external_handler_failed"));
+        Assert.Equal(HttpStatusCode.NotFound, conflicting.StatusCode);
         Assert.Contains("data: [DONE]", raw);
     }
 

@@ -25,6 +25,7 @@ public class AppDbContext : IdentityDbContext<User>
     public DbSet<MemoryFact> MemoryFacts => Set<MemoryFact>();
     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
     public DbSet<MemoryOperation> MemoryOperations => Set<MemoryOperation>();
+    public DbSet<ActionReceipt> ActionReceipts => Set<ActionReceipt>();
     public DbSet<Reminder> Reminders => Set<Reminder>();
     public DbSet<ReminderDelivery> ReminderDeliveries => Set<ReminderDelivery>();
     public DbSet<VisualAsset> VisualAssets => Set<VisualAsset>();
@@ -199,6 +200,18 @@ public class AppDbContext : IdentityDbContext<User>
             e.Property(o => o.ResultCode).HasMaxLength(40);
             e.Property(o => o.ConfirmationTokenHash).HasMaxLength(64);
             e.HasIndex(o => new { o.UserId, o.CreatedAt });
+        });
+
+        builder.Entity<ActionReceipt>(e =>
+        {
+            e.HasOne(receipt => receipt.User).WithMany()
+                .HasForeignKey(receipt => receipt.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(receipt => receipt.ActionType).HasMaxLength(40);
+            e.Property(receipt => receipt.Taxonomy).HasMaxLength(30);
+            e.Property(receipt => receipt.Status).HasMaxLength(30);
+            e.Property(receipt => receipt.ResultCode).HasMaxLength(64);
+            e.HasIndex(receipt => new { receipt.UserId, receipt.CreatedAt });
+            e.HasIndex(receipt => new { receipt.SourceMessageId, receipt.CreatedAt });
         });
 
         builder.Entity<Reminder>(e =>

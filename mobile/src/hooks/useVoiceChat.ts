@@ -814,16 +814,32 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
             setError(result.error ?? 'Не удалось установить локальное напоминание');
           }
         };
+        const recordActionStatus = (
+          action: Parameters<typeof executeExternalAction>[0],
+          status: 'handler_dispatched' | 'failed' | 'cancelled',
+          resultCode: string,
+        ) => {
+          void api.recordActionReceipt(action.actionId, status, resultCode)
+            .catch((error) => log('warn', 'external-action', 'could not record action receipt', {
+              type: action.type,
+              taxonomy: action.taxonomy,
+              status,
+              error: error instanceof Error ? error.message : String(error),
+            }));
+        };
         const handleExternalAction = async (action: Parameters<typeof executeExternalAction>[0]) => {
-          if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) return;
-          const actionKey = JSON.stringify(action);
+          if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) {
+            recordActionStatus(action, 'cancelled', 'turn_cancelled');
+            return;
+          }
+          const actionKey = action.actionId;
           if (executedExternalActionsRef.current.has(actionKey)) {
-            log('debug', 'external-action', 'duplicate action ignored', { type: action.type });
+            log('debug', 'external-action', 'duplicate action ignored', { type: action.type, taxonomy: action.taxonomy });
             return;
           }
           executedExternalActionsRef.current.add(actionKey);
           pendingExternalActionHolder.current = action;
-          log('info', 'external-action', 'action queued until speech completes', { type: action.type });
+          log('info', 'external-action', 'action queued until speech completes', { type: action.type, taxonomy: action.taxonomy });
         };
         const handleScreenCapture = (request: ScreenCaptureRequest) => {
           if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) return;
@@ -966,6 +982,9 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
           log('info', 'turn', 'discarding superseded, stale-turn, or barged-in-over reply', {
             replyLength: fullReply.length,
           });
+          if (pendingExternalActionHolder.current) {
+            recordActionStatus(pendingExternalActionHolder.current, 'cancelled', 'turn_cancelled');
+          }
           streamingHolder.current?.abort();
           return;
         }
@@ -1018,8 +1037,11 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
             log('info', 'external-action', 'listening suspended for external media', { stopTimedOut });
           }
           try {
-            await executeExternalAction(pendingExternalAction);
+            const receipt = await executeExternalAction(pendingExternalAction);
+            recordActionStatus(pendingExternalAction, receipt.status, receipt.resultCode);
           } catch (err) {
+            const resultCode = err instanceof ExternalActionExecutionError ? err.resultCode : 'handler_failed';
+            recordActionStatus(pendingExternalAction, 'failed', resultCode);
             if (opensExternalMedia) {
               externalMediaWaitingRef.current = false;
               pausedRef.current = false;
@@ -1027,7 +1049,10 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
             }
             throw err;
           }
-          log('info', 'external-action', 'action opened after speech', { type: pendingExternalAction.type });
+          log('info', 'external-action', 'handler dispatched after speech', {
+            type: pendingExternalAction.type,
+            taxonomy: pendingExternalAction.taxonomy,
+          });
         }
         log('info', 'turn', 'finalize done', { totalMs: Date.now() - turnStartedAt });
       } catch (err) {

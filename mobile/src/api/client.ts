@@ -342,6 +342,12 @@ export const api = {
       body: JSON.stringify({ operationId, confirmationToken }),
     }),
 
+  recordActionReceipt: (actionId: string, status: 'handler_dispatched' | 'failed' | 'cancelled', resultCode?: string): Promise<void> =>
+    request<void>('/actions/receipts', {
+      method: 'POST',
+      body: JSON.stringify({ actionId, status, resultCode }),
+    }),
+
   getReminders: (deviceId: string): Promise<ReminderSyncItem[]> =>
     request<ReminderSyncItem[]>(`/reminders?deviceId=${encodeURIComponent(deviceId)}`),
 
@@ -532,10 +538,17 @@ export interface ScreenCaptureRequest {
   prompt: string;
 }
 
+export type ActionTaxonomy = 'navigation' | 'external';
+
+type ExternalActionBase = {
+  actionId: string;
+  taxonomy: ActionTaxonomy;
+};
+
 export type ExternalActionEvent =
-  | { type: 'open_vass'; query?: null; videoId?: null }
-  | { type: 'youtube_search'; query: string; videoId?: null }
-  | { type: 'youtube_watch'; query?: null; videoId: string };
+  | (ExternalActionBase & { type: 'open_vass'; taxonomy: 'navigation'; query?: null; videoId?: null })
+  | (ExternalActionBase & { type: 'youtube_search'; taxonomy: 'external'; query: string; videoId?: null })
+  | (ExternalActionBase & { type: 'youtube_watch'; taxonomy: 'external'; query?: null; videoId: string });
 
 export interface ReminderEvent {
   id: number;
@@ -562,12 +575,15 @@ export interface SendMessageCallbacks {
 function parseExternalAction(value: unknown): ExternalActionEvent | null {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Record<string, unknown>;
-  if (candidate.type === 'open_vass') return { type: 'open_vass' };
-  if (candidate.type === 'youtube_search' && typeof candidate.query === 'string') {
-    return { type: 'youtube_search', query: candidate.query };
+  if (typeof candidate.actionId !== 'string') return null;
+  if (candidate.type === 'open_vass' && candidate.taxonomy === 'navigation') {
+    return { actionId: candidate.actionId, type: 'open_vass', taxonomy: 'navigation' };
   }
-  if (candidate.type === 'youtube_watch' && typeof candidate.videoId === 'string') {
-    return { type: 'youtube_watch', videoId: candidate.videoId };
+  if (candidate.type === 'youtube_search' && candidate.taxonomy === 'external' && typeof candidate.query === 'string') {
+    return { actionId: candidate.actionId, type: 'youtube_search', taxonomy: 'external', query: candidate.query };
+  }
+  if (candidate.type === 'youtube_watch' && candidate.taxonomy === 'external' && typeof candidate.videoId === 'string') {
+    return { actionId: candidate.actionId, type: 'youtube_watch', taxonomy: 'external', videoId: candidate.videoId };
   }
   return null;
 }

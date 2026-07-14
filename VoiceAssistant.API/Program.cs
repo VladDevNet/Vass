@@ -134,6 +134,7 @@ builder.Services.AddScoped<ConversationMemoryService>();
 builder.Services.AddScoped<LongTermMemoryService>();
 builder.Services.AddScoped<MemoryItemService>();
 builder.Services.AddSingleton<AssistantCapabilityRegistry>();
+builder.Services.AddScoped<ActionReceiptService>();
 builder.Services.AddScoped<ReminderService>();
 builder.Services.AddSingleton<ExternalActionService>();
 builder.Services.AddSingleton<ScreenAnalysisIntentService>();
