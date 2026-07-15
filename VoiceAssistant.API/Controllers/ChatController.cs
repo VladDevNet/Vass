@@ -106,15 +106,15 @@ public class ChatController : ControllerBase
     // receive a free-form tool call; this recognizes only a direct user
     // request and returns a durable receipt before the model can confirm it.
     private static readonly Regex RememberCommandPattern = new(
-        @"(?<!\p{L})(?:запомни(?:те)?|сохрани(?:те)?)\b(?<text>[^.!?\r\n]*)",
+        @"(?<!\p{L})(?:запомни(?:те|м)?|сохрани(?:те|м)?|запиши(?:те|м)?|добавь(?:те)?|внеси(?:те)?|положи(?:те|м)?|запомнить|сохранить|записать|добавить|внести|положить)\b(?<text>[^.!?\r\n]*)",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex RememberLeadingFillerPattern = new(
-        @"\A(?:(?:мне|нам|пожалуйста)\s*,?\s*)+|\A(?:в\s+(?:долгосрочную\s+)?память\s*,?\s*)",
+        @"\A(?:(?:мне|нам|пожалуйста|давай(?:-ка)?|ну|вот|не\s+знаю)\s*,?\s*|(?:в\s+(?:(?:долгосрочную|обычную)\s+)?память)\s*,?\s*)+",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex RememberTrailingMemoryPattern = new(
-        @"\s+(?:в\s+(?:долгосрочную\s+)?память)\s*\z",
+        @"\s+(?:в\s+(?:(?:долгосрочную|обычную)\s+)?память)\s*\z",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex RememberLinkReferencePattern = new(
@@ -875,6 +875,32 @@ public class ChatController : ControllerBase
                 _ =>
                     $"Напоминание «{reminder.Text}» сохранено на сервере, но телефон ещё не подтвердил локальную установку. Не утверждай, что оно уже установлено; скажи, что требуется проверка уведомлений на телефоне.\n\n{systemPrompt}"
             };
+        }
+
+        // An explicit memory request already has a durable server-side
+        // result. Do not make its acknowledgement depend on Gemini: a blank
+        // provider stream must never turn a completed save into a client error.
+        if (explicitMemoryReceipt is not null)
+        {
+            if (wavPath != null)
+            {
+                try { if (System.IO.File.Exists(wavPath)) System.IO.File.Delete(wavPath); } catch { }
+            }
+
+            var receiptText = GetMemoryReceiptFallback(explicitMemoryReceipt);
+            var receiptData = JsonSerializer.Serialize(new { text = receiptText });
+            await Response.WriteAsync($"data: {receiptData}\n\n");
+            await Response.Body.FlushAsync();
+
+            session.Messages.Add(new Message { Role = "assistant", Content = receiptText });
+            user.LastActiveAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync();
+
+            await Response.WriteAsync("data: [DONE]\n\n");
+            await Response.Body.FlushAsync();
+            await AwaitTurnSideEffectsAsync(instructionUpdateTask, memoryUpdateTask);
+            await _conversationMemory.CheckAndUpdateAsync(session, geminiKey, HttpContext.RequestAborted);
+            return;
         }
 
         // Cleanup wav file
