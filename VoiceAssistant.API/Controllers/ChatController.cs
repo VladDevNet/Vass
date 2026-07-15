@@ -33,6 +33,8 @@ public class ChatController : ControllerBase
     private readonly VisualAssetService _visualAssets;
     private readonly AssistantCapabilityRegistry _capabilities;
     private readonly ActionReceiptService _actionReceipts;
+    private readonly AssistantToolPlannerService _toolPlanner;
+    private readonly AssistantToolBroker _toolBroker;
     private readonly IConfiguration _config;
     private readonly ILogger<ChatController> _logger;
     private readonly string _audioPath;
@@ -50,6 +52,8 @@ public class ChatController : ControllerBase
         VisualAssetService visualAssets,
         AssistantCapabilityRegistry capabilities,
         ActionReceiptService actionReceipts,
+        AssistantToolPlannerService toolPlanner,
+        AssistantToolBroker toolBroker,
         PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
@@ -69,6 +73,8 @@ public class ChatController : ControllerBase
         _visualAssets = visualAssets;
         _capabilities = capabilities;
         _actionReceipts = actionReceipts;
+        _toolPlanner = toolPlanner;
+        _toolBroker = toolBroker;
         _ttsService = ttsService;
         _config = config;
         _logger = logger;
@@ -738,19 +744,38 @@ public class ChatController : ControllerBase
         session.Messages.Add(userMessage);
         await _db.SaveChangesAsync();
 
-        var externalActionContext = session.Messages
-            .Where(item => item.Id != userMessage.Id && !string.IsNullOrWhiteSpace(item.Content))
+        var toolPlanningMessages = session.Messages
+            .Where(item => !string.IsNullOrWhiteSpace(item.Content))
             .OrderBy(item => item.CreatedAt)
-            .TakeLast(6)
+            .TakeLast(12)
             .Select(item => new GeminiMessage(item.Role, item.Content))
             .ToList();
-        var externalActionTask = req.SupportsExternalActions
-            ? _externalActions.ClassifyAsync(
-                messageText,
-                externalActionContext,
-                geminiKey,
-                HttpContext.RequestAborted)
-            : Task.FromResult<ExternalActionCommand?>(null);
+        var toolCalls = await _toolPlanner.PlanAsync(
+            _capabilities.BuildPromptManifest(capabilityContext),
+            toolPlanningMessages,
+            geminiKey,
+            HttpContext.RequestAborted);
+        // A mediated screen capture restarts the turn with an image. It must
+        // be the only side effect in this preflight turn.
+        if (toolCalls.Any(call => call.Name == "screen_capture_once"))
+            toolCalls = toolCalls.Where(call => call.Name == "screen_capture_once").Take(1).ToList();
+        var toolExecutions = await _toolBroker.ExecuteAsync(
+            toolCalls,
+            userId,
+            userMessage.Id,
+            capabilityContext,
+            HttpContext.RequestAborted);
+        var screenCaptureRequested = toolExecutions.Any(result => result.RequestsScreenCapture);
+        var actionExecution = toolExecutions.FirstOrDefault(result => result.ExternalAction is not null && result.ActionReceiptId is not null);
+        var externalAction = actionExecution?.ExternalAction;
+        var actionProposal = actionExecution is null || actionExecution.ActionReceiptId is not { } actionId || externalAction is null
+            ? null
+            : new ActionProposal(
+                actionId,
+                externalAction.Type,
+                ActionReceiptService.GetTaxonomy(externalAction.Type) ?? AssistantActionTaxonomies.External,
+                externalAction.Query,
+                externalAction.VideoId);
 
         var reminderInterpretation = await _reminders.TryCreateAsync(
             userId,
@@ -760,9 +785,6 @@ public class ChatController : ControllerBase
             req.TimeZoneId,
             geminiKey,
             HttpContext.RequestAborted);
-        var explicitMemoryCommand = await TryRememberCommandAsync(
-            userId, userMessage.Id, commandText ?? "", sharedContent, session.Messages, geminiKey, HttpContext.RequestAborted);
-        var explicitMemoryReceipt = explicitMemoryCommand?.Receipt;
         // Check (in parallel, doesn't block the response) whether the user asked the
         // assistant to remember a persistent behavior preference ("говори медленнее",
         // "давай на ты", etc.) so future turns' system prompts reflect it. Awaited at
@@ -777,14 +799,11 @@ public class ChatController : ControllerBase
         // path. Extraction of facts from this turn starts immediately afterwards
         // on its own factory-created DbContext and runs alongside the main answer.
         var recalledFactsTask = _longTermMemory.RecallAsync(userId, messageText, geminiKey, HttpContext.RequestAborted);
-        var memoryUpdateTask = reminderInterpretation.State == ReminderInterpretationState.None && explicitMemoryReceipt is null
+        var memoryUpdateTask = reminderInterpretation.State == ReminderInterpretationState.None &&
+                               !toolExecutions.Any(result => result.Name.StartsWith("memory_", StringComparison.Ordinal))
             ? _longTermMemory.ExtractAndStoreAsync(
                 userId, userMessage.Id, messageText, geminiKey, HttpContext.RequestAborted)
             : Task.CompletedTask;
-        var externalAction = await externalActionTask;
-        var actionProposal = externalAction is null
-            ? null
-            : await _actionReceipts.ProposeAsync(userId, userMessage.Id, externalAction, HttpContext.RequestAborted);
         var recalledFacts = await recalledFactsTask;
 
         // Build conversation history: this session is persistent and never rotates
@@ -834,11 +853,11 @@ public class ChatController : ControllerBase
 
         systemPrompt = _capabilities.BuildPromptManifest(capabilityContext) + "\n\n" + systemPrompt;
 
-        if (explicitMemoryReceipt is not null)
+        var memoryToolResult = toolExecutions.FirstOrDefault(result => result.Name.StartsWith("memory_", StringComparison.Ordinal));
+        if (memoryToolResult is not null)
         {
-            systemPrompt = explicitMemoryReceipt.Code is "remembered" or "already_known"
-                ? "Получен подтвержденный server receipt явной операции памяти. Коротко и естественно подтверди, что запись сохранена; не добавляй деталей о внутренней реализации.\n\n" + systemPrompt
-                : "Явная операция памяти не была подтверждена. Не говори, что что-либо запомнила; коротко объясни, что сохранение не состоялось.\n\n" + systemPrompt;
+            systemPrompt = $"Инструмент памяти вернул подтвержденный результат: {memoryToolResult.Summary} " +
+                           "Отвечай только на его основании, естественно и кратко; не утверждай то, чего receipt не подтвердил.\n\n" + systemPrompt;
         }
 
         if (visualAsset is not null)
@@ -907,6 +926,21 @@ public class ChatController : ControllerBase
             await Response.Body.FlushAsync();
         }
 
+        if (screenCaptureRequested)
+        {
+            // This was an orchestration preflight. The retry with the actual
+            // image owns the user message, just like the existing capture
+            // flow above; do not leave a duplicate text-only turn behind.
+            _db.Messages.Remove(userMessage);
+            await _db.SaveChangesAsync(HttpContext.RequestAborted);
+            var captureData = JsonSerializer.Serialize(new { screenCapture = new { prompt = messageText } });
+            await Response.WriteAsync($"data: {captureData}\n\n");
+            await Response.WriteAsync("data: [DONE]\n\n");
+            await Response.Body.FlushAsync();
+            await AwaitTurnSideEffectsAsync(instructionUpdateTask, Task.CompletedTask);
+            return;
+        }
+
         if (reminderInterpretation.Reminder is { } reminder)
         {
             var reminderData = JsonSerializer.Serialize(new
@@ -937,32 +971,6 @@ public class ChatController : ControllerBase
                 _ =>
                     $"Напоминание «{reminder.Text}» сохранено на сервере, но телефон ещё не подтвердил локальную установку. Не утверждай, что оно уже установлено; скажи, что требуется проверка уведомлений на телефоне.\n\n{systemPrompt}"
             };
-        }
-
-        // An explicit memory request already has a durable server-side
-        // result. Do not make its acknowledgement depend on Gemini: a blank
-        // provider stream must never turn a completed save into a client error.
-        if (explicitMemoryReceipt is not null)
-        {
-            if (wavPath != null)
-            {
-                try { if (System.IO.File.Exists(wavPath)) System.IO.File.Delete(wavPath); } catch { }
-            }
-
-            var receiptText = GetMemoryReceiptFallback(explicitMemoryReceipt, explicitMemoryCommand?.Text);
-            var receiptData = JsonSerializer.Serialize(new { text = receiptText });
-            await Response.WriteAsync($"data: {receiptData}\n\n");
-            await Response.Body.FlushAsync();
-
-            session.Messages.Add(new Message { Role = "assistant", Content = receiptText });
-            user.LastActiveAt = DateTime.UtcNow;
-            await _db.SaveChangesAsync();
-
-            await Response.WriteAsync("data: [DONE]\n\n");
-            await Response.Body.FlushAsync();
-            await AwaitTurnSideEffectsAsync(instructionUpdateTask, memoryUpdateTask);
-            await _conversationMemory.CheckAndUpdateAsync(session, geminiKey, HttpContext.RequestAborted);
-            return;
         }
 
         // Cleanup wav file
@@ -1046,15 +1054,6 @@ public class ChatController : ControllerBase
         if (fullResponse.Length == 0 && externalAction is not null)
         {
             var fallback = GetExternalActionFallback(externalAction.Type);
-            fullResponse.Append(fallback);
-            var fallbackData = JsonSerializer.Serialize(new { text = fallback });
-            await Response.WriteAsync($"data: {fallbackData}\n\n");
-            await Response.Body.FlushAsync();
-        }
-
-        if (fullResponse.Length == 0 && explicitMemoryReceipt is not null)
-        {
-            var fallback = GetMemoryReceiptFallback(explicitMemoryReceipt);
             fullResponse.Append(fallback);
             var fallbackData = JsonSerializer.Serialize(new { text = fallback });
             await Response.WriteAsync($"data: {fallbackData}\n\n");

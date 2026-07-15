@@ -249,7 +249,7 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
         var receiptLine = raw.Split('\n')
             .First(line => line.StartsWith("data: ") && line.Contains("text", StringComparison.Ordinal));
         using var receiptJson = JsonDocument.Parse(receiptLine[6..]);
-        Assert.Equal("Сохранено в долгосрочную память: Беллу 15 лет.",
+        Assert.Equal(FakeGeminiHandler.DefaultReplyText,
             receiptJson.RootElement.GetProperty("text").GetString());
         Assert.Contains("data: [DONE]", raw);
         Assert.DoesNotContain(FakeGeminiHandler.DefaultReplyText, raw);
@@ -276,7 +276,7 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
         var receiptLine = raw.Split('\n')
             .First(line => line.StartsWith("data: ") && line.Contains("text", StringComparison.Ordinal));
         using var receiptJson = JsonDocument.Parse(receiptLine[6..]);
-        Assert.Equal("Сохранено в долгосрочную память: Пользователь хочет стать космонавтом.",
+        Assert.Equal(FakeGeminiHandler.DefaultReplyText,
             receiptJson.RootElement.GetProperty("text").GetString());
         Assert.Contains("data: [DONE]", raw);
 

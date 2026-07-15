@@ -42,7 +42,14 @@ public class FakeGeminiHandler : HttpMessageHandler
         var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
 
         var replyText = DefaultReplyText;
-        if (body.Contains(ScreenAnalysisParseMarker, StringComparison.Ordinal))
+        if (body.Contains("\"functionDeclarations\"", StringComparison.Ordinal))
+        {
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(BuildToolPlan(ReadAllText(body)), Encoding.UTF8, "application/json")
+            };
+        }
+        else if (body.Contains(ScreenAnalysisParseMarker, StringComparison.Ordinal))
         {
             replyText = ReadPromptText(body).Contains("объясни", StringComparison.OrdinalIgnoreCase)
                 ? "{\"type\":\"screen_analyze\"}"
@@ -74,6 +81,14 @@ public class FakeGeminiHandler : HttpMessageHandler
                         ? $"{{\"facts\":[\"{url.Value}\"]}}"
                         : "{\"facts\":[]}";
         }
+        else if (body.Contains("Инструмент памяти вернул подтвержденный результат", StringComparison.Ordinal))
+        {
+            replyText = body.Contains("космонавтом", StringComparison.OrdinalIgnoreCase)
+                ? "Сохранено в долгосрочную память: Пользователь хочет стать космонавтом."
+                : body.Contains("Беллу 15 лет", StringComparison.OrdinalIgnoreCase)
+                    ? "Сохранено в долгосрочную память: Беллу 15 лет."
+                    : "Сохранено в долгосрочную память.";
+        }
         else if (ReadAllText(body).Contains("Подбери конкретный ролик", StringComparison.Ordinal))
         {
             replyText = "Нашёл подходящий ролик: https://www.youtube.com/watch?v=bWGXT5wjkd4";
@@ -95,6 +110,50 @@ public class FakeGeminiHandler : HttpMessageHandler
             }
         });
         return $"data: {payload}\n\n";
+    }
+
+    private static string BuildToolPlan(string content)
+    {
+        var url = UrlPattern.Match(content).Value;
+        if (content.Contains("космонав", StringComparison.OrdinalIgnoreCase))
+            return BuildFunctionCall("memory_remember", new { text = "Пользователь хочет стать космонавтом" });
+        if (content.Contains("возраст Белла", StringComparison.OrdinalIgnoreCase))
+            return BuildFunctionCall("memory_remember", new { text = "Беллу 15 лет" });
+        if ((content.Contains("запомни", StringComparison.OrdinalIgnoreCase) ||
+             content.Contains("запиши", StringComparison.OrdinalIgnoreCase) ||
+             content.Contains("сохрани", StringComparison.OrdinalIgnoreCase) ||
+             content.Contains("положить", StringComparison.OrdinalIgnoreCase)) && !string.IsNullOrWhiteSpace(url))
+            return BuildFunctionCall("memory_remember", new { text = $"Сохраненная ссылка на YouTube: {url}" });
+        if (content.Contains("Высоцкого", StringComparison.OrdinalIgnoreCase))
+            return BuildFunctionCall("youtube_search", new { query = "песни Высоцкого" });
+        if (content.Contains("Запускай", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(url))
+            return BuildFunctionCall("youtube_watch", new { videoId = "bWGXT5wjkd4" });
+        if (content.Contains("запусти это видео", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(url))
+        {
+            var id = UrlPattern.Match(url).Value.Contains("bWGXT5wjkd4", StringComparison.Ordinal)
+                ? "bWGXT5wjkd4"
+                : "bWGXT5wjkd4";
+            return BuildFunctionCall("youtube_watch", new { videoId = id });
+        }
+        return "{}";
+    }
+
+    private static string BuildFunctionCall(string name, object args)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            candidates = new[]
+            {
+                new
+                {
+                    content = new
+                    {
+                        parts = new[] { new { functionCall = new { name, args, id = "test-call" } } }
+                    }
+                }
+            }
+        });
+        return payload;
     }
 
     private static string ReadPromptText(string body)
