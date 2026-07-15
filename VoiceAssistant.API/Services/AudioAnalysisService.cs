@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace VoiceAssistant.API.Services;
 
@@ -44,6 +45,88 @@ public class AudioAnalysisService
 
     private static bool LooksLikePromptLeak(string? text) =>
         !string.IsNullOrEmpty(text) && PromptLeakMarkers.Any(m => text.Contains(m, StringComparison.OrdinalIgnoreCase));
+
+    // Gemini is being used here as an ASR engine, rather than a conventional
+    // speech recognizer. On an occasional long or unclear recording it can
+    // get stuck repeating the last phrase it inferred ("угу, угу, ..." or a
+    // full sentence hundreds of times). That output must never become a chat
+    // message: it is neither useful user intent nor safe model context.
+    //
+    // This deliberately detects only a substantial *consecutive* loop. A
+    // person can naturally repeat a word or correct themselves; four repeats
+    // totalling at least twelve words and occupying 40% of the transcript is
+    // far beyond that and matches the production failure mode without trying
+    // to rewrite ordinary speech.
+    private static readonly Regex WordRegex = new(@"[\p{L}\p{N}]+", RegexOptions.Compiled);
+
+    public static string? RemovePathologicalRepetition(string? transcription)
+    {
+        if (string.IsNullOrWhiteSpace(transcription)) return transcription;
+
+        var text = transcription.Trim();
+        var words = WordRegex.Matches(text);
+        const int minimumRepetitions = 4;
+        const int minimumRepeatedWords = 12;
+        const int maximumPhraseWords = 12;
+
+        for (var start = 0; start < words.Count; start++)
+        {
+            var maximumPhraseLength = Math.Min(maximumPhraseWords, (words.Count - start) / minimumRepetitions);
+            for (var phraseLength = 1; phraseLength <= maximumPhraseLength; phraseLength++)
+            {
+                var repetitions = 1;
+                while (start + (repetitions + 1) * phraseLength <= words.Count &&
+                       WordsMatch(words, start, start + repetitions * phraseLength, phraseLength))
+                {
+                    repetitions++;
+                }
+
+                var repeatedWords = repetitions * phraseLength;
+                if (repetitions < minimumRepetitions ||
+                    repeatedWords < minimumRepeatedWords ||
+                    repeatedWords * 100 < words.Count * 40)
+                {
+                    continue;
+                }
+
+                // Keep only speech before the detected loop. A suffix after
+                // a model loop is no more trustworthy than the loop itself.
+                var prefix = start == 0 ? "" : text[..words[start].Index].TrimEnd(' ', ',', ';', ':', '-');
+                return WordRegex.Matches(prefix).Count >= 3 ? prefix : null;
+            }
+        }
+
+        return text;
+    }
+
+    private static bool WordsMatch(MatchCollection words, int firstStart, int secondStart, int length)
+    {
+        for (var index = 0; index < length; index++)
+        {
+            if (!string.Equals(words[firstStart + index].Value, words[secondStart + index].Value,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private string? FilterPathologicalRepetition(string? transcription, string source)
+    {
+        var filtered = RemovePathologicalRepetition(transcription);
+        if (!string.Equals(transcription?.Trim(), filtered, StringComparison.Ordinal))
+        {
+            _logger.LogWarning(
+                "Discarded pathological repeated ASR output from {Source}. OriginalWordCount: {OriginalWordCount}, RetainedWordCount: {RetainedWordCount}",
+                source,
+                WordRegex.Matches(transcription ?? "").Count,
+                WordRegex.Matches(filtered ?? "").Count);
+        }
+
+        return filtered;
+    }
 
     // Best-effort salvage when Gemini's response got cut off mid-generation
     // (hit maxOutputTokens before the JSON object could close) — rather than
@@ -236,7 +319,7 @@ public class AudioAnalysisService
                 return null;
             }
 
-            return transcription;
+            return FilterPathologicalRepetition(transcription, "direct transcription");
         }
         catch (Exception ex)
         {
@@ -396,7 +479,11 @@ public class AudioAnalysisService
                     _logger.LogWarning(
                         "Completion-check response truncated before JSON closed — salvaged {Length}-char partial transcription. Raw: {Content}",
                         partial.Length, content);
-                    return new UtteranceCheckResult { Transcription = partial, Complete = false };
+                    return new UtteranceCheckResult
+                    {
+                        Transcription = FilterPathologicalRepetition(partial, "completion-check partial") ?? "",
+                        Complete = false
+                    };
                 }
                 _logger.LogWarning("No JSON found in completion-check response: {Content}", content);
                 return null;
@@ -412,6 +499,12 @@ public class AudioAnalysisService
             {
                 _logger.LogWarning("Gemini echoed its own prompt instead of transcribing — treating as no speech. Raw: {Content}", content);
                 return new UtteranceCheckResult { Transcription = "", Complete = false };
+            }
+
+            if (result != null)
+            {
+                result.Transcription = FilterPathologicalRepetition(result.Transcription, "completion check") ?? "";
+                if (string.IsNullOrWhiteSpace(result.Transcription)) result.Complete = false;
             }
 
             return result;
