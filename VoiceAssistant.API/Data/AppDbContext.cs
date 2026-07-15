@@ -61,7 +61,6 @@ public class AppDbContext : IdentityDbContext<User>
             e.HasOne(m => m.ChatSession).WithMany(s => s.Messages)
                 .HasForeignKey(m => m.ChatSessionId).OnDelete(DeleteBehavior.Cascade);
             e.Property(m => m.Role).HasMaxLength(10);
-            e.Property(m => m.CapabilitySnapshotJson).HasMaxLength(4000);
         });
 
         builder.Entity<VisualAsset>(e =>
