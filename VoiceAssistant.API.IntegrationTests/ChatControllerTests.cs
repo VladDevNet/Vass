@@ -249,13 +249,40 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
         var receiptLine = raw.Split('\n')
             .First(line => line.StartsWith("data: ") && line.Contains("text", StringComparison.Ordinal));
         using var receiptJson = JsonDocument.Parse(receiptLine[6..]);
-        Assert.Equal("Сохранено в долгосрочную память.", receiptJson.RootElement.GetProperty("text").GetString());
+        Assert.Equal("Сохранено в долгосрочную память: возраст Белла, там 15 лет.",
+            receiptJson.RootElement.GetProperty("text").GetString());
         Assert.Contains("data: [DONE]", raw);
         Assert.DoesNotContain(FakeGeminiHandler.DefaultReplyText, raw);
 
         var memory = await client.GetFromJsonAsync<JsonElement>("/api/v1/memory/items");
         Assert.Contains(memory.EnumerateArray(), item =>
             item.GetProperty("text").GetString() == "возраст Белла, там 15 лет");
+    }
+
+    [Fact]
+    public async Task Send_WriteMemoryWithSpokenFiller_ShowsTheExactSavedFact()
+    {
+        var client = await CreateAuthenticatedClientAsync();
+        var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
+        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>())
+            .EnumerateArray().First().GetProperty("id").GetInt32();
+
+        var response = await client.PostAsJsonAsync("/api/v1/chat/send",
+            new ChatController.SendRequest(sessionId,
+                "Запиши, пожалуйста, там, что я хочу быть космонавтом, в долгосрочную память."));
+
+        response.EnsureSuccessStatusCode();
+        var raw = await response.Content.ReadAsStringAsync();
+        var receiptLine = raw.Split('\n')
+            .First(line => line.StartsWith("data: ") && line.Contains("text", StringComparison.Ordinal));
+        using var receiptJson = JsonDocument.Parse(receiptLine[6..]);
+        Assert.Equal("Сохранено в долгосрочную память: я хочу быть космонавтом.",
+            receiptJson.RootElement.GetProperty("text").GetString());
+        Assert.Contains("data: [DONE]", raw);
+
+        var memory = await client.GetFromJsonAsync<JsonElement>("/api/v1/memory/items");
+        Assert.Contains(memory.EnumerateArray(), item =>
+            item.GetProperty("text").GetString() == "я хочу быть космонавтом");
     }
 
     [Fact]

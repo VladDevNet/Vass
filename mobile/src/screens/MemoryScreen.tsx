@@ -2,14 +2,17 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
-import { ArrowLeft, Check, Pencil, Plus, Search, Trash2 } from 'lucide-react-native';
+import { ArrowLeft, Check, Pencil, Plus, RefreshCw, Search, Trash2 } from 'lucide-react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { api, type MemoryItem, type MemoryStatus } from '../api/client';
 import { amoled } from '../theme/amoled';
 
@@ -48,6 +51,13 @@ export function MemoryScreen({ onDone }: MemoryScreenProps) {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') void load();
+    });
+    return () => subscription.remove();
+  }, [load]);
 
   const visibleItems = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
@@ -143,7 +153,7 @@ export function MemoryScreen({ onDone }: MemoryScreenProps) {
   }
 
   return (
-    <View style={styles.screen}>
+    <SafeAreaView style={styles.screen} edges={['top']}>
       <View style={styles.header}>
         <Pressable style={styles.iconButton} onPress={onDone} accessibilityLabel="Назад">
           <ArrowLeft size={22} color={amoled.textPrimary} />
@@ -154,12 +164,21 @@ export function MemoryScreen({ onDone }: MemoryScreenProps) {
             {status?.availability === 'disabled' ? 'Недоступна' : `${status?.activeCount ?? 0} сохранено`}
           </Text>
         </View>
-        <Pressable style={[styles.iconButton, items.length === 0 && styles.disabled]} onPress={clearAll} disabled={items.length === 0 || saving} accessibilityLabel="Очистить память">
-          <Trash2 size={20} color={items.length === 0 ? amoled.textSecondary : '#F87171'} />
-        </Pressable>
+        <View style={styles.toolbarActions}>
+          <Pressable style={[styles.iconButton, loading && styles.disabled]} onPress={() => void load()} disabled={loading} accessibilityLabel="Обновить список памяти">
+            <RefreshCw size={19} color={amoled.textSecondary} />
+          </Pressable>
+          <Pressable style={[styles.iconButton, items.length === 0 && styles.disabled]} onPress={clearAll} disabled={items.length === 0 || saving} accessibilityLabel="Очистить память">
+            <Trash2 size={20} color={items.length === 0 ? amoled.textSecondary : '#F87171'} />
+          </Pressable>
+        </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void load()} tintColor="#F6D37A" />}
+      >
         <Text style={styles.hint}>Сюда попадают только подтвержденные записи. Их можно исправить или удалить в любой момент.</Text>
         <View style={styles.composer}>
           <TextInput style={styles.composerInput} value={newText} onChangeText={setNewText} placeholder="Добавить факт" placeholderTextColor={amoled.textSecondary} multiline />
@@ -198,14 +217,15 @@ export function MemoryScreen({ onDone }: MemoryScreenProps) {
         ))}
         {!loading && visibleItems.length === 0 && <Text style={styles.empty}>{query ? 'Ничего не найдено' : 'Здесь пока нет сохраненных записей'}</Text>}
       </ScrollView>
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: amoled.background },
-  header: { minHeight: 74, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: amoled.glassBorder },
+  header: { minHeight: 64, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: amoled.glassBorder },
   titleBlock: { flex: 1, marginLeft: 12 },
+  toolbarActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   title: { color: amoled.textPrimary, fontSize: 20, fontWeight: '700' },
   subtitle: { color: amoled.textSecondary, fontSize: 13, marginTop: 2 },
   iconButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderRadius: 20, backgroundColor: amoled.glassBackground },

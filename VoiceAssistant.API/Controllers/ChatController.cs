@@ -110,7 +110,7 @@ public class ChatController : ControllerBase
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex RememberLeadingFillerPattern = new(
-        @"\A(?:(?:мне|нам|пожалуйста|давай(?:-ка)?|ну|вот|не\s+знаю)\s*,?\s*|(?:в\s+(?:(?:долгосрочную|обычную)\s+)?память)\s*,?\s*)+",
+        @"\A(?:(?:мне|нам|пожалуйста|давай(?:-ка)?|ну|вот|там|не\s+знаю)\s*,?\s*|(?:в\s+(?:(?:долгосрочную|обычную)\s+)?память)\s*,?\s*)+",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex RememberTrailingMemoryPattern = new(
@@ -140,7 +140,9 @@ public class ChatController : ControllerBase
         return true;
     }
 
-    private async Task<MemoryOperationResult?> TryRememberCommandAsync(
+    private sealed record ExplicitMemoryCommandResult(MemoryOperationResult Receipt, string Text);
+
+    private async Task<ExplicitMemoryCommandResult?> TryRememberCommandAsync(
         string userId, int sourceMessageId, string messageText, IEnumerable<Message> conversation, CancellationToken cancellationToken)
     {
         var match = RememberCommandPattern.Match(messageText);
@@ -162,12 +164,13 @@ public class ChatController : ControllerBase
         }
         if (string.IsNullOrWhiteSpace(text)) return null;
 
-        return await _memoryItems.RememberAsync(
+        var receipt = await _memoryItems.RememberAsync(
             userId,
             text,
             sourceMessageId,
             Guid.NewGuid(),
             cancellationToken);
+        return new(receipt, text);
     }
 
     private static string? GetLatestSharedUrl(IEnumerable<Message> conversation)
@@ -224,9 +227,11 @@ public class ChatController : ControllerBase
         _ => "Открываю поиск в YouTube."
     };
 
-    private static string GetMemoryReceiptFallback(MemoryOperationResult receipt) => receipt.Code switch
+    private static string GetMemoryReceiptFallback(MemoryOperationResult receipt, string? savedText = null) => receipt.Code switch
     {
+        "remembered" when !string.IsNullOrWhiteSpace(savedText) => $"Сохранено в долгосрочную память: {savedText}.",
         "remembered" => "Сохранено в долгосрочную память.",
+        "already_known" when !string.IsNullOrWhiteSpace(savedText) => $"Это уже сохранено в долгосрочной памяти: {savedText}.",
         "already_known" => "Это уже сохранено в долгосрочной памяти.",
         "memory_disabled" => "Долгосрочная память сейчас отключена, поэтому сохранить не удалось.",
         "sensitive_content_not_allowed" => "Такую чувствительную информацию я не сохраняю в долгосрочную память.",
@@ -699,8 +704,9 @@ public class ChatController : ControllerBase
             req.TimeZoneId,
             geminiKey,
             HttpContext.RequestAborted);
-        var explicitMemoryReceipt = await TryRememberCommandAsync(
+        var explicitMemoryCommand = await TryRememberCommandAsync(
             userId, userMessage.Id, messageText, session.Messages, HttpContext.RequestAborted);
+        var explicitMemoryReceipt = explicitMemoryCommand?.Receipt;
         // Check (in parallel, doesn't block the response) whether the user asked the
         // assistant to remember a persistent behavior preference ("говори медленнее",
         // "давай на ты", etc.) so future turns' system prompts reflect it. Awaited at
@@ -887,7 +893,7 @@ public class ChatController : ControllerBase
                 try { if (System.IO.File.Exists(wavPath)) System.IO.File.Delete(wavPath); } catch { }
             }
 
-            var receiptText = GetMemoryReceiptFallback(explicitMemoryReceipt);
+            var receiptText = GetMemoryReceiptFallback(explicitMemoryReceipt, explicitMemoryCommand?.Text);
             var receiptData = JsonSerializer.Serialize(new { text = receiptText });
             await Response.WriteAsync($"data: {receiptData}\n\n");
             await Response.Body.FlushAsync();
