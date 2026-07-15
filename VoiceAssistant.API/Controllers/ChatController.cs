@@ -177,6 +177,22 @@ public class ChatController : ControllerBase
         _ => "Открываю поиск в YouTube."
     };
 
+    private const int MaxSharedContentLength = 20_000;
+
+    private static string? NormalizeSharedContent(string? sharedContent)
+    {
+        if (string.IsNullOrWhiteSpace(sharedContent)) return null;
+        var normalized = sharedContent.Trim();
+        return normalized.Length <= MaxSharedContentLength
+            ? normalized
+            : normalized[..MaxSharedContentLength];
+    }
+
+    private static string IncludeSharedContent(string messageText, string? sharedContent) =>
+        sharedContent is null
+            ? messageText
+            : $"{messageText}\n\nПользователь поделился следующим содержимым:\n{sharedContent}";
+
     public record SendRequest(
         int SessionId,
         string Message,
@@ -185,7 +201,8 @@ public class ChatController : ControllerBase
         string? TimeZoneId = null,
         bool SupportsExternalActions = false,
         Guid? VisualAssetId = null,
-        bool SupportsScreenAnalysis = false);
+        bool SupportsScreenAnalysis = false,
+        string? SharedContent = null);
 
     private const long MaxAudioSize = 5 * 1024 * 1024; // 5MB
     private const long MaxImageSize = 10 * 1024 * 1024; // 10MB
@@ -419,6 +436,7 @@ public class ChatController : ControllerBase
         var geminiKey = settings?.GeminiApiKey;
 
         var messageText = req.Message;
+        var sharedContent = NormalizeSharedContent(req.SharedContent);
         string? transcription = null;
         string? wavPath = null;
         long convertMs = 0;
@@ -492,6 +510,8 @@ public class ChatController : ControllerBase
                 speakerIdMs = sw.ElapsedMilliseconds;
             }
         }
+
+        messageText = IncludeSharedContent(messageText ?? "", sharedContent);
 
         if (string.IsNullOrWhiteSpace(messageText))
         {

@@ -24,7 +24,7 @@ export type OverlayEvent =
   | { type: 'stopRequested' }
   | { type: 'vadTick'; timestamp: number }
   | { type: 'screenCapture'; requestId: string; status: 'ready' | 'cancelled' | 'error'; uri?: string | null; error?: string | null }
-  | { type: 'sharedImage'; requestId: string; status: 'ready' | 'error'; uri?: string | null; mimeType?: string | null; originalName?: string | null; error?: string | null };
+  | { type: 'sharedContent'; requestId: string; status: 'ready' | 'error'; kind?: 'text' | 'attachment' | null; text?: string | null; uri?: string | null; mimeType?: string | null; originalName?: string | null; error?: string | null };
 
 export interface ScreenCaptureResult {
   requestId: string | null;
@@ -33,9 +33,11 @@ export interface ScreenCaptureResult {
   error: string | null;
 }
 
-export interface SharedImageResult {
+export interface SharedContentResult {
   requestId: string | null;
   status: 'ready' | 'error' | null;
+  kind: 'text' | 'attachment' | null;
+  text: string | null;
   uri: string | null;
   mimeType: string | null;
   originalName: string | null;
@@ -52,8 +54,8 @@ interface NativeVassOverlayModule {
   requestScreenCapture(requestId: string): Promise<void>;
   getScreenCaptureResult(): Promise<ScreenCaptureResult>;
   clearScreenCaptureResult(requestId: string): Promise<void>;
-  getSharedImage(): Promise<SharedImageResult>;
-  acknowledgeSharedImage(requestId: string): Promise<void>;
+  getSharedContent(): Promise<SharedContentResult>;
+  acknowledgeSharedContent(requestId: string): Promise<void>;
   start(snapshot: OverlaySnapshot, appVisible: boolean): Promise<void>;
   update(snapshot: OverlaySnapshot): void;
   setAppVisible(visible: boolean): void;
@@ -119,16 +121,16 @@ export const VassOverlay = {
     await nativeModule?.clearScreenCaptureResult(requestId);
   },
 
-  async getSharedImage(): Promise<SharedImageResult> {
-    if (!nativeModule || typeof nativeModule.getSharedImage !== 'function') {
-      return { requestId: null, status: null, uri: null, mimeType: null, originalName: null, error: null };
+  async getSharedContent(): Promise<SharedContentResult> {
+    if (!nativeModule || typeof nativeModule.getSharedContent !== 'function') {
+      return { requestId: null, status: null, kind: null, text: null, uri: null, mimeType: null, originalName: null, error: null };
     }
-    return nativeModule.getSharedImage();
+    return nativeModule.getSharedContent();
   },
 
-  async acknowledgeSharedImage(requestId: string): Promise<void> {
-    if (typeof nativeModule?.acknowledgeSharedImage === 'function') {
-      await nativeModule.acknowledgeSharedImage(requestId);
+  async acknowledgeSharedContent(requestId: string): Promise<void> {
+    if (typeof nativeModule?.acknowledgeSharedContent === 'function') {
+      await nativeModule.acknowledgeSharedContent(requestId);
     }
   },
 

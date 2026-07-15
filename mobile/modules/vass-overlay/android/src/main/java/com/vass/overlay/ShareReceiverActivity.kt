@@ -34,7 +34,7 @@ class ShareReceiverActivity : Activity() {
     if (!processing.compareAndSet(false, true)) return
 
     Thread({
-      SharedImageStore.capture(applicationContext, shareIntent)
+      SharedContentStore.capture(applicationContext, shareIntent)
       runOnUiThread {
         packageManager.getLaunchIntentForPackage(packageName)?.let { launchIntent ->
           launchIntent.addFlags(

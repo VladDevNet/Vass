@@ -177,6 +177,35 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Fact]
+    public async Task Send_SharedYouTubeLink_IsIncludedWithTheVoicePromptAndCanLaunchTheVideo()
+    {
+        var client = await CreateAuthenticatedClientAsync();
+        var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
+        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>())
+            .EnumerateArray().First().GetProperty("id").GetInt32();
+
+        var response = await client.PostAsJsonAsync("/api/v1/chat/send",
+            new ChatController.SendRequest(
+                sessionId,
+                "Запусти это видео",
+                SupportsExternalActions: true,
+                SharedContent: "https://www.youtube.com/watch?v=bWGXT5wjkd4"));
+
+        response.EnsureSuccessStatusCode();
+        var raw = await response.Content.ReadAsStringAsync();
+        var actionLine = raw.Split('\n')
+            .First(line => line.StartsWith("data: ") && line.Contains("externalAction", StringComparison.Ordinal));
+        using var actionJson = JsonDocument.Parse(actionLine[6..]);
+        Assert.Equal(ExternalActionTypes.YouTubeWatch,
+            actionJson.RootElement.GetProperty("externalAction").GetProperty("type").GetString());
+
+        var session = await client.GetFromJsonAsync<JsonElement>($"/api/v1/chat/sessions/{sessionId}");
+        var userMessage = session.GetProperty("messages").EnumerateArray().First();
+        Assert.Contains("Запусти это видео", userMessage.GetProperty("content").GetString());
+        Assert.Contains("https://www.youtube.com/watch?v=bWGXT5wjkd4", userMessage.GetProperty("content").GetString());
+    }
+
+    [Fact]
     public async Task Send_ScreenAnalysisCapable_RequestsCaptureBeforePersistingMessage()
     {
         var client = await CreateAuthenticatedClientAsync();

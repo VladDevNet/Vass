@@ -12,25 +12,33 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
 
-internal object SharedImageStore {
+internal object SharedContentStore {
   private const val TAG = "VassShare"
   private const val PREFS = "vass_shared_attachment"
   private const val KEY_REQUEST_ID = "requestId"
   private const val KEY_STATUS = "status"
+  private const val KEY_KIND = "kind"
+  private const val KEY_TEXT = "text"
   private const val KEY_URI = "uri"
   private const val KEY_MIME_TYPE = "mimeType"
   private const val KEY_ORIGINAL_NAME = "originalName"
   private const val KEY_ERROR = "error"
   private const val MAX_BYTES = 50L * 1024L * 1024L
+  private const val MAX_TEXT_CHARS = 20_000
 
   fun capture(context: Context, intent: Intent) {
     val requestId = UUID.randomUUID().toString()
     try {
+      val sharedText = extractText(intent)
+      if (sharedText != null) {
+        save(context, requestId, "ready", kind = "text", text = sharedText)
+        return
+      }
       val uri = extractUri(intent) ?: throw IllegalArgumentException("Shared intent does not contain a stream URI")
       val mimeType = normalizeMimeType(context.contentResolver.getType(uri) ?: intent.type)
       val originalName = displayName(context.contentResolver, uri)
       val copiedUri = copyToCache(context, uri, mimeType)
-      save(context, requestId, "ready", copiedUri, mimeType, originalName)
+      save(context, requestId, "ready", kind = "attachment", uri = copiedUri, mimeType = mimeType, originalName = originalName)
     } catch (exception: Exception) {
       Log.e(TAG, "Could not stage shared attachment", exception)
       save(context, requestId, "error", error = "shared_attachment_unavailable")
@@ -42,6 +50,8 @@ internal object SharedImageStore {
     return mapOf(
       "requestId" to prefs.getString(KEY_REQUEST_ID, null),
       "status" to prefs.getString(KEY_STATUS, null),
+      "kind" to prefs.getString(KEY_KIND, null),
+      "text" to prefs.getString(KEY_TEXT, null),
       "uri" to prefs.getString(KEY_URI, null),
       "mimeType" to prefs.getString(KEY_MIME_TYPE, null),
       "originalName" to prefs.getString(KEY_ORIGINAL_NAME, null),
@@ -60,6 +70,8 @@ internal object SharedImageStore {
     context: Context,
     requestId: String,
     status: String,
+    kind: String? = null,
+    text: String? = null,
     uri: String? = null,
     mimeType: String? = null,
     originalName: String? = null,
@@ -72,11 +84,21 @@ internal object SharedImageStore {
     context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
       .putString(KEY_REQUEST_ID, requestId)
       .putString(KEY_STATUS, status)
+      .putString(KEY_KIND, kind)
+      .putString(KEY_TEXT, text)
       .putString(KEY_URI, uri)
       .putString(KEY_MIME_TYPE, mimeType)
       .putString(KEY_ORIGINAL_NAME, originalName)
       .putString(KEY_ERROR, error)
       .commit()
+  }
+
+  private fun extractText(intent: Intent): String? {
+    val raw = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+      ?: intent.getStringExtra(Intent.EXTRA_HTML_TEXT)
+      ?: return null
+    val text = raw.trim()
+    return text.take(MAX_TEXT_CHARS).takeIf { it.isNotEmpty() }
   }
 
   @Suppress("DEPRECATION")

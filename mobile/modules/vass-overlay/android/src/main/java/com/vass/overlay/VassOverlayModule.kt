@@ -117,12 +117,12 @@ class VassOverlayModule : Module() {
       null
     }
 
-    AsyncFunction("getSharedImage") {
-      SharedImageStore.read(requireContext())
+    AsyncFunction("getSharedContent") {
+      SharedContentStore.read(requireContext())
     }
 
-    AsyncFunction("acknowledgeSharedImage") { requestId: String ->
-      SharedImageStore.acknowledge(requireContext(), requestId)
+    AsyncFunction("acknowledgeSharedContent") { requestId: String ->
+      SharedContentStore.acknowledge(requireContext(), requestId)
       null
     }
 

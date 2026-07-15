@@ -20,6 +20,7 @@ import { MemoryScreen } from './MemoryScreen';
 import { VisualInputButton } from '../components/VisualInputButton';
 import { VisualSourceSheet } from '../components/VisualSourceSheet';
 import { PendingVisualPreview } from '../components/PendingVisualPreview';
+import { PendingSharedTextPreview } from '../components/PendingSharedTextPreview';
 import type { VisualSource } from '../visual/types';
 
 const SLEEP_AFTER_MS = 90_000;
@@ -74,6 +75,8 @@ export function HomeScreen() {
     visualUploadingUri,
     pickVisual,
     removePendingVisual,
+    pendingSharedText,
+    removePendingSharedText,
   } = useConversationRuntime();
   useConversationKeepAwake(state !== 'paused');
 
@@ -194,6 +197,10 @@ export function HomeScreen() {
             status={visualStatus}
             error={visualError}
             onRemove={() => void removePendingVisual()}
+          />
+          <PendingSharedTextPreview
+            pending={pendingSharedText}
+            onRemove={removePendingSharedText}
           />
         </View>
         {error && <Text style={styles.error}>{error}</Text>}

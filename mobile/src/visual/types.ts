@@ -8,6 +8,11 @@ export interface PendingVisualInput {
   originalName: string | null;
 }
 
+export interface PendingSharedText {
+  requestId: string;
+  content: string;
+}
+
 export interface StageVisualAssetInput {
   uri: string;
   mimeType?: string | null;

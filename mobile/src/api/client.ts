@@ -532,6 +532,7 @@ export interface SendMessageParams {
   supportsExternalActions?: boolean;
   supportsScreenAnalysis?: boolean;
   visualAssetId?: string;
+  sharedContent?: string;
 }
 
 export interface ScreenCaptureRequest {

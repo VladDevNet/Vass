@@ -3,10 +3,10 @@ import { AppState } from 'react-native';
 import { api } from '../api/client';
 import { useVoiceChat, type VoiceState } from '../hooks/useVoiceChat';
 import { useAuth } from './AuthContext';
-import { VassOverlay, type OverlayEvent, type SharedImageResult } from '../../modules/vass-overlay';
+import { VassOverlay, type OverlayEvent, type SharedContentResult } from '../../modules/vass-overlay';
 import { log } from '../logging/remoteLogger';
 import { useVisualInput } from '../hooks/useVisualInput';
-import type { PendingVisualInput, StageVisualAssetInput, VisualInputStatus, VisualSource } from '../visual/types';
+import type { PendingSharedText, PendingVisualInput, StageVisualAssetInput, VisualInputStatus, VisualSource } from '../visual/types';
 
 interface ConversationRuntimeValue {
   sessionId: number | null;
@@ -25,8 +25,10 @@ interface ConversationRuntimeValue {
   visualStatus: VisualInputStatus;
   visualError: string | null;
   visualUploadingUri: string | null;
+  pendingSharedText: PendingSharedText | null;
   pickVisual: (source: VisualSource) => Promise<void>;
   removePendingVisual: () => Promise<void>;
+  removePendingSharedText: () => void;
   stageVisualAsset: (input: StageVisualAssetInput) => Promise<PendingVisualInput | null>;
 }
 
@@ -36,18 +38,32 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
   const { avatarId, user } = useAuth();
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
+  const [pendingSharedText, setPendingSharedText] = useState<PendingSharedText | null>(null);
   const visual = useVisualInput();
+  const pendingSharedTextRef = useRef<PendingSharedText | null>(null);
+  const stageSharedText = useCallback((pending: PendingSharedText) => {
+    pendingSharedTextRef.current = pending;
+    setPendingSharedText(pending);
+  }, []);
+  const getPendingSharedText = useCallback(() => pendingSharedTextRef.current, []);
+  const consumePendingSharedText = useCallback((requestId: string) => {
+    if (pendingSharedTextRef.current?.requestId !== requestId) return;
+    pendingSharedTextRef.current = null;
+    setPendingSharedText(null);
+  }, []);
   const runtime = useVoiceChat(sessionId, {
     getPendingVisual: visual.getPendingVisual,
     consumePendingVisual: visual.consumePendingVisual,
     stageVisualAsset: visual.stageVisualAsset,
+    getPendingSharedText,
+    consumePendingSharedText,
   });
   const stateRef = useRef(runtime.state);
   const actionsRef = useRef(runtime);
   const resumeRequestedRef = useRef(false);
   const pausedForBackgroundRef = useRef(false);
   const restoredOverlayAudioRef = useRef(false);
-  const sharedImageAttemptRef = useRef<string | null>(null);
+  const sharedContentAttemptRef = useRef<string | null>(null);
 
   stateRef.current = runtime.state;
   actionsRef.current = runtime;
@@ -71,29 +87,38 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
     if (!user || !VassOverlay.isAvailable()) return;
     let cancelled = false;
 
-    const receiveSharedImage = async (sharedFromEvent?: Extract<OverlayEvent, { type: 'sharedImage' }>) => {
+    const receiveSharedContent = async (sharedFromEvent?: Extract<OverlayEvent, { type: 'sharedContent' }>) => {
       // Some Android share targets deliver the URI through the native event
       // before JS can query SharedPreferences. Use that payload directly;
       // the getter remains the recovery path if the app was cold-started.
-      const shared: SharedImageResult = sharedFromEvent
+      const shared: SharedContentResult = sharedFromEvent
         ? {
             requestId: sharedFromEvent.requestId,
             status: sharedFromEvent.status,
+            kind: sharedFromEvent.kind ?? null,
+            text: sharedFromEvent.text ?? null,
             uri: sharedFromEvent.uri ?? null,
             mimeType: sharedFromEvent.mimeType ?? null,
             originalName: sharedFromEvent.originalName ?? null,
             error: sharedFromEvent.error ?? null,
           }
-        : await VassOverlay.getSharedImage();
+        : await VassOverlay.getSharedContent();
       if (cancelled || !shared.requestId || !shared.status) return;
-      if (sharedImageAttemptRef.current === shared.requestId) return;
-      sharedImageAttemptRef.current = shared.requestId;
+      if (sharedContentAttemptRef.current === shared.requestId) return;
+      sharedContentAttemptRef.current = shared.requestId;
 
-      if (shared.status === 'error' || !shared.uri || !shared.mimeType) {
+      if (shared.status === 'ready' && shared.kind === 'text' && shared.text?.trim()) {
+        stageSharedText({ requestId: shared.requestId, content: shared.text.trim() });
+        await VassOverlay.acknowledgeSharedContent(shared.requestId);
+        log('info', 'share', 'shared text staged for next voice turn', { length: shared.text.length });
+        return;
+      }
+
+      if (shared.status === 'error' || shared.kind !== 'attachment' || !shared.uri || !shared.mimeType) {
         visual.reportVisualError(
           'Не удалось получить вложение. Размер файла не должен превышать 50 МБ.',
         );
-        await VassOverlay.acknowledgeSharedImage(shared.requestId);
+        await VassOverlay.acknowledgeSharedContent(shared.requestId);
         return;
       }
 
@@ -104,35 +129,35 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
       });
       if (cancelled) return;
       if (!staged) {
-        sharedImageAttemptRef.current = null;
+        sharedContentAttemptRef.current = null;
         return;
       }
-      await VassOverlay.acknowledgeSharedImage(shared.requestId);
+      await VassOverlay.acknowledgeSharedContent(shared.requestId);
       log('info', 'visual', 'shared attachment staged for next voice turn', { mimeType: shared.mimeType });
     };
 
-    void receiveSharedImage().catch((err) => {
-      sharedImageAttemptRef.current = null;
-      log('error', 'visual', 'failed to receive shared attachment', {
+    void receiveSharedContent().catch((err) => {
+      sharedContentAttemptRef.current = null;
+      log('error', 'share', 'failed to receive shared content', {
         error: err instanceof Error ? err.message : String(err),
       });
     });
     const removeListener = VassOverlay.addListener((event) => {
-      if (event.type !== 'sharedImage') return;
-      sharedImageAttemptRef.current = null;
-      void receiveSharedImage(event);
+      if (event.type !== 'sharedContent') return;
+      sharedContentAttemptRef.current = null;
+      void receiveSharedContent(event);
     });
     const appStateSubscription = AppState.addEventListener('change', (nextState) => {
       if (nextState !== 'active') return;
-      sharedImageAttemptRef.current = null;
-      void receiveSharedImage();
+      sharedContentAttemptRef.current = null;
+      void receiveSharedContent();
     });
     return () => {
       cancelled = true;
       removeListener();
       appStateSubscription.remove();
     };
-  }, [user?.id, visual.reportVisualError, visual.stageVisualAsset]);
+  }, [user?.id, stageSharedText, visual.reportVisualError, visual.stageVisualAsset]);
 
   const requestResume = useCallback(() => {
     if (AppState.currentState === 'active') {
@@ -249,8 +274,10 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
         visualStatus: visual.status,
         visualError: visual.error,
         visualUploadingUri: visual.uploadingUri,
+        pendingSharedText,
         pickVisual: visual.pickVisual,
         removePendingVisual: visual.removePendingVisual,
+        removePendingSharedText: () => consumePendingSharedText(pendingSharedText?.requestId ?? ''),
         stageVisualAsset: visual.stageVisualAsset,
       }}
     >

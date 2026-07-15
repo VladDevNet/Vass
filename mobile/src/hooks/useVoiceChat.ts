@@ -26,7 +26,7 @@ import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
 import { executeExternalAction, ExternalActionExecutionError } from '../actions/externalActions';
 import { VassOverlay } from '../../modules/vass-overlay';
-import type { PendingVisualInput, StageVisualAssetInput } from '../visual/types';
+import type { PendingSharedText, PendingVisualInput, StageVisualAssetInput } from '../visual/types';
 
 export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking' | 'paused';
 
@@ -34,6 +34,8 @@ interface VisualTurnBridge {
   getPendingVisual: () => PendingVisualInput | null;
   consumePendingVisual: (assetId: string) => void;
   stageVisualAsset: (input: StageVisualAssetInput) => Promise<PendingVisualInput | null>;
+  getPendingSharedText: () => PendingSharedText | null;
+  consumePendingSharedText: (requestId: string) => void;
 }
 
 class ScreenCaptureCancelledError extends Error {
@@ -693,6 +695,8 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
       // Capture the asset for this attempt. A new image selected while Vass
       // speaks belongs to the following turn and must not be consumed here.
       let visualAssetId = visualBridgeRef.current?.getPendingVisual()?.assetId;
+      const pendingSharedText = visualBridgeRef.current?.getPendingSharedText();
+      const sharedContent = pendingSharedText?.content;
 
       if (!fromShadow) {
         setState('thinking');
@@ -893,6 +897,7 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
             supportsExternalActions: true,
             supportsScreenAnalysis,
             visualAssetId,
+            sharedContent,
           }, {
             onChunk: handleChunk,
             onReminder: handleReminder,
@@ -911,6 +916,7 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
               supportsExternalActions: true,
               supportsScreenAnalysis,
               visualAssetId,
+              sharedContent,
             },
             {
               onTranscription: (text) => {
@@ -992,6 +998,7 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
         log('info', 'turn', 'reply received', { sendMs: Date.now() - turnStartedAt, replyLength: fullReply.length });
         pendingSegmentsRef.current.clear();
         if (visualAssetId) visualBridgeRef.current?.consumePendingVisual(visualAssetId);
+        if (pendingSharedText) visualBridgeRef.current?.consumePendingSharedText(pendingSharedText.requestId);
 
         if (streamingHolder.current) {
           // Flush whatever's left in the buffer even if it never reached
