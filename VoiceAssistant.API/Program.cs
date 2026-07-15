@@ -212,6 +212,7 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 
 // Rate limiting for anonymous auth endpoints (PROJECT-AUDIT-2026-07-10 SEC-01).
 // Partitioned per client IP, since these endpoints have no user identity yet.
+var authPermitLimit = Math.Max(1, builder.Configuration.GetValue("RateLimit:AuthPermitLimit", 10));
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -220,7 +221,7 @@ builder.Services.AddRateLimiter(options =>
         partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
         factory: _ => new FixedWindowRateLimiterOptions
         {
-            PermitLimit = 10,
+            PermitLimit = authPermitLimit,
             Window = TimeSpan.FromMinutes(1),
             QueueLimit = 0
         }));

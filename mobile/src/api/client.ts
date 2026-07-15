@@ -682,7 +682,9 @@ export async function sendMessage(params: SendMessageParams, callbacks: SendMess
           continue;
         }
 
-        if (typeof parsed.transcription === 'string') {
+        if (typeof parsed.error === 'string') {
+          throw new ApiError(parsed.error);
+        } else if (typeof parsed.transcription === 'string') {
           callbacks.onTranscription?.(parsed.transcription);
         } else if (typeof parsed.text === 'string') {
           fullText += parsed.text;

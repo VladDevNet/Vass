@@ -106,7 +106,23 @@ public class ChatController : ControllerBase
     // receive a free-form tool call; this recognizes only a direct user
     // request and returns a durable receipt before the model can confirm it.
     private static readonly Regex RememberCommandPattern = new(
-        @"\A\s*(?:пожалуйста\s*,?\s*)?запомни(?:те)?\s*(?:,?\s*что\s*)?(?<text>.+?)\s*\z",
+        @"(?<!\p{L})(?:запомни(?:те)?|сохрани(?:те)?)\b(?<text>[^.!?\r\n]*)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex RememberLeadingFillerPattern = new(
+        @"\A(?:(?:мне|нам|пожалуйста)\s*,?\s*)+|\A(?:в\s+(?:долгосрочную\s+)?память\s*,?\s*)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex RememberTrailingMemoryPattern = new(
+        @"\s+(?:в\s+(?:долгосрочную\s+)?память)\s*\z",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex RememberLinkReferencePattern = new(
+        @"\A(?:эту?|этот|это)\s+(?:ссылк\p{L}*|линк\p{L}*|виде\p{L}*|ролик\p{L}*)\z",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex UrlPattern = new(
+        @"https?://[^\s<>()]+",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     // Static and parameterized on audioRootPath (not reading _audioPath
@@ -125,16 +141,47 @@ public class ChatController : ControllerBase
     }
 
     private async Task<MemoryOperationResult?> TryRememberCommandAsync(
-        string userId, int sourceMessageId, string messageText, CancellationToken cancellationToken)
+        string userId, int sourceMessageId, string messageText, IEnumerable<Message> conversation, CancellationToken cancellationToken)
     {
         var match = RememberCommandPattern.Match(messageText);
         if (!match.Success) return null;
+
+        var text = match.Groups["text"].Value.Trim(' ', ',', ':', '-');
+        while (true)
+        {
+            var withoutFiller = RememberLeadingFillerPattern.Replace(text, "");
+            if (withoutFiller == text) break;
+            text = withoutFiller.Trim(' ', ',', ':', '-');
+        }
+        text = RememberTrailingMemoryPattern.Replace(text, "").Trim(' ', ',', ':', '-');
+        if (text.StartsWith("что ", StringComparison.OrdinalIgnoreCase)) text = text[4..].Trim();
+
+        if (RememberLinkReferencePattern.IsMatch(text))
+        {
+            text = GetLatestSharedUrl(conversation) ?? "";
+        }
+        if (string.IsNullOrWhiteSpace(text)) return null;
+
         return await _memoryItems.RememberAsync(
             userId,
-            match.Groups["text"].Value,
+            text,
             sourceMessageId,
             Guid.NewGuid(),
             cancellationToken);
+    }
+
+    private static string? GetLatestSharedUrl(IEnumerable<Message> conversation)
+    {
+        foreach (var message in conversation
+                     .Where(item => item.Role == "user")
+                     .OrderByDescending(item => item.CreatedAt))
+        {
+            var matches = UrlPattern.Matches(message.Content ?? "");
+            if (matches.Count == 0) continue;
+            return matches[^1].Value.TrimEnd('.', ',', ';', ':', ')', ']', '}');
+        }
+
+        return null;
     }
 
     // Kept as a public compatibility seam for existing security tests and
@@ -175,6 +222,15 @@ public class ChatController : ControllerBase
         ExternalActionTypes.OpenVass => "Возвращаюсь в Vass.",
         ExternalActionTypes.YouTubeWatch => "Открываю выбранное видео в YouTube.",
         _ => "Открываю поиск в YouTube."
+    };
+
+    private static string GetMemoryReceiptFallback(MemoryOperationResult receipt) => receipt.Code switch
+    {
+        "remembered" => "Сохранено в долгосрочную память.",
+        "already_known" => "Это уже сохранено в долгосрочной памяти.",
+        "memory_disabled" => "Долгосрочная память сейчас отключена, поэтому сохранить не удалось.",
+        "sensitive_content_not_allowed" => "Такую чувствительную информацию я не сохраняю в долгосрочную память.",
+        _ => "Не удалось подтвердить сохранение в долгосрочную память."
     };
 
     private const int MaxSharedContentLength = 20_000;
@@ -644,7 +700,7 @@ public class ChatController : ControllerBase
             geminiKey,
             HttpContext.RequestAborted);
         var explicitMemoryReceipt = await TryRememberCommandAsync(
-            userId, userMessage.Id, messageText, HttpContext.RequestAborted);
+            userId, userMessage.Id, messageText, session.Messages, HttpContext.RequestAborted);
         // Check (in parallel, doesn't block the response) whether the user asked the
         // assistant to remember a persistent behavior preference ("говори медленнее",
         // "давай на ты", etc.) so future turns' system prompts reflect it. Awaited at
@@ -899,9 +955,6 @@ public class ChatController : ControllerBase
         {
             await enumerator.DisposeAsync();
         }
-        swLlm.Stop();
-        long llmTotalMs = swLlm.ElapsedMilliseconds;
-
         if (fullResponse.Length == 0 && externalAction is not null)
         {
             var fallback = GetExternalActionFallback(externalAction.Type);
@@ -910,6 +963,40 @@ public class ChatController : ControllerBase
             await Response.WriteAsync($"data: {fallbackData}\n\n");
             await Response.Body.FlushAsync();
         }
+
+        if (fullResponse.Length == 0 && explicitMemoryReceipt is not null)
+        {
+            var fallback = GetMemoryReceiptFallback(explicitMemoryReceipt);
+            fullResponse.Append(fallback);
+            var fallbackData = JsonSerializer.Serialize(new { text = fallback });
+            await Response.WriteAsync($"data: {fallbackData}\n\n");
+            await Response.Body.FlushAsync();
+        }
+
+        if (fullResponse.Length == 0)
+        {
+            _logger.LogWarning("Gemini returned no visible text for session {SessionId}; retrying without grounding", req.SessionId);
+            try
+            {
+                await foreach (var chunk in _gemini.StreamResponseAsync(
+                                   systemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey,
+                                   enableGrounding: false, cancellationToken: HttpContext.RequestAborted))
+                {
+                    if (fullResponse.Length == 0) llmFirstTokenMs = swLlm.ElapsedMilliseconds;
+                    fullResponse.Append(chunk);
+                    var data = JsonSerializer.Serialize(new { text = chunk });
+                    await Response.WriteAsync($"data: {data}\n\n");
+                    await Response.Body.FlushAsync();
+                }
+            }
+            catch (GeminiApiException ex)
+            {
+                _logger.LogWarning(ex, "Gemini retry failed for session {SessionId}", req.SessionId);
+            }
+        }
+
+        swLlm.Stop();
+        long llmTotalMs = swLlm.ElapsedMilliseconds;
 
         if (fullResponse.Length == 0)
         {

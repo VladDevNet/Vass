@@ -56,6 +56,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>, IAsyncL
         Environment.SetEnvironmentVariable("Jwt__Secret", "integration-test-jwt-secret-min-32-chars-long!!");
         Environment.SetEnvironmentVariable("Jwt__Issuer", "Vass");
         Environment.SetEnvironmentVariable("Jwt__Audience", "Vass");
+        Environment.SetEnvironmentVariable("RateLimit__AuthPermitLimit", "1000");
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -74,6 +75,11 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>, IAsyncL
                 // never sent anywhere real, the HTTP client itself is faked below.
                 ["Gemini:ApiKey"] = "test-fake-gemini-key",
                 ["Visual:Path"] = _visualPath,
+                // Registration is protected by a per-IP production limiter.
+                // TestServer uses one synthetic IP for every generated test
+                // account, so keep the policy enabled but raise its test-only
+                // capacity above the suite's account count.
+                ["RateLimit:AuthPermitLimit"] = "1000",
             });
         });
 

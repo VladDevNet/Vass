@@ -26,7 +26,10 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
         var email = $"chat-user-{Guid.NewGuid():N}@example.com";
         var register = await client.PostAsJsonAsync("/api/v1/auth/register",
             new AuthController.RegisterRequest(email, "correct-password-123", "ru"));
-        var token = (await register.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("token").GetString();
+        var registerBody = await register.Content.ReadAsStringAsync();
+        if (!register.IsSuccessStatusCode || string.IsNullOrWhiteSpace(registerBody))
+            throw new InvalidOperationException($"Test registration failed: {(int)register.StatusCode} {registerBody}");
+        var token = JsonDocument.Parse(registerBody).RootElement.GetProperty("token").GetString();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return client;
     }
@@ -203,6 +206,30 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
         var userMessage = session.GetProperty("messages").EnumerateArray().First();
         Assert.Contains("Запусти это видео", userMessage.GetProperty("content").GetString());
         Assert.Contains("https://www.youtube.com/watch?v=bWGXT5wjkd4", userMessage.GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public async Task Send_RememberCommandInsideSpeech_StoresTheMostRecentSharedLink()
+    {
+        var client = await CreateAuthenticatedClientAsync();
+        var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
+        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>())
+            .EnumerateArray().First().GetProperty("id").GetInt32();
+        const string videoUrl = "https://youtube.com/watch?v=tbT2ogwa49Y";
+
+        var shareResponse = await client.PostAsJsonAsync("/api/v1/chat/send",
+            new ChatController.SendRequest(sessionId, "Посмотри эту ссылку", SharedContent: videoUrl));
+        shareResponse.EnsureSuccessStatusCode();
+
+        var rememberResponse = await client.PostAsJsonAsync("/api/v1/chat/send",
+            new ChatController.SendRequest(sessionId,
+                "Ну стой, это важно. Запомни мне, пожалуйста, эту ссылку."));
+        rememberResponse.EnsureSuccessStatusCode();
+        Assert.Contains("data: [DONE]", await rememberResponse.Content.ReadAsStringAsync());
+
+        var memory = await client.GetFromJsonAsync<JsonElement>("/api/v1/memory/items");
+        Assert.Contains(memory.EnumerateArray(), item =>
+            item.GetProperty("text").GetString() == videoUrl);
     }
 
     [Fact]
