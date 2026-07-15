@@ -170,6 +170,13 @@ public class ChatController : ControllerBase
     public static string? ResolvePromptUserName(string? speakerKnownName, string? displayName)
         => speakerKnownName ?? displayName;
 
+    private static string GetExternalActionFallback(string actionType) => actionType switch
+    {
+        ExternalActionTypes.OpenVass => "Возвращаюсь в Vass.",
+        ExternalActionTypes.YouTubeWatch => "Открываю выбранное видео в YouTube.",
+        _ => "Открываю поиск в YouTube."
+    };
+
     public record SendRequest(
         int SessionId,
         string Message,
@@ -595,7 +602,7 @@ public class ChatController : ControllerBase
         await _db.SaveChangesAsync();
 
         var externalActionContext = session.Messages
-            .Where(item => item.Id != userMessage.Id)
+            .Where(item => item.Id != userMessage.Id && !string.IsNullOrWhiteSpace(item.Content))
             .OrderBy(item => item.CreatedAt)
             .TakeLast(6)
             .Select(item => new GeminiMessage(item.Role, item.Content))
@@ -654,7 +661,10 @@ public class ChatController : ControllerBase
 
         var windowed = new List<Message>();
         var usedChars = 0;
-        foreach (var m in session.Messages.OrderByDescending(m => m.CreatedAt).Take(MaxCandidateMessages))
+        foreach (var m in session.Messages
+                     .Where(item => !string.IsNullOrWhiteSpace(item.Content))
+                     .OrderByDescending(m => m.CreatedAt)
+                     .Take(MaxCandidateMessages))
         {
             if (windowed.Count > 0 && usedChars + m.Content.Length > HistoryCharBudget)
             {
@@ -871,6 +881,29 @@ public class ChatController : ControllerBase
         }
         swLlm.Stop();
         long llmTotalMs = swLlm.ElapsedMilliseconds;
+
+        if (fullResponse.Length == 0 && externalAction is not null)
+        {
+            var fallback = GetExternalActionFallback(externalAction.Type);
+            fullResponse.Append(fallback);
+            var fallbackData = JsonSerializer.Serialize(new { text = fallback });
+            await Response.WriteAsync($"data: {fallbackData}\n\n");
+            await Response.Body.FlushAsync();
+        }
+
+        if (fullResponse.Length == 0)
+        {
+            _logger.LogWarning("Gemini returned no visible text for session {SessionId}", req.SessionId);
+            var errorData = JsonSerializer.Serialize(new
+            {
+                error = "ИИ не вернул текстовый ответ. Попробуйте еще раз.",
+                retryable = true
+            });
+            await Response.WriteAsync($"data: {errorData}\n\n");
+            await Response.Body.FlushAsync();
+            await AwaitTurnSideEffectsAsync(instructionUpdateTask, memoryUpdateTask);
+            return;
+        }
 
         // Save assistant response BEFORE any terminal SSE event -- the mobile
         // client stops reading the instant it sees [DONE] (PROJECT-AUDIT-2026-07-10

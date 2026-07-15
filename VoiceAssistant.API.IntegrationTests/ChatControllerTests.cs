@@ -2,7 +2,10 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using VoiceAssistant.API.Controllers;
+using VoiceAssistant.API.Data;
+using VoiceAssistant.API.Data.Entities;
 using VoiceAssistant.API.Services;
 using Xunit;
 
@@ -104,6 +107,29 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
         Assert.Equal("Привет, как дела?", messages[0].GetProperty("content").GetString());
         Assert.Equal("assistant", messages[1].GetProperty("role").GetString());
         Assert.Equal(FakeGeminiHandler.DefaultReplyText, messages[1].GetProperty("content").GetString());
+    }
+
+    [Fact]
+    public async Task Send_IgnoresLegacyEmptyAssistantMessageInConversationHistory()
+    {
+        var client = await CreateAuthenticatedClientAsync();
+        var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
+        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>()).EnumerateArray().First().GetProperty("id").GetInt32();
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.Messages.Add(new Message { ChatSessionId = sessionId, Role = "assistant", Content = "" });
+            await db.SaveChangesAsync();
+        }
+
+        var sendResponse = await client.PostAsJsonAsync("/api/v1/chat/send",
+            new ChatController.SendRequest(sessionId, "Продолжим разговор"));
+
+        Assert.Equal(HttpStatusCode.OK, sendResponse.StatusCode);
+        var raw = await sendResponse.Content.ReadAsStringAsync();
+        Assert.Contains("data: [DONE]", raw);
+        Assert.DoesNotContain("Text content cannot be empty", raw);
     }
 
     [Fact]

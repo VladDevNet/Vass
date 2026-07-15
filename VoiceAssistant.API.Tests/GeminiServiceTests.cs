@@ -66,6 +66,32 @@ public class GeminiServiceTests
     }
 
     [Fact]
+    public async Task StreamResponseAsync_EmptyHistoryMessage_IsExcludedFromGeminiPayload()
+    {
+        string? requestBody = null;
+        var handler = new DelegateHandler(async request =>
+        {
+            requestBody = await request.Content!.ReadAsStringAsync();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]}}]}\n\n", Encoding.UTF8, "text/event-stream")
+            };
+        });
+        var service = CreateService(handler);
+
+        await foreach (var _ in service.StreamResponseAsync("system", [
+            new GeminiMessage("model", ""),
+            new GeminiMessage("user", "Продолжим")
+        ], enableGrounding: false)) { }
+
+        using var document = JsonDocument.Parse(requestBody!);
+        var contents = document.RootElement.GetProperty("contents");
+        Assert.Equal(1, contents.GetArrayLength());
+        Assert.Equal("user", contents[0].GetProperty("role").GetString());
+        Assert.Equal("Продолжим", contents[0].GetProperty("parts")[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
     public async Task GenerateEmbeddingAsync_ParsesExpectedDimensionsAndRequestContract()
     {
         string? requestBody = null;

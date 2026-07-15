@@ -160,11 +160,17 @@ public class GeminiService
 
         // Format request body for Gemini API: roles must be "user" or "model".
         // Text-only callers retain the exact same JSON shape as before.
-        var contents = messages.Select(m => new
-        {
-            role = m.Role.ToLower() == "user" ? "user" : "model",
-            parts = SerializeParts(m.Parts)
-        }).ToArray();
+        var contents = messages
+            .Where(message => message.Parts.Any(part =>
+                part.Data is not null || !string.IsNullOrWhiteSpace(part.Text)))
+            .Select(m => new
+            {
+                role = m.Role.ToLower() == "user" ? "user" : "model",
+                parts = SerializeParts(m.Parts)
+            })
+            .ToArray();
+        if (contents.Length == 0)
+            throw new GeminiApiException("Невозможно отправить пустой контекст в Gemini.", isRetryable: false);
 
         var payload = new
         {
@@ -289,12 +295,15 @@ public class GeminiService
 
     private static object[] SerializeParts(IReadOnlyList<GeminiPart> parts)
     {
-        if (parts.Count == 0) throw new ArgumentException("A Gemini message must contain at least one part.", nameof(parts));
+        var nonEmptyParts = parts
+            .Where(part => part.Data is not null || !string.IsNullOrWhiteSpace(part.Text))
+            .ToArray();
+        if (nonEmptyParts.Length == 0) throw new ArgumentException("A Gemini message must contain at least one part.", nameof(parts));
 
-        var serialized = new object[parts.Count];
-        for (var index = 0; index < parts.Count; index++)
+        var serialized = new object[nonEmptyParts.Length];
+        for (var index = 0; index < nonEmptyParts.Length; index++)
         {
-            var part = parts[index];
+            var part = nonEmptyParts[index];
             if (part.Data is not null)
             {
                 if (part.Data.Length == 0 || part.Data.Length > ImageContentInspector.MaxAttachmentSize)
