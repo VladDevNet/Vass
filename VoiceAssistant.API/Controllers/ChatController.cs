@@ -118,7 +118,14 @@ public class ChatController : ControllerBase
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex RememberLinkReferencePattern = new(
-        @"\A(?:эту?|этот|это)\s+(?:ссылк\p{L}*|линк\p{L}*|виде\p{L}*|ролик\p{L}*)\z",
+        @"(?:ссылк\p{L}*|линк\p{L}*|виде\p{L}*|ролик\p{L}*)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    // A share target is commonly referenced in natural speech as just "ее",
+    // "это" or "вот". Those words have no value as a memory on their own;
+    // when a shared URL is available, they unambiguously point to that URL.
+    private static readonly Regex RememberSharedReferenceOnlyPattern = new(
+        @"\A(?:\s|,|(?:пожалуйста|давай(?:-ка)?|ну|вот|там|э+|м+|это|этот|эту|эти|его|её|ее|их))+$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex UrlPattern = new(
@@ -143,25 +150,13 @@ public class ChatController : ControllerBase
     private sealed record ExplicitMemoryCommandResult(MemoryOperationResult Receipt, string Text);
 
     private async Task<ExplicitMemoryCommandResult?> TryRememberCommandAsync(
-        string userId, int sourceMessageId, string messageText, IEnumerable<Message> conversation, string? geminiApiKey, CancellationToken cancellationToken)
+        string userId, int sourceMessageId, string messageText, string? sharedContent,
+        IEnumerable<Message> conversation, string? geminiApiKey, CancellationToken cancellationToken)
     {
-        var match = RememberCommandPattern.Match(messageText);
-        if (!match.Success) return null;
-
-        var text = match.Groups["text"].Value.Trim(' ', ',', ':', '-');
-        while (true)
-        {
-            var withoutFiller = RememberLeadingFillerPattern.Replace(text, "");
-            if (withoutFiller == text) break;
-            text = withoutFiller.Trim(' ', ',', ':', '-');
-        }
-        text = RememberTrailingMemoryPattern.Replace(text, "").Trim(' ', ',', ':', '-');
-        if (text.StartsWith("что ", StringComparison.OrdinalIgnoreCase)) text = text[4..].Trim();
-
-        if (RememberLinkReferencePattern.IsMatch(text))
-        {
-            text = GetLatestSharedUrl(conversation) ?? "";
-        }
+        var text = TryGetExplicitMemoryTarget(
+            messageText,
+            sharedContent,
+            conversation.Where(item => item.Role == "user").Select(item => item.Content));
         if (string.IsNullOrWhiteSpace(text)) return null;
 
         using var normalizationTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -179,18 +174,69 @@ public class ChatController : ControllerBase
         return new(receipt, normalizedText);
     }
 
-    private static string? GetLatestSharedUrl(IEnumerable<Message> conversation)
+    // Kept public as a narrow, deterministic test seam: this is deliberately
+    // syntax/attachment routing, not a decision delegated to the chat model.
+    // The model may refine the durable wording later, but it must never be
+    // allowed to lose the URL that the user explicitly asked to retain.
+    public static string? TryGetExplicitMemoryTarget(
+        string messageText, string? sharedContent, IEnumerable<string?> previousUserMessages)
     {
-        foreach (var message in conversation
-                     .Where(item => item.Role == "user")
-                     .OrderByDescending(item => item.CreatedAt))
+        var match = RememberCommandPattern.Match(messageText);
+        if (!match.Success) return null;
+
+        var target = match.Groups["text"].Value.Trim(' ', ',', ':', '-');
+        while (true)
         {
-            var matches = UrlPattern.Matches(message.Content ?? "");
-            if (matches.Count == 0) continue;
-            return matches[^1].Value.TrimEnd('.', ',', ';', ':', ')', ']', '}');
+            var withoutFiller = RememberLeadingFillerPattern.Replace(target, "");
+            if (withoutFiller == target) break;
+            target = withoutFiller.Trim(' ', ',', ':', '-');
+        }
+        target = RememberTrailingMemoryPattern.Replace(target, "").Trim(' ', ',', ':', '-');
+        if (target.StartsWith("что ", StringComparison.OrdinalIgnoreCase)) target = target[4..].Trim();
+
+        var directUrl = GetLatestUrl(target);
+        if (directUrl is not null) return FormatSavedLink(directUrl);
+
+        var sharedUrl = GetLatestUrl(sharedContent) ?? GetLatestUrl(previousUserMessages);
+        if (sharedUrl is not null &&
+            (RememberLinkReferencePattern.IsMatch(target) || RememberSharedReferenceOnlyPattern.IsMatch(target)))
+        {
+            return FormatSavedLink(sharedUrl);
         }
 
+        // Do not create a memory from a bare pronoun if there is no share
+        // context to resolve it against. A normal chat reply is preferable to
+        // silently persisting "ее, пожалуйста" as a supposed fact.
+        return RememberSharedReferenceOnlyPattern.IsMatch(target) ? null : target;
+    }
+
+    private static string? GetLatestUrl(string? content)
+    {
+        var matches = UrlPattern.Matches(content ?? "");
+        return matches.Count == 0 ? null : matches[^1].Value.TrimEnd('.', ',', ';', ':', ')', ']', '}');
+    }
+
+    private static string? GetLatestUrl(IEnumerable<string?> messages)
+    {
+        foreach (var message in messages.Reverse())
+        {
+            var url = GetLatestUrl(message);
+            if (url is not null) return url;
+        }
         return null;
+    }
+
+    private static string FormatSavedLink(string url)
+    {
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+            (uri.Host.Equals("youtube.com", StringComparison.OrdinalIgnoreCase) ||
+             uri.Host.EndsWith(".youtube.com", StringComparison.OrdinalIgnoreCase) ||
+             uri.Host.Equals("youtu.be", StringComparison.OrdinalIgnoreCase)))
+        {
+            return $"Сохраненная ссылка на YouTube: {url}";
+        }
+
+        return $"Сохраненная ссылка: {url}";
     }
 
     // Kept as a public compatibility seam for existing security tests and
@@ -578,6 +624,10 @@ public class ChatController : ControllerBase
             }
         }
 
+        // Keep the spoken/typed command apart from the share payload until
+        // explicit-memory routing has identified its target. Once merged, a
+        // regex can mistake the trailing share text for the command itself.
+        var commandText = messageText;
         messageText = IncludeSharedContent(messageText ?? "", sharedContent);
 
         if (string.IsNullOrWhiteSpace(messageText))
@@ -711,7 +761,7 @@ public class ChatController : ControllerBase
             geminiKey,
             HttpContext.RequestAborted);
         var explicitMemoryCommand = await TryRememberCommandAsync(
-            userId, userMessage.Id, messageText, session.Messages, geminiKey, HttpContext.RequestAborted);
+            userId, userMessage.Id, commandText ?? "", sharedContent, session.Messages, geminiKey, HttpContext.RequestAborted);
         var explicitMemoryReceipt = explicitMemoryCommand?.Receipt;
         // Check (in parallel, doesn't block the response) whether the user asked the
         // assistant to remember a persistent behavior preference ("говори медленнее",

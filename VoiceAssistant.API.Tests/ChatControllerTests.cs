@@ -200,4 +200,41 @@ public class ChatControllerTests
 
         Assert.Null(resolved);
     }
+
+    [Fact]
+    public void TryGetExplicitMemoryTarget_SharedPronoun_SavesTheSharedUrl()
+    {
+        const string url = "https://youtube.com/watch?v=fEz1RZF9yUg";
+
+        var result = ChatController.TryGetExplicitMemoryTarget(
+            "Вот тебе ссылка. Сохрани ее, пожалуйста, в долгосрочную память.",
+            url,
+            []);
+
+        Assert.Equal($"Сохраненная ссылка на YouTube: {url}", result);
+    }
+
+    [Fact]
+    public void TryGetExplicitMemoryTarget_SharedVideoFromPreviousTurn_SavesTheUrl()
+    {
+        const string url = "https://youtube.com/watch?v=fEz1RZF9yUg";
+
+        var result = ChatController.TryGetExplicitMemoryTarget(
+            "Давай сохраним в долгосрочную память вот это видео.",
+            null,
+            [$"Пользователь поделился следующим содержимым: {url}"]);
+
+        Assert.Equal($"Сохраненная ссылка на YouTube: {url}", result);
+    }
+
+    [Fact]
+    public void TryGetExplicitMemoryTarget_BarePronounWithoutShare_DoesNotCreateGarbageMemory()
+    {
+        var result = ChatController.TryGetExplicitMemoryTarget(
+            "Сохрани ее, пожалуйста, в долгосрочную память.",
+            null,
+            []);
+
+        Assert.Null(result);
+    }
 }

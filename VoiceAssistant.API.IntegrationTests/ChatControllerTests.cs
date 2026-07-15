@@ -229,7 +229,7 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
 
         var memory = await client.GetFromJsonAsync<JsonElement>("/api/v1/memory/items");
         Assert.Contains(memory.EnumerateArray(), item =>
-            item.GetProperty("text").GetString() == videoUrl);
+            item.GetProperty("text").GetString() == $"Сохраненная ссылка на YouTube: {videoUrl}");
     }
 
     [Fact]

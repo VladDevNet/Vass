@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using Pgvector;
 using Pgvector.EntityFrameworkCore;
@@ -15,6 +16,7 @@ public class LongTermMemoryService
     public const int MaxRecalledFacts = 5;
     public const int ExplicitMemoryNormalizeMaxTokens = 120;
     public const double MaxCosineDistance = 0.45;
+    private static readonly Regex UrlPattern = new(@"https?://[^\s<>()]+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
     private readonly GeminiService _gemini;
@@ -173,6 +175,7 @@ public class LongTermMemoryService
     {
         var fallback = NormalizeExplicitFallback(rawFact);
         if (!_enabled || fallback.Length == 0) return fallback;
+        var requiredUrls = UrlPattern.Matches(fallback).Select(match => match.Value).ToArray();
 
         try
         {
@@ -183,6 +186,10 @@ public class LongTermMemoryService
                 додумывай детали. Предпочитай третье лицо, например: «Пользователь
                 хочет стать космонавтом». Верни только JSON вида
                 {"facts":["один факт"]}.
+
+                Если в исходной информации есть URL, обязательно сохрани этот URL
+                полностью и без изменений в факте. Нельзя заменять ссылку только
+                описанием намерения пользователя сохранить ее.
 
                 Исходная информация: {{fallback}}
                 """;
@@ -201,7 +208,18 @@ public class LongTermMemoryService
             }
 
             var fact = ParseFacts(response.ToString()).SingleOrDefault();
-            return string.IsNullOrWhiteSpace(fact) ? fallback : fact;
+            if (string.IsNullOrWhiteSpace(fact)) return fallback;
+
+            // A polished sentence without the link is worse than the
+            // deterministic fallback: the requested object becomes
+            // impossible to retrieve or open later.
+            if (requiredUrls.Any(url => !fact.Contains(url, StringComparison.Ordinal)) ||
+                UrlPattern.Match(fact) is { Success: true } onlyUrl && onlyUrl.Value == fact)
+            {
+                return fallback;
+            }
+
+            return fact;
         }
         catch (OperationCanceledException)
         {
