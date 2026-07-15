@@ -13,6 +13,7 @@ public class LongTermMemoryService
 {
     public const int MaxExtractedFactsPerTurn = 3;
     public const int MaxRecalledFacts = 5;
+    public const int ExplicitMemoryNormalizeMaxTokens = 120;
     public const double MaxCosineDistance = 0.45;
 
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
@@ -160,6 +161,59 @@ public class LongTermMemoryService
         }
     }
 
+    // An explicit "remember this" command deserves a readable, durable fact,
+    // not a verbatim speech-transcription fragment. This is deliberately a
+    // separate, tightly constrained model call: if it is unavailable or
+    // malformed, the caller receives the deterministic fallback and can still
+    // confirm the already-requested save without exposing a provider failure.
+    public async Task<string> NormalizeExplicitMemoryAsync(
+        string rawFact,
+        string? geminiApiKey,
+        CancellationToken cancellationToken)
+    {
+        var fallback = NormalizeExplicitFallback(rawFact);
+        if (!_enabled || fallback.Length == 0) return fallback;
+
+        try
+        {
+            var prompt = $$"""
+                Преобразуй явную просьбу пользователя сохранить информацию в один
+                короткий, осмысленный и нейтральный факт для долгосрочной памяти.
+                Убери разговорные слова и команды, но не меняй смысл и не
+                додумывай детали. Предпочитай третье лицо, например: «Пользователь
+                хочет стать космонавтом». Верни только JSON вида
+                {"facts":["один факт"]}.
+
+                Исходная информация: {{fallback}}
+                """;
+
+            var response = new StringBuilder();
+            await foreach (var chunk in _gemini.StreamResponseAsync(
+                               "",
+                               [new GeminiMessage("user", prompt)],
+                               model: "gemini-3.5-flash",
+                               maxTokens: ExplicitMemoryNormalizeMaxTokens,
+                               apiKey: geminiApiKey,
+                               enableGrounding: false,
+                               cancellationToken: cancellationToken))
+            {
+                response.Append(chunk);
+            }
+
+            var fact = ParseFacts(response.ToString()).SingleOrDefault();
+            return string.IsNullOrWhiteSpace(fact) ? fallback : fact;
+        }
+        catch (OperationCanceledException)
+        {
+            return fallback;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Explicit memory normalization failed; using source fact");
+            return fallback;
+        }
+    }
+
     public static IReadOnlyList<string> ParseFacts(string raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return [];
@@ -205,5 +259,17 @@ public class LongTermMemoryService
         if (string.IsNullOrWhiteSpace(value)) return "";
         var normalized = string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
         return normalized.Length <= 1000 ? normalized : normalized[..1000];
+    }
+
+    private static string NormalizeExplicitFallback(string? value)
+    {
+        var normalized = NormalizeFact(value);
+        if (normalized.StartsWith("что ", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized[4..].Trim();
+        if (normalized.Length == 0) return "";
+        if (normalized.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return normalized;
+        return char.ToUpperInvariant(normalized[0]) + normalized[1..];
     }
 }

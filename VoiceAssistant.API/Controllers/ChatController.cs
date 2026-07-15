@@ -143,7 +143,7 @@ public class ChatController : ControllerBase
     private sealed record ExplicitMemoryCommandResult(MemoryOperationResult Receipt, string Text);
 
     private async Task<ExplicitMemoryCommandResult?> TryRememberCommandAsync(
-        string userId, int sourceMessageId, string messageText, IEnumerable<Message> conversation, CancellationToken cancellationToken)
+        string userId, int sourceMessageId, string messageText, IEnumerable<Message> conversation, string? geminiApiKey, CancellationToken cancellationToken)
     {
         var match = RememberCommandPattern.Match(messageText);
         if (!match.Success) return null;
@@ -164,13 +164,19 @@ public class ChatController : ControllerBase
         }
         if (string.IsNullOrWhiteSpace(text)) return null;
 
+        using var normalizationTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        normalizationTimeout.CancelAfter(TimeSpan.FromSeconds(5));
+        var normalizedText = await _longTermMemory.NormalizeExplicitMemoryAsync(
+            text, geminiApiKey, normalizationTimeout.Token);
+        if (string.IsNullOrWhiteSpace(normalizedText)) normalizedText = text;
+
         var receipt = await _memoryItems.RememberAsync(
             userId,
-            text,
+            normalizedText,
             sourceMessageId,
             Guid.NewGuid(),
             cancellationToken);
-        return new(receipt, text);
+        return new(receipt, normalizedText);
     }
 
     private static string? GetLatestSharedUrl(IEnumerable<Message> conversation)
@@ -705,7 +711,7 @@ public class ChatController : ControllerBase
             geminiKey,
             HttpContext.RequestAborted);
         var explicitMemoryCommand = await TryRememberCommandAsync(
-            userId, userMessage.Id, messageText, session.Messages, HttpContext.RequestAborted);
+            userId, userMessage.Id, messageText, session.Messages, geminiKey, HttpContext.RequestAborted);
         var explicitMemoryReceipt = explicitMemoryCommand?.Receipt;
         // Check (in parallel, doesn't block the response) whether the user asked the
         // assistant to remember a persistent behavior preference ("говори медленнее",

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using VoiceAssistant.API.Controllers;
 using VoiceAssistant.API.Services;
 
@@ -33,6 +34,8 @@ public class FakeGeminiHandler : HttpMessageHandler
     private static readonly string ReminderParseMarker = $"\"maxOutputTokens\":{ReminderService.ParseMaxTokens}";
     private static readonly string ExternalActionParseMarker = $"\"maxOutputTokens\":{ExternalActionService.ParseMaxTokens}";
     private static readonly string ScreenAnalysisParseMarker = $"\"maxOutputTokens\":{ScreenAnalysisIntentService.ParseMaxTokens}";
+    private static readonly string ExplicitMemoryNormalizeMarker = $"\"maxOutputTokens\":{LongTermMemoryService.ExplicitMemoryNormalizeMaxTokens}";
+    private static readonly Regex UrlPattern = new(@"https?://[^\s<>()]+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
@@ -59,6 +62,17 @@ public class FakeGeminiHandler : HttpMessageHandler
             body.Contains(CustomInstructionCheckMarker, StringComparison.Ordinal))
         {
             replyText = "NONE";
+        }
+        else if (body.Contains(ExplicitMemoryNormalizeMarker, StringComparison.Ordinal))
+        {
+            var fact = ReadExplicitMemorySource(ReadPromptText(body));
+            replyText = fact.Contains("космонавтом", StringComparison.OrdinalIgnoreCase)
+                ? "{\"facts\":[\"Пользователь хочет стать космонавтом\"]}"
+                : fact.Contains("возраст Белла", StringComparison.OrdinalIgnoreCase)
+                    ? "{\"facts\":[\"Беллу 15 лет\"]}"
+                    : UrlPattern.Match(fact) is { Success: true } url
+                        ? $"{{\"facts\":[\"{url.Value}\"]}}"
+                        : "{\"facts\":[]}";
         }
         else if (ReadAllText(body).Contains("Подбери конкретный ролик", StringComparison.Ordinal))
         {
@@ -113,5 +127,12 @@ public class FakeGeminiHandler : HttpMessageHandler
         {
             return "";
         }
+    }
+
+    private static string ReadExplicitMemorySource(string prompt)
+    {
+        const string marker = "Исходная информация:";
+        var index = prompt.IndexOf(marker, StringComparison.Ordinal);
+        return index < 0 ? prompt : prompt[(index + marker.Length)..].Trim();
     }
 }

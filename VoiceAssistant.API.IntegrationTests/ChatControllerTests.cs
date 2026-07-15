@@ -249,14 +249,14 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
         var receiptLine = raw.Split('\n')
             .First(line => line.StartsWith("data: ") && line.Contains("text", StringComparison.Ordinal));
         using var receiptJson = JsonDocument.Parse(receiptLine[6..]);
-        Assert.Equal("Сохранено в долгосрочную память: возраст Белла, там 15 лет.",
+        Assert.Equal("Сохранено в долгосрочную память: Беллу 15 лет.",
             receiptJson.RootElement.GetProperty("text").GetString());
         Assert.Contains("data: [DONE]", raw);
         Assert.DoesNotContain(FakeGeminiHandler.DefaultReplyText, raw);
 
         var memory = await client.GetFromJsonAsync<JsonElement>("/api/v1/memory/items");
         Assert.Contains(memory.EnumerateArray(), item =>
-            item.GetProperty("text").GetString() == "возраст Белла, там 15 лет");
+            item.GetProperty("text").GetString() == "Беллу 15 лет");
     }
 
     [Fact]
@@ -276,13 +276,13 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
         var receiptLine = raw.Split('\n')
             .First(line => line.StartsWith("data: ") && line.Contains("text", StringComparison.Ordinal));
         using var receiptJson = JsonDocument.Parse(receiptLine[6..]);
-        Assert.Equal("Сохранено в долгосрочную память: я хочу быть космонавтом.",
+        Assert.Equal("Сохранено в долгосрочную память: Пользователь хочет стать космонавтом.",
             receiptJson.RootElement.GetProperty("text").GetString());
         Assert.Contains("data: [DONE]", raw);
 
         var memory = await client.GetFromJsonAsync<JsonElement>("/api/v1/memory/items");
         Assert.Contains(memory.EnumerateArray(), item =>
-            item.GetProperty("text").GetString() == "я хочу быть космонавтом");
+            item.GetProperty("text").GetString() == "Пользователь хочет стать космонавтом");
     }
 
     [Fact]
