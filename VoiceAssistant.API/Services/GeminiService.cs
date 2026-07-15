@@ -242,7 +242,24 @@ public class GeminiService
                             parts.ValueKind == JsonValueKind.Array &&
                             parts.GetArrayLength() > 0)
                         {
-                            chunkText = parts[0].GetProperty("text").GetString();
+                            // Search-grounded responses may begin with a technical or
+                            // thought part, which has no `text` field. Treat the SSE
+                            // shape as additive and emit only visible text parts.
+                            var textParts = new StringBuilder();
+                            foreach (var part in parts.EnumerateArray())
+                            {
+                                if (part.ValueKind != JsonValueKind.Object ||
+                                    (part.TryGetProperty("thought", out var thought) && thought.ValueKind == JsonValueKind.True) ||
+                                    !part.TryGetProperty("text", out var text) ||
+                                    text.ValueKind != JsonValueKind.String)
+                                {
+                                    continue;
+                                }
+
+                                textParts.Append(text.GetString());
+                            }
+
+                            chunkText = textParts.Length > 0 ? textParts.ToString() : null;
                         }
 
                         // Diagnostic: confirm whether Google Search grounding actually fired for

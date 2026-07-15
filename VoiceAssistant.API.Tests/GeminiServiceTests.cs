@@ -44,6 +44,28 @@ public class GeminiServiceTests
     }
 
     [Fact]
+    public async Task StreamResponseAsync_NonTextPartsBeforeText_AreIgnoredWithoutInterruptingTheReply()
+    {
+        var handler = new DelegateHandler(_ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"thought\":true,\"thoughtSignature\":\"opaque\"}]}}]}\n\n" +
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"thought\":true,\"text\":\"internal\"},{\"text\":\"visible\"}]}}]}\n\n",
+                Encoding.UTF8,
+                "text/event-stream")
+        }));
+        var service = CreateService(handler);
+        var chunks = new List<string>();
+
+        await foreach (var chunk in service.StreamResponseAsync("system", [new GeminiMessage("user", "play a video")], enableGrounding: true))
+        {
+            chunks.Add(chunk);
+        }
+
+        Assert.Equal(["visible"], chunks);
+    }
+
+    [Fact]
     public async Task GenerateEmbeddingAsync_ParsesExpectedDimensionsAndRequestContract()
     {
         string? requestBody = null;
