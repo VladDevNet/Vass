@@ -110,24 +110,68 @@ public class ReminderService
 
             var parsed = Parse(raw.ToString());
             if (!parsed.IsReminder) return new ReminderInterpretation(ReminderInterpretationState.None);
-            if (parsed.NeedsClarification || string.IsNullOrWhiteSpace(parsed.Text) || string.IsNullOrWhiteSpace(parsed.DueAtLocal))
+            if (parsed.NeedsClarification)
                 return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
 
-            if (!TryConvertToUtc(parsed.DueAtLocal, timeZone, out var dueAtUtc) ||
-                dueAtUtc <= nowUtc.AddSeconds(10) ||
-                dueAtUtc > nowUtc.AddYears(5))
-                return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
+            return await CreateFromToolAsync(
+                userId,
+                sourceMessageId,
+                parsed.Text,
+                parsed.DueAtLocal,
+                deviceId,
+                timeZoneId,
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Reminder interpretation failed for user {UserId}", userId);
+            return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
+        }
+    }
 
-            var text = NormalizeText(parsed.Text);
-            if (text.Length == 0) return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
+    // Shared persistence/validation path for the legacy parser and the native
+    // agent tool. The model chooses the intent and arguments; this service is
+    // still the authority for device, time-zone and future-time validation.
+    public async Task<ReminderInterpretation> CreateFromToolAsync(
+        string userId,
+        int sourceMessageId,
+        string? text,
+        string? dueAtLocal,
+        string? deviceId,
+        string? timeZoneId,
+        CancellationToken cancellationToken)
+    {
+        if (!IsValidDeviceId(deviceId) || !TryResolveTimeZone(timeZoneId, out var timeZone) ||
+            string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(dueAtLocal))
+        {
+            return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
+        }
 
+        var nowUtc = DateTime.UtcNow;
+        if (!TryConvertToUtc(dueAtLocal, timeZone, out var dueAtUtc) ||
+            dueAtUtc <= nowUtc.AddSeconds(10) ||
+            dueAtUtc > nowUtc.AddYears(5))
+        {
+            return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
+        }
+
+        var normalizedText = NormalizeText(text);
+        if (normalizedText.Length == 0)
+            return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
+
+        try
+        {
             await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
             var existing = await db.Reminders
                 .Include(item => item.Deliveries)
                 .Where(item => item.UserId == userId &&
                                item.Status == ReminderStatuses.Active &&
                                item.CreatedByDeviceId == deviceId &&
-                               item.Text == text &&
+                               item.Text == normalizedText &&
                                item.DueAtUtc == dueAtUtc)
                 .FirstOrDefaultAsync(cancellationToken);
             if (existing is not null)
@@ -140,6 +184,7 @@ public class ReminderService
                     delivery.UpdatedAt = DateTime.UtcNow;
                     await db.SaveChangesAsync(cancellationToken);
                 }
+
                 return new ReminderInterpretation(
                     ReminderInterpretationState.Created,
                     new ReminderDraft(
@@ -154,7 +199,7 @@ public class ReminderService
             var reminder = new Reminder
             {
                 UserId = userId,
-                Text = text,
+                Text = normalizedText,
                 DueAtUtc = dueAtUtc,
                 TimeZoneId = timeZone.Id,
                 CreatedByDeviceId = deviceId!,
@@ -181,7 +226,7 @@ public class ReminderService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Reminder interpretation failed for user {UserId}", userId);
+            _logger.LogWarning(ex, "Reminder persistence failed for user {UserId}", userId);
             return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
         }
     }
@@ -251,7 +296,7 @@ public class ReminderService
         return true;
     }
 
-    private static bool TryResolveTimeZone(string? id, out TimeZoneInfo timeZone)
+    public static bool TryResolveTimeZone(string? id, out TimeZoneInfo timeZone)
     {
         timeZone = TimeZoneInfo.Utc;
         if (string.IsNullOrWhiteSpace(id) || id.Length > 100) return false;

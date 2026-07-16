@@ -233,7 +233,7 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Fact]
-    public async Task Send_PutIntoLongTermMemory_ReturnsDurableReceiptWithoutModelReply()
+    public async Task Send_PutIntoLongTermMemory_ReturnsModelReplyGroundedInFunctionResponse()
     {
         var client = await CreateAuthenticatedClientAsync();
         var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
@@ -249,7 +249,7 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
         var receiptLine = raw.Split('\n')
             .First(line => line.StartsWith("data: ") && line.Contains("text", StringComparison.Ordinal));
         using var receiptJson = JsonDocument.Parse(receiptLine[6..]);
-        Assert.Equal(FakeGeminiHandler.DefaultReplyText,
+        Assert.Equal("Сохранила в долгосрочную память: Беллу 15 лет.",
             receiptJson.RootElement.GetProperty("text").GetString());
         Assert.Contains("data: [DONE]", raw);
         Assert.DoesNotContain(FakeGeminiHandler.DefaultReplyText, raw);
@@ -276,9 +276,63 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
         var receiptLine = raw.Split('\n')
             .First(line => line.StartsWith("data: ") && line.Contains("text", StringComparison.Ordinal));
         using var receiptJson = JsonDocument.Parse(receiptLine[6..]);
-        Assert.Equal(FakeGeminiHandler.DefaultReplyText,
+        Assert.Equal("Сохранила в долгосрочную память: Пользователь хочет стать космонавтом.",
             receiptJson.RootElement.GetProperty("text").GetString());
         Assert.Contains("data: [DONE]", raw);
+
+        var memory = await client.GetFromJsonAsync<JsonElement>("/api/v1/memory/items");
+        Assert.Contains(memory.EnumerateArray(), item =>
+            item.GetProperty("text").GetString() == "Пользователь хочет стать космонавтом");
+    }
+
+    [Fact]
+    public async Task Send_SequentialToolCalls_ReturnsFinalReplyAfterSearchAndRemember()
+    {
+        var client = await CreateAuthenticatedClientAsync();
+        var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
+        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>())
+            .EnumerateArray().First().GetProperty("id").GetInt32();
+
+        var response = await client.PostAsJsonAsync("/api/v1/chat/send",
+            new ChatController.SendRequest(sessionId,
+                "Сначала найди в памяти мою цель стать космонавтом и запомни её нормальной фразой."));
+
+        response.EnsureSuccessStatusCode();
+        var raw = await response.Content.ReadAsStringAsync();
+        var replyLine = raw.Split('\n')
+            .First(line => line.StartsWith("data: ") && line.Contains("text", StringComparison.Ordinal));
+        using var replyJson = JsonDocument.Parse(replyLine[6..]);
+        Assert.Equal("Сохранила в долгосрочную память: Пользователь хочет стать космонавтом.",
+            replyJson.RootElement.GetProperty("text").GetString());
+        Assert.DoesNotContain(FakeGeminiHandler.DefaultReplyText, raw);
+
+        var memory = await client.GetFromJsonAsync<JsonElement>("/api/v1/memory/items");
+        Assert.Contains(memory.EnumerateArray(), item =>
+            item.GetProperty("text").GetString() == "Пользователь хочет стать космонавтом");
+    }
+
+    [Fact]
+    public async Task Send_ConversationSearchTool_CanGroundALaterMemoryWriteInPastMessages()
+    {
+        var client = await CreateAuthenticatedClientAsync();
+        var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
+        var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>())
+            .EnumerateArray().First().GetProperty("id").GetInt32();
+
+        var firstTurn = await client.PostAsJsonAsync("/api/v1/chat/send",
+            new ChatController.SendRequest(sessionId, "Я хочу стать космонавтом."));
+        firstTurn.EnsureSuccessStatusCode();
+
+        var secondTurn = await client.PostAsJsonAsync("/api/v1/chat/send",
+            new ChatController.SendRequest(sessionId,
+                "Найди в истории наш разговор о том, что я хочу стать космонавтом, и запомни это нормальной фразой."));
+        secondTurn.EnsureSuccessStatusCode();
+        var raw = await secondTurn.Content.ReadAsStringAsync();
+        var replyLine = raw.Split('\n')
+            .First(line => line.StartsWith("data: ") && line.Contains("text", StringComparison.Ordinal));
+        using var replyJson = JsonDocument.Parse(replyLine[6..]);
+        Assert.Equal("Сохранила в долгосрочную память: Пользователь хочет стать космонавтом.",
+            replyJson.RootElement.GetProperty("text").GetString());
 
         var memory = await client.GetFromJsonAsync<JsonElement>("/api/v1/memory/items");
         Assert.Contains(memory.EnumerateArray(), item =>

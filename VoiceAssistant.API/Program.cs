@@ -133,13 +133,13 @@ builder.Services.AddScoped<SpeakerRegistryService>();
 builder.Services.AddScoped<ConversationMemoryService>();
 builder.Services.AddScoped<LongTermMemoryService>();
 builder.Services.AddScoped<MemoryItemService>();
+builder.Services.AddScoped<ConversationSearchService>();
 builder.Services.AddSingleton<AssistantCapabilityRegistry>();
 builder.Services.AddScoped<AssistantToolPlannerService>();
 builder.Services.AddScoped<AssistantToolBroker>();
+builder.Services.AddScoped<AssistantAgentTurnService>();
 builder.Services.AddScoped<ActionReceiptService>();
 builder.Services.AddScoped<ReminderService>();
-builder.Services.AddSingleton<ExternalActionService>();
-builder.Services.AddSingleton<ScreenAnalysisIntentService>();
 
 // Skipped under the integration-test host, same reason as the auto-migrate
 // block below -- there's no value in a 24h-interval background timer

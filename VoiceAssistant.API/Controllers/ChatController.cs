@@ -28,13 +28,10 @@ public class ChatController : ControllerBase
     private readonly LongTermMemoryService _longTermMemory;
     private readonly MemoryItemService _memoryItems;
     private readonly ReminderService _reminders;
-    private readonly ExternalActionService _externalActions;
-    private readonly ScreenAnalysisIntentService _screenAnalysis;
     private readonly VisualAssetService _visualAssets;
     private readonly AssistantCapabilityRegistry _capabilities;
     private readonly ActionReceiptService _actionReceipts;
-    private readonly AssistantToolPlannerService _toolPlanner;
-    private readonly AssistantToolBroker _toolBroker;
+    private readonly AssistantAgentTurnService _agentTurn;
     private readonly IConfiguration _config;
     private readonly ILogger<ChatController> _logger;
     private readonly string _audioPath;
@@ -47,13 +44,10 @@ public class ChatController : ControllerBase
         LongTermMemoryService longTermMemory,
         MemoryItemService memoryItems,
         ReminderService reminders,
-        ExternalActionService externalActions,
-        ScreenAnalysisIntentService screenAnalysis,
         VisualAssetService visualAssets,
         AssistantCapabilityRegistry capabilities,
         ActionReceiptService actionReceipts,
-        AssistantToolPlannerService toolPlanner,
-        AssistantToolBroker toolBroker,
+        AssistantAgentTurnService agentTurn,
         PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
@@ -68,13 +62,10 @@ public class ChatController : ControllerBase
         _longTermMemory = longTermMemory;
         _memoryItems = memoryItems;
         _reminders = reminders;
-        _externalActions = externalActions;
-        _screenAnalysis = screenAnalysis;
         _visualAssets = visualAssets;
         _capabilities = capabilities;
         _actionReceipts = actionReceipts;
-        _toolPlanner = toolPlanner;
-        _toolBroker = toolBroker;
+        _agentTurn = agentTurn;
         _ttsService = ttsService;
         _config = config;
         _logger = logger;
@@ -686,35 +677,6 @@ public class ChatController : ControllerBase
             }
         }
 
-        // Screen analysis is a preflight, not an external action: the image
-        // must exist before this user message is persisted and Gemini starts
-        // generating its first answer. Old clients never opt in.
-        if (req.SupportsScreenAnalysis && visualAsset is null &&
-            await _screenAnalysis.IsScreenAnalysisRequestAsync(messageText, geminiKey, HttpContext.RequestAborted))
-        {
-            Response.ContentType = "text/event-stream";
-            Response.Headers.CacheControl = "no-cache";
-            Response.Headers.Connection = "keep-alive";
-            if (transcription is not null)
-            {
-                var transcriptionData = JsonSerializer.Serialize(new { transcription });
-                await Response.WriteAsync($"data: {transcriptionData}\n\n");
-            }
-            var screenCaptureData = JsonSerializer.Serialize(new { screenCapture = new { prompt = messageText } });
-            await Response.WriteAsync($"data: {screenCaptureData}\n\n");
-            await Response.WriteAsync("data: [DONE]\n\n");
-            await Response.Body.FlushAsync();
-
-            // This audio was uploaded solely to obtain the transcription. It
-            // has no Message owner because the real turn will be text+image.
-            if (validatedAudioFileName is not null && TryResolveSafeAudioPath(_audioPath, validatedAudioFileName, out var transientAudioPath))
-            {
-                try { System.IO.File.Delete(transientAudioPath); }
-                catch (Exception ex) { _logger.LogWarning(ex, "Could not delete screen-analysis preflight audio"); }
-            }
-            return;
-        }
-
         // Persist a content-free record of the runtime capabilities the model
         // sees for this turn. It makes a later diagnosis reproducible without
         // logging the prompt, user text, attachment, or provider payload.
@@ -722,7 +684,9 @@ public class ChatController : ControllerBase
             visualAsset is not null,
             req.SupportsScreenAnalysis,
             req.SupportsExternalActions,
-            ReminderService.IsValidDeviceId(req.DeviceId));
+            ReminderService.IsValidDeviceId(req.DeviceId),
+            req.DeviceId,
+            req.TimeZoneId);
         var capabilitySnapshot = _capabilities.GetSnapshot(capabilityContext);
 
         // Save user message
@@ -744,47 +708,6 @@ public class ChatController : ControllerBase
         session.Messages.Add(userMessage);
         await _db.SaveChangesAsync();
 
-        var toolPlanningMessages = session.Messages
-            .Where(item => !string.IsNullOrWhiteSpace(item.Content))
-            .OrderBy(item => item.CreatedAt)
-            .TakeLast(12)
-            .Select(item => new GeminiMessage(item.Role, item.Content))
-            .ToList();
-        var toolCalls = await _toolPlanner.PlanAsync(
-            _capabilities.BuildPromptManifest(capabilityContext),
-            toolPlanningMessages,
-            geminiKey,
-            HttpContext.RequestAborted);
-        // A mediated screen capture restarts the turn with an image. It must
-        // be the only side effect in this preflight turn.
-        if (toolCalls.Any(call => call.Name == "screen_capture_once"))
-            toolCalls = toolCalls.Where(call => call.Name == "screen_capture_once").Take(1).ToList();
-        var toolExecutions = await _toolBroker.ExecuteAsync(
-            toolCalls,
-            userId,
-            userMessage.Id,
-            capabilityContext,
-            HttpContext.RequestAborted);
-        var screenCaptureRequested = toolExecutions.Any(result => result.RequestsScreenCapture);
-        var actionExecution = toolExecutions.FirstOrDefault(result => result.ExternalAction is not null && result.ActionReceiptId is not null);
-        var externalAction = actionExecution?.ExternalAction;
-        var actionProposal = actionExecution is null || actionExecution.ActionReceiptId is not { } actionId || externalAction is null
-            ? null
-            : new ActionProposal(
-                actionId,
-                externalAction.Type,
-                ActionReceiptService.GetTaxonomy(externalAction.Type) ?? AssistantActionTaxonomies.External,
-                externalAction.Query,
-                externalAction.VideoId);
-
-        var reminderInterpretation = await _reminders.TryCreateAsync(
-            userId,
-            userMessage.Id,
-            messageText,
-            req.DeviceId,
-            req.TimeZoneId,
-            geminiKey,
-            HttpContext.RequestAborted);
         // Check (in parallel, doesn't block the response) whether the user asked the
         // assistant to remember a persistent behavior preference ("говори медленнее",
         // "давай на ты", etc.) so future turns' system prompts reflect it. Awaited at
@@ -796,15 +719,8 @@ public class ChatController : ControllerBase
         var instructionUpdateTask = MaybeUpdateCustomInstructionsAsync(userId, messageText, settings?.CustomSystemPrompt, geminiKey, HttpContext.RequestAborted);
 
         // Semantic recall is the only long-term-memory operation on the critical
-        // path. Extraction of facts from this turn starts immediately afterwards
-        // on its own factory-created DbContext and runs alongside the main answer.
-        var recalledFactsTask = _longTermMemory.RecallAsync(userId, messageText, geminiKey, HttpContext.RequestAborted);
-        var memoryUpdateTask = reminderInterpretation.State == ReminderInterpretationState.None &&
-                               !toolExecutions.Any(result => result.Name.StartsWith("memory_", StringComparison.Ordinal))
-            ? _longTermMemory.ExtractAndStoreAsync(
-                userId, userMessage.Id, messageText, geminiKey, HttpContext.RequestAborted)
-            : Task.CompletedTask;
-        var recalledFacts = await recalledFactsTask;
+        // path. Explicit agent memory calls below suppress passive extraction.
+        var recalledFacts = await _longTermMemory.RecallAsync(userId, messageText, geminiKey, HttpContext.RequestAborted);
 
         // Build conversation history: this session is persistent and never rotates
         // (single ongoing session per user), so resending every message ever exchanged
@@ -853,13 +769,6 @@ public class ChatController : ControllerBase
 
         systemPrompt = _capabilities.BuildPromptManifest(capabilityContext) + "\n\n" + systemPrompt;
 
-        var memoryToolResult = toolExecutions.FirstOrDefault(result => result.Name.StartsWith("memory_", StringComparison.Ordinal));
-        if (memoryToolResult is not null)
-        {
-            systemPrompt = $"Инструмент памяти вернул подтвержденный результат: {memoryToolResult.Summary} " +
-                           "Отвечай только на его основании, естественно и кратко; не утверждай то, чего receipt не подтвердил.\n\n" + systemPrompt;
-        }
-
         if (visualAsset is not null)
         {
             var attachmentDescription = ImageContentInspector.IsImageMimeType(visualAsset.MimeType)
@@ -871,29 +780,56 @@ public class ChatController : ControllerBase
                            systemPrompt;
         }
 
-        if (reminderInterpretation.State == ReminderInterpretationState.NeedsClarification)
+        if (ReminderService.TryResolveTimeZone(req.TimeZoneId, out var localTimeZone))
         {
-            systemPrompt = "Пользователь просит установить напоминание, но точную будущую дату или время определить нельзя. " +
-                           "Задай один короткий уточняющий вопрос и не утверждай, что напоминание уже установлено.\n\n" +
+            var nowLocal = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, localTimeZone);
+            systemPrompt = $"Текущее локальное время пользователя: {nowLocal:yyyy-MM-ddTHH:mm:ss}; " +
+                           $"часовой пояс: {localTimeZone.Id}. Для относительной даты в истории вычисляй точные local dates и передавай их в conversation_search.\n\n" +
                            systemPrompt;
-        }
 
-        if (actionProposal is not null && externalAction is not null)
-        {
-            systemPrompt = externalAction.Type switch
+            if (capabilityContext.SupportsReminders)
             {
-                ExternalActionTypes.OpenVass =>
-                    "Клиент получил команду открыть полный экран Vass. Ответь одной короткой естественной фразой, что возвращаешься в приложение.\n\n" + systemPrompt,
-                ExternalActionTypes.YouTubeWatch =>
-                    "Клиент получил команду открыть конкретное видео YouTube. Ответь одной короткой естественной фразой без дополнительных объяснений.\n\n" + systemPrompt,
-                _ =>
-                    "Клиент получил команду открыть поиск YouTube. Коротко скажи, что открываешь поиск; не утверждай, что видео уже играет.\n\n" + systemPrompt
-            };
+                systemPrompt = "Для напоминаний вызывай reminder_create только с точным будущим временем; " +
+                               "при неоднозначности сначала задай один короткий уточняющий вопрос.\n\n" +
+                               systemPrompt;
+            }
         }
 
         if (speakerResult?.ShouldAskForName == true)
         {
             systemPrompt = $"Ты слышишь новый, ранее не знакомый тебе голос несколько реплик подряд. Ненавязчиво, как естественную часть своего ответа по теме разговора, поинтересуйся как зовут собеседника — не делай это отдельным резким вопросом или объявлением о распознавании голоса.\n\n{systemPrompt}";
+        }
+
+        var agentTurn = await _agentTurn.RunAsync(
+            systemPrompt,
+            messages,
+            geminiKey,
+            userId,
+            userMessage.Id,
+            capabilityContext,
+            HttpContext.RequestAborted);
+        var toolExecutions = agentTurn.ToolExecutions;
+        var screenCaptureRequested = agentTurn.RequestsScreenCapture;
+        var reminderDraft = toolExecutions.Select(result => result.Reminder).FirstOrDefault(reminder => reminder is not null);
+        var actionExecution = toolExecutions.FirstOrDefault(result => result.ExternalAction is not null && result.ActionReceiptId is not null);
+        var externalAction = actionExecution?.ExternalAction;
+        var actionProposal = actionExecution is null || actionExecution.ActionReceiptId is not { } actionId || externalAction is null
+            ? null
+            : new ActionProposal(
+                actionId,
+                externalAction.Type,
+                ActionReceiptService.GetTaxonomy(externalAction.Type) ?? AssistantActionTaxonomies.External,
+                externalAction.Query,
+                externalAction.VideoId);
+
+        // A normal stream is only a resilience fallback after a tool turn did
+        // not produce a final provider reply. It receives verified receipts,
+        // never an untrusted model claim about side effects.
+        if (agentTurn.UsedTools && string.IsNullOrWhiteSpace(agentTurn.FinalText) && toolExecutions.Count > 0)
+        {
+            var verifiedResults = string.Join("\n", toolExecutions.Select(result => $"- {result.Name}: {result.Summary}"));
+            systemPrompt = $"Инструменты уже выполнились и вернули только следующие подтвержденные результаты:\n{verifiedResults}\n" +
+                           "Не вызывай и не обещай новых действий. Сформулируй короткий ответ строго по этим результатам.\n\n" + systemPrompt;
         }
 
         // SSE streaming response
@@ -933,6 +869,21 @@ public class ChatController : ControllerBase
             // flow above; do not leave a duplicate text-only turn behind.
             _db.Messages.Remove(userMessage);
             await _db.SaveChangesAsync(HttpContext.RequestAborted);
+
+            // The provisional turn is intentionally not retained, so its
+            // uploaded source and converted audio have no remaining owner.
+            // Do not leave either file behind merely because the model chose
+            // the consent-mediated screen capture tool after transcription.
+            if (wavPath is not null)
+            {
+                try { if (System.IO.File.Exists(wavPath)) System.IO.File.Delete(wavPath); } catch { }
+            }
+            if (validatedAudioFileName is not null &&
+                TryResolveSafeAudioPath(_audioPath, validatedAudioFileName, out var transientAudioPath))
+            {
+                try { if (System.IO.File.Exists(transientAudioPath)) System.IO.File.Delete(transientAudioPath); } catch { }
+            }
+
             var captureData = JsonSerializer.Serialize(new { screenCapture = new { prompt = messageText } });
             await Response.WriteAsync($"data: {captureData}\n\n");
             await Response.WriteAsync("data: [DONE]\n\n");
@@ -941,7 +892,14 @@ public class ChatController : ControllerBase
             return;
         }
 
-        if (reminderInterpretation.Reminder is { } reminder)
+        var memoryUpdateTask = !toolExecutions.Any(result =>
+                                   result.Name.StartsWith("memory_", StringComparison.Ordinal) ||
+                                   result.Name == "reminder_create")
+            ? _longTermMemory.ExtractAndStoreAsync(
+                userId, userMessage.Id, messageText, geminiKey, HttpContext.RequestAborted)
+            : Task.CompletedTask;
+
+        if (reminderDraft is { } reminder)
         {
             var reminderData = JsonSerializer.Serialize(new
             {
@@ -983,16 +941,27 @@ public class ChatController : ControllerBase
         var swLlm = Stopwatch.StartNew();
         long llmFirstTokenMs = 0;
 
+        // A reminder is only confirmed after the phone responds above. Its
+        // first tool-loop reply was generated before that receipt exists, so
+        // use the verified receipt-aware prompt instead of risking an early
+        // "set" confirmation from the model.
+        var useAgentFinalText = reminderDraft is null && !string.IsNullOrWhiteSpace(agentTurn.FinalText);
+
         // Kick off a fast, non-grounded "will this need search/deep thought?" check
         // in parallel with the real (possibly slow, search-grounded) response, so we
         // can speak a natural "hold on" phrase while the real answer is still cooking
-        // instead of leaving the user in silence for several seconds.
-        var preambleTask = actionProposal is null
+        // instead of leaving the user in silence for several seconds. A reminder has
+        // already waited for the device receipt, so a preamble would arrive too late.
+        var preambleTask = !useAgentFinalText && actionProposal is null && reminderDraft is null
             ? GetPreambleIfNeededAsync(messageText, geminiKey, HttpContext.RequestAborted)
             : Task.FromResult<string?>(null);
 
-        // Use Gemini 3.5 Flash with Google Search grounding for real-time facts (news, weather, etc.)
-        var stream = _gemini.StreamResponseAsync(systemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey, cancellationToken: HttpContext.RequestAborted);
+        // Ordinary conversation retains the existing grounded streaming path.
+        // A tool turn already has an evidence-aware final answer from the
+        // native function-response loop, so emit it as one durable SSE chunk.
+        var stream = useAgentFinalText
+            ? StreamSingleResponseAsync(agentTurn.FinalText!)
+            : _gemini.StreamResponseAsync(systemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey, cancellationToken: HttpContext.RequestAborted);
         var enumerator = stream.GetAsyncEnumerator(HttpContext.RequestAborted);
 
         try
@@ -1146,6 +1115,12 @@ public class ChatController : ControllerBase
         // If this line is ever changed to run concurrently like the two tasks
         // above, give it its own DbContext first.
         await _conversationMemory.CheckAndUpdateAsync(session, geminiKey, HttpContext.RequestAborted);
+    }
+
+    private static async IAsyncEnumerable<string> StreamSingleResponseAsync(string response)
+    {
+        await Task.CompletedTask;
+        yield return response;
     }
 
     // Rejects an oversized request body before model binding buffers the

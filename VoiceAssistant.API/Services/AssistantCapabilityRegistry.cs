@@ -17,7 +17,10 @@ public sealed record AssistantRuntimeContext(
     bool HasVisualAttachment,
     bool SupportsScreenAnalysis,
     bool SupportsExternalActions,
-    bool SupportsReminders);
+    bool SupportsReminders,
+    string? DeviceId = null,
+    string? TimeZoneId = null,
+    bool HasProposedClientAction = false);
 
 // This registry is intentionally declarative. It describes what this turn can
 // actually do; it never turns UI-only controls into model-callable actions.
@@ -37,6 +40,7 @@ public sealed class AssistantCapabilityRegistry
             new("memory.status", _memoryEnabled ? "available" : "disabled", "server", AssistantActionTaxonomies.ServerLocal, "Статус памяти"),
             new("memory.list", _memoryEnabled ? "available" : "disabled", "server", AssistantActionTaxonomies.ServerLocal, "Список сохраненной памяти"),
             new("memory.search", _memoryEnabled ? "available" : "disabled", "server", AssistantActionTaxonomies.ServerLocal, "Поиск по памяти"),
+            new("conversation.search", "available", "server", AssistantActionTaxonomies.ServerLocal, "Поиск коротких owner-scoped фрагментов прежнего разговора"),
             new("memory.remember", _memoryEnabled ? "available" : "disabled", "server", AssistantActionTaxonomies.ServerLocal, "Явное сохранение после подтвержденной записи"),
             new("memory.correct", _memoryEnabled ? "available" : "disabled", "server", AssistantActionTaxonomies.ServerLocal, "Исправление сохраненной записи"),
             new("memory.forget", _memoryEnabled ? "available" : "disabled", "server", AssistantActionTaxonomies.ServerLocal, "Удаление одной сохраненной записи"),
