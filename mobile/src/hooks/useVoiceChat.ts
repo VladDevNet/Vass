@@ -36,6 +36,7 @@ interface VisualTurnBridge {
   stageVisualAsset: (input: StageVisualAssetInput) => Promise<PendingVisualInput | null>;
   getPendingSharedText: () => PendingSharedText | null;
   consumePendingSharedText: (requestId: string) => void;
+  setScreenCaptureConsentPending: (pending: boolean) => void;
 }
 
 class ScreenCaptureCancelledError extends Error {
@@ -51,7 +52,10 @@ class NativeOperationTimeoutError extends Error {
   }
 }
 
-const SCREEN_CAPTURE_RESULT_TIMEOUT_MS = 20_000;
+// Android owns the consent UI and the user may need time to choose a display.
+// The turn stays correlated with this one request for the full period instead
+// of treating a legitimate late consent as an unrelated future attachment.
+const SCREEN_CAPTURE_RESULT_TIMEOUT_MS = 120_000;
 const SCREEN_CAPTURE_RESULT_POLL_MS = 150;
 const SCREEN_CAPTURE_NATIVE_REQUEST_TIMEOUT_MS = 2_000;
 
@@ -79,20 +83,37 @@ async function captureOneShotScreenImage(requestId: string): Promise<string> {
     SCREEN_CAPTURE_NATIVE_REQUEST_TIMEOUT_MS,
     'Screen capture consent request'
   );
-  log('debug', 'screen-capture', 'Android screen capture consent request dispatched', { requestId });
+  const startedAt = Date.now();
+  log('info', 'screen-capture', 'waiting for Android consent and screen frame', {
+    requestId,
+    timeoutMs: SCREEN_CAPTURE_RESULT_TIMEOUT_MS,
+  });
   const deadline = Date.now() + SCREEN_CAPTURE_RESULT_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const result = await VassOverlay.getScreenCaptureResult();
     if (result.requestId === requestId) {
       if (result.status === 'ready' && result.uri) {
-        log('info', 'screen-capture', 'screen capture image received', { requestId });
+        log('info', 'screen-capture', 'screen capture image received', {
+          requestId,
+          waitedMs: Date.now() - startedAt,
+        });
         return result.uri;
       }
-      if (result.status === 'cancelled') throw new ScreenCaptureCancelledError();
-      if (result.status === 'error') throw new Error('Не удалось получить снимок экрана. Повторите запрос.');
+      if (result.status === 'cancelled') {
+        log('info', 'screen-capture', 'screen capture consent cancelled', { requestId });
+        throw new ScreenCaptureCancelledError();
+      }
+      if (result.status === 'error') {
+        log('warn', 'screen-capture', 'screen capture service returned an error', { requestId });
+        throw new Error('Не удалось получить снимок экрана. Повторите запрос.');
+      }
     }
     await waitFor(SCREEN_CAPTURE_RESULT_POLL_MS);
   }
+  log('warn', 'screen-capture', 'screen capture consent timed out', {
+    requestId,
+    timeoutMs: SCREEN_CAPTURE_RESULT_TIMEOUT_MS,
+  });
   throw new Error('Не удалось получить снимок экрана вовремя. Повторите запрос.');
 }
 
@@ -1003,6 +1024,7 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
         // retries the request with that frame attached.
         if (screenCaptureHolder.current) {
           const capturePrompt = screenCaptureHolder.current.prompt;
+          setReply('Жду подтверждения снимка экрана…');
           log('info', 'screen-capture', 'stopping recorders before Android consent');
           let recorderStopTimedOut = false;
           await Promise.race([
@@ -1014,9 +1036,28 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
           ]);
           log('info', 'screen-capture', 'recorder stop phase completed', { recorderStopTimedOut });
           nativeScreenCaptureRequestId = `screen-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-          const screenUri = await captureOneShotScreenImage(nativeScreenCaptureRequestId);
+          let screenUri: string;
+          visualBridgeRef.current?.setScreenCaptureConsentPending(true);
+          try {
+            screenUri = await captureOneShotScreenImage(nativeScreenCaptureRequestId);
+          } finally {
+            visualBridgeRef.current?.setScreenCaptureConsentPending(false);
+          }
           if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) return;
 
+          // The native consent activity already returns to Vass. Keep this
+          // best-effort call as a JS-level recovery path for devices that
+          // resume a different task after the system picker.
+          try {
+            await VassOverlay.openApp();
+            log('info', 'screen-capture', 'returned Vass to foreground after capture');
+          } catch (err) {
+            log('warn', 'screen-capture', 'could not explicitly return Vass to foreground', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          setReply('Снимок получен. Отправляю его на разбор…');
+          log('info', 'screen-capture', 'staging captured screen image');
           const staged = await visualBridgeRef.current?.stageVisualAsset({
             uri: screenUri,
             mimeType: 'image/jpeg',
@@ -1024,6 +1065,10 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
           });
           if (!staged) throw new Error('Не удалось подготовить снимок экрана для разбора.');
           visualAssetId = staged.assetId;
+          log('info', 'screen-capture', 'captured screen image staged for retry', {
+            assetId: staged.assetId,
+            sizeBytes: staged.sizeBytes,
+          });
 
           fullReply = await sendMessage({
             sessionId: sid,

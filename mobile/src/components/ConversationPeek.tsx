@@ -8,13 +8,15 @@ interface ConversationPeekProps {
   state: VoiceState;
 }
 
-// Одна тёмная стеклянная плашка вместо двух подписанных bubble — показывает
-// ТОЛЬКО актуальную для текущего state строку (что говорит пользователь во
-// время recording, что отвечает ассистент во время speaking). Пусто — не
-// плейсхолдер-фраза, компонент просто ничего не рендерит: минимализм
-// важнее заполненности, см. spec.
+// Одна тёмная стеклянная плашка вместо двух подписанных bubble. During a
+// mediated screen capture `reply` carries explicit local progress while the
+// runtime remains in thinking, so that otherwise invisible wait is shown.
 export function ConversationPeek({ transcript, reply, state }: ConversationPeekProps) {
-  const text = state === 'recording' ? transcript : state === 'speaking' ? reply : '';
+  const text = state === 'recording'
+    ? transcript
+    : state === 'thinking' || state === 'speaking'
+      ? reply
+      : '';
   if (!text) return null;
 
   return (

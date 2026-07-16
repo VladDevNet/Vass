@@ -41,6 +41,7 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
   const [pendingSharedText, setPendingSharedText] = useState<PendingSharedText | null>(null);
   const visual = useVisualInput();
   const pendingSharedTextRef = useRef<PendingSharedText | null>(null);
+  const screenCaptureConsentPendingRef = useRef(false);
   const stageSharedText = useCallback((pending: PendingSharedText) => {
     pendingSharedTextRef.current = pending;
     setPendingSharedText(pending);
@@ -51,12 +52,20 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
     pendingSharedTextRef.current = null;
     setPendingSharedText(null);
   }, []);
+  const setScreenCaptureConsentPending = useCallback((pending: boolean) => {
+    if (screenCaptureConsentPendingRef.current === pending) return;
+    screenCaptureConsentPendingRef.current = pending;
+    log('info', 'screen-capture', pending
+      ? 'screen capture consent is pending'
+      : 'screen capture consent finished');
+  }, []);
   const runtime = useVoiceChat(sessionId, {
     getPendingVisual: visual.getPendingVisual,
     consumePendingVisual: visual.consumePendingVisual,
     stageVisualAsset: visual.stageVisualAsset,
     getPendingSharedText,
     consumePendingSharedText,
+    setScreenCaptureConsentPending,
   });
   const stateRef = useRef(runtime.state);
   const actionsRef = useRef(runtime);
@@ -217,6 +226,13 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'background') {
+        // Android's MediaProjection consent is a system activity. It makes
+        // React Native report "background", but the active voice turn must
+        // remain alive until the user accepts or cancels that dialog.
+        if (screenCaptureConsentPendingRef.current) {
+          log('info', 'screen-capture', 'ignoring background transition for system consent');
+          return;
+        }
         void (async () => {
           const status = await VassOverlay.getStatus();
           if (AppState.currentState !== 'background') return;

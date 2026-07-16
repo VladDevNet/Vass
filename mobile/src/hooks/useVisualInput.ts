@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { api } from '../api/client';
+import { log } from '../logging/remoteLogger';
 import type { PendingVisualInput, StageVisualAssetInput, VisualInputStatus, VisualSource } from '../visual/types';
 
 const MIME_BY_EXTENSION: Record<string, string> = {
@@ -74,6 +75,10 @@ export function useVisualInput() {
     setUploadingUri(uri);
     setError(null);
     try {
+      log('info', 'visual', 'uploading visual asset', {
+        mimeType,
+        originalName: originalName ?? null,
+      });
       const uploaded = await api.uploadVisual(uri, mimeType, originalName ?? undefined);
       if (!mountedRef.current || operation !== operationRef.current) {
         try { await api.deletePendingVisual(uploaded.id); } catch { }
@@ -91,12 +96,21 @@ export function useVisualInput() {
       setPendingVisual(next);
       setStatus('ready');
       setUploadingUri(null);
+      log('info', 'visual', 'visual asset staged', {
+        assetId: uploaded.id,
+        mimeType: uploaded.mimeType,
+        sizeBytes: uploaded.sizeBytes,
+      });
       if (previous && previous.assetId !== next.assetId) {
         void api.deletePendingVisual(previous.assetId).catch(() => undefined);
       }
       return next;
     } catch (err) {
       if (!mountedRef.current || operation !== operationRef.current) return null;
+      log('error', 'visual', 'visual asset upload failed', {
+        mimeType,
+        error: err instanceof Error ? err.message : String(err),
+      });
       setStatus(previous ? 'ready' : 'error');
       setUploadingUri(null);
       setError(err instanceof Error ? err.message : 'Не удалось загрузить вложение.');

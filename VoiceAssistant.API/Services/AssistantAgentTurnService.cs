@@ -117,13 +117,16 @@ public sealed class AssistantAgentTurnService
         }
     }
 
-    private static List<JsonElement> BuildInitialContents(IReadOnlyList<GeminiMessage> messages) =>
+    // The tool-planning call sees the same current-turn attachment as the
+    // ordinary streaming reply. Otherwise it can request a second screenshot
+    // even though the user already supplied the image to analyse.
+    internal static List<JsonElement> BuildInitialContents(IReadOnlyList<GeminiMessage> messages) =>
         messages
-            .Where(message => !string.IsNullOrWhiteSpace(message.Content))
+            .Where(message => message.Parts.Any(part => part.Data is not null || !string.IsNullOrWhiteSpace(part.Text)))
             .Select(message => JsonSerializer.SerializeToElement(new
             {
                 role = message.Role.Equals("user", StringComparison.OrdinalIgnoreCase) ? "user" : "model",
-                parts = new[] { new { text = message.Content } }
+                parts = GeminiService.SerializeParts(message.Parts)
             }))
             .ToList();
 

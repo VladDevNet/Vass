@@ -293,7 +293,7 @@ public class GeminiService
         }
     }
 
-    private static object[] SerializeParts(IReadOnlyList<GeminiPart> parts)
+    internal static object[] SerializeParts(IReadOnlyList<GeminiPart> parts)
     {
         var nonEmptyParts = parts
             .Where(part => part.Data is not null || !string.IsNullOrWhiteSpace(part.Text))

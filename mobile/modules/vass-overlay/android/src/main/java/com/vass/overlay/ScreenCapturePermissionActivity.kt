@@ -29,6 +29,7 @@ class ScreenCapturePermissionActivity : Activity() {
     }
     if (resultCode != RESULT_OK || data == null) {
       ScreenCaptureStore.save(this, requestId, "cancelled")
+      returnToVass()
       finish()
       return
     }
@@ -39,7 +40,19 @@ class ScreenCapturePermissionActivity : Activity() {
         .putExtra(OverlayContract.EXTRA_CAPTURE_RESULT_CODE, resultCode)
         .putExtra(OverlayContract.EXTRA_CAPTURE_RESULT_DATA, data),
     )
+    // This activity can be launched from an overlay or another app. Return to
+    // Vass while the foreground capture service prepares the frame, so the
+    // user sees the pending attachment and the eventual analysis instead of
+    // being left on the app that happened to be visible before consent.
+    returnToVass()
     finish()
+  }
+
+  private fun returnToVass() {
+    packageManager.getLaunchIntentForPackage(packageName)?.let { launchIntent ->
+      launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+      startActivity(launchIntent)
+    }
   }
 
   companion object {
