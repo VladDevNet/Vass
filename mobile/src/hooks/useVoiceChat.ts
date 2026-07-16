@@ -44,20 +44,50 @@ class ScreenCaptureCancelledError extends Error {
   }
 }
 
+class NativeOperationTimeoutError extends Error {
+  constructor(operation: string) {
+    super(`${operation} timed out`);
+    this.name = 'NativeOperationTimeoutError';
+  }
+}
+
 const SCREEN_CAPTURE_RESULT_TIMEOUT_MS = 20_000;
 const SCREEN_CAPTURE_RESULT_POLL_MS = 150;
+const SCREEN_CAPTURE_NATIVE_REQUEST_TIMEOUT_MS = 2_000;
 
 function waitFor(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, name: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new NativeOperationTimeoutError(name)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
 async function captureOneShotScreenImage(requestId: string): Promise<string> {
-  await VassOverlay.requestScreenCapture(requestId);
+  log('info', 'screen-capture', 'requesting Android screen capture consent', { requestId });
+  await withTimeout(
+    VassOverlay.requestScreenCapture(requestId),
+    SCREEN_CAPTURE_NATIVE_REQUEST_TIMEOUT_MS,
+    'Screen capture consent request'
+  );
+  log('debug', 'screen-capture', 'Android screen capture consent request dispatched', { requestId });
   const deadline = Date.now() + SCREEN_CAPTURE_RESULT_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const result = await VassOverlay.getScreenCaptureResult();
     if (result.requestId === requestId) {
-      if (result.status === 'ready' && result.uri) return result.uri;
+      if (result.status === 'ready' && result.uri) {
+        log('info', 'screen-capture', 'screen capture image received', { requestId });
+        return result.uri;
+      }
       if (result.status === 'cancelled') throw new ScreenCaptureCancelledError();
       if (result.status === 'error') throw new Error('Не удалось получить снимок экрана. Повторите запрос.');
     }
@@ -112,6 +142,9 @@ const INTERRUPTION_THRESHOLD_DB = DEFAULT_THRESHOLD_DB + 8;
 const OVERLAY_INTERRUPTION_FRAMES = 8;
 const OVERLAY_INTERRUPTION_THRESHOLD_DB = DEFAULT_THRESHOLD_DB + 4;
 const EXTERNAL_MEDIA_STOP_TIMEOUT_MS = 1_500;
+const SCREEN_CAPTURE_RECORDER_STOP_TIMEOUT_MS = 1_500;
+const SHADOW_RECORDER_PREPARE_TIMEOUT_MS = 2_500;
+const SHADOW_RECORDER_STOP_TIMEOUT_MS = 2_500;
 
 // Continuation-confirmation timing — yolo.js's exact SILENCE_TIMEOUT. Once
 // broadly "shadow capture only during THINKING," now the single mechanism
@@ -300,6 +333,10 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
   const recorderLiveRef = useRef(false);
   // Same idea, for the shadow (continuation) recorder.
   const shadowRecorderLiveRef = useRef(false);
+  // A timed-out native recorder operation cannot be cancelled safely from
+  // JavaScript. Keep the primary voice path alive, but stop using this
+  // optional continuation recorder until the app is restarted.
+  const shadowRecorderDisabledRef = useRef(false);
   // Native prepare/stop are asynchronous and must never overlap. Production
   // logs confirmed the exact race: stop observed live=false while prepare
   // was still in flight, then prepare completed and left the native recorder
@@ -482,9 +519,30 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
   // which only ever arms once per turn.
   //
   const armShadowRecorder = useCallback(() => enqueueShadowOperation(async () => {
-    if (!mountedRef.current || shadowRecorderLiveRef.current || stateRef.current !== 'thinking' || pausedRef.current) return;
+    if (
+      !mountedRef.current ||
+      shadowRecorderDisabledRef.current ||
+      shadowRecorderLiveRef.current ||
+      stateRef.current !== 'thinking' ||
+      pausedRef.current
+    ) return;
     try {
-      await shadowRecorder.prepareToRecordAsync();
+      const preparation = shadowRecorder.prepareToRecordAsync();
+      try {
+        await withTimeout(preparation, SHADOW_RECORDER_PREPARE_TIMEOUT_MS, 'Shadow recorder preparation');
+      } catch (err) {
+        if (err instanceof NativeOperationTimeoutError) {
+          shadowRecorderDisabledRef.current = true;
+          // The late native preparation may still finish. Release it without
+          // allowing it to block the serialized shadow operation queue.
+          void preparation.then(() => shadowRecorder.stop()).catch(() => undefined);
+          log('error', 'shadow', 'prepare timed out; continuation listening disabled until restart', {
+            timeoutMs: SHADOW_RECORDER_PREPARE_TIMEOUT_MS,
+          });
+          return;
+        }
+        throw err;
+      }
       if (!mountedRef.current || stateRef.current !== 'thinking' || pausedRef.current) {
         await shadowRecorder.stop();
         return;
@@ -510,9 +568,16 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
       if (!shadowRecorderLiveRef.current) return null;
       shadowRecorderLiveRef.current = false;
       try {
-        await shadowRecorder.stop();
+        await withTimeout(shadowRecorder.stop(), SHADOW_RECORDER_STOP_TIMEOUT_MS, 'Shadow recorder stop');
         return shadowRecorder.uri || null;
       } catch (err) {
+        if (err instanceof NativeOperationTimeoutError) {
+          shadowRecorderDisabledRef.current = true;
+          log('error', 'shadow', 'stop timed out; continuation listening disabled until restart', {
+            timeoutMs: SHADOW_RECORDER_STOP_TIMEOUT_MS,
+          });
+          return null;
+        }
         log('warn', 'shadow', 'stop failed', { error: err instanceof Error ? err.message : String(err) });
         return null;
       }
@@ -938,8 +1003,16 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
         // retries the request with that frame attached.
         if (screenCaptureHolder.current) {
           const capturePrompt = screenCaptureHolder.current.prompt;
-          await stopRecorderIfLive();
-          await stopShadowRecorderIfLive();
+          log('info', 'screen-capture', 'stopping recorders before Android consent');
+          let recorderStopTimedOut = false;
+          await Promise.race([
+            Promise.all([stopRecorderIfLive(), stopShadowRecorderIfLive()]),
+            new Promise<void>((resolve) => setTimeout(() => {
+              recorderStopTimedOut = true;
+              resolve();
+            }, SCREEN_CAPTURE_RECORDER_STOP_TIMEOUT_MS)),
+          ]);
+          log('info', 'screen-capture', 'recorder stop phase completed', { recorderStopTimedOut });
           nativeScreenCaptureRequestId = `screen-${Date.now()}-${Math.random().toString(36).slice(2)}`;
           const screenUri = await captureOneShotScreenImage(nativeScreenCaptureRequestId);
           if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) return;
