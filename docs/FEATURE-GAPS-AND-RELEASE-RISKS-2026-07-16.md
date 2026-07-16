@@ -70,11 +70,14 @@ Android ARM64-устройстве. Один успешный unit/integration t
 
 ## Проверки доставки
 
-- Перед доставкой применить на VPS миграцию `20260716194643_AddStructuredMemoryAttachments`.
-- При деплое `docker compose up -d --remove-orphans` должен остановить старый контейнер `tts`.
-- После миграции проверить, что API readiness возвращает HTTP 200.
-- Сборка Android выполнена заново после добавления `expo-sharing`; старый APK
-  не проверяет просмотр сохранённых документов.
+- Миграция `20260716194643_AddStructuredMemoryAttachments` применена на VPS
+  2026-07-16 вместе с release-коммитом `51c4ade`.
+- `docker compose up -d --remove-orphans` остановил и удалил старый контейнер
+  `vass-tts-1`.
+- API readiness и admin SPA вернули HTTP 200 после миграции; `api`, `admin`
+  и `db` имеют статус `healthy`.
+- ARM64 APK `1.2.13 (17)` собран после добавления `expo-sharing`; требуется
+  физический Android smoke-test просмотра сохранённых документов.
 
 ## Границы, которые нельзя обещать пользователю
 
