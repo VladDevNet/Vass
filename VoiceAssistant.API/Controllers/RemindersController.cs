@@ -26,6 +26,7 @@ public class RemindersController : ControllerBase
         string Text,
         DateTime DueAtUtc,
         string TimeZoneId,
+        string? RecurrenceRule,
         string Status,
         string? DeliveryStatus,
         string? LocalNotificationId);
@@ -33,7 +34,8 @@ public class RemindersController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<ReminderResponse>>> GetForDevice(
         [FromQuery] string deviceId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [FromQuery] int protocolVersion = 1)
     {
         if (!ReminderService.IsValidDeviceId(deviceId))
             return BadRequest(new { error = "Invalid device id" });
@@ -42,18 +44,29 @@ public class RemindersController : ControllerBase
         var reminders = await _db.Reminders
             .AsNoTracking()
             .Where(reminder => reminder.UserId == userId &&
-                               ((reminder.Status == ReminderStatuses.Active &&
-                                 reminder.DueAtUtc > DateTime.UtcNow.AddMinutes(-5)) ||
+                              ((reminder.Status == ReminderStatuses.Active &&
+                                !(reminder.RecurrenceRule != null &&
+                                  reminder.DueAtUtc <= DateTime.UtcNow &&
+                                  (reminder.RecurrenceRule.StartsWith("FREQ=HOURLY;") ||
+                                   reminder.RecurrenceRule.StartsWith("FREQ=MINUTELY;")) &&
+                                  reminder.Deliveries.Any(delivery =>
+                                      delivery.DeviceId == deviceId &&
+                                      (delivery.Status == ReminderDeliveryStatuses.Failed ||
+                                       delivery.Status == ReminderDeliveryStatuses.Cancelled))) &&
+                                ((reminder.RecurrenceRule == null &&
+                                  reminder.DueAtUtc > DateTime.UtcNow.AddMinutes(-5)) ||
+                                 (reminder.RecurrenceRule != null && protocolVersion >= 2))) ||
                                 (reminder.Status == ReminderStatuses.Cancelled &&
                                  reminder.Deliveries.Any(delivery =>
                                      delivery.DeviceId == deviceId &&
-                                     delivery.Status == ReminderDeliveryStatuses.Scheduled))))
+                                     delivery.Status != ReminderDeliveryStatuses.Cancelled))))
             .OrderBy(reminder => reminder.DueAtUtc)
             .Select(reminder => new ReminderResponse(
                 reminder.Id,
                 reminder.Text,
                 reminder.DueAtUtc,
                 reminder.TimeZoneId,
+                reminder.RecurrenceRule,
                 reminder.Status,
                 reminder.Deliveries.Where(delivery => delivery.DeviceId == deviceId)
                     .Select(delivery => delivery.Status).FirstOrDefault(),

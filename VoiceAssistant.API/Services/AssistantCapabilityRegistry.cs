@@ -20,13 +20,16 @@ public sealed record AssistantRuntimeContext(
     bool SupportsReminders,
     string? DeviceId = null,
     string? TimeZoneId = null,
-    bool HasProposedClientAction = false);
+    bool HasProposedClientAction = false,
+    bool HasAttemptedReminder = false,
+    bool SupportsPeriodicReminders = false,
+    Guid? ClientTurnId = null);
 
 // This registry is intentionally declarative. It describes what this turn can
 // actually do; it never turns UI-only controls into model-callable actions.
 public sealed class AssistantCapabilityRegistry
 {
-    public const int SnapshotVersion = 1;
+    public const int SnapshotVersion = 2;
     private readonly bool _memoryEnabled;
 
     public AssistantCapabilityRegistry(IConfiguration configuration)
@@ -46,6 +49,7 @@ public sealed class AssistantCapabilityRegistry
             new("memory.forget", _memoryEnabled ? "available" : "disabled", "server", AssistantActionTaxonomies.ServerLocal, "Удаление одной сохраненной записи"),
             new("memory.clear", _memoryEnabled ? "confirmation_required" : "disabled", "server", AssistantActionTaxonomies.ServerLocal, "Очистка памяти с отдельным подтверждением"),
             new("reminder.schedule", context.SupportsReminders ? "available" : "device_context_required", "server", AssistantActionTaxonomies.ServerLocal, "Локальное напоминание требует связанный телефон и его подтверждение"),
+            new("reminder.periodic", context.SupportsPeriodicReminders ? "available" : "unsupported_client", "server", AssistantActionTaxonomies.ServerLocal, "Периодическое локальное напоминание использует startAtLocal и ограниченный RRULE-контракт"),
             new("navigation.open_vass", context.SupportsExternalActions ? "available" : "unavailable", "client", AssistantActionTaxonomies.Navigation, "Развернуть Vass; клиент подтверждает только передачу команды в handler"),
             new("youtube.search", context.SupportsExternalActions ? "available" : "unavailable", "client", AssistantActionTaxonomies.External, "Открыть разрешенный поиск YouTube; не подтверждает воспроизведение"),
             new("youtube.watch", context.SupportsExternalActions ? "available" : "unavailable", "client", AssistantActionTaxonomies.External, "Открыть конкретный валидный ролик YouTube; не подтверждает воспроизведение"),

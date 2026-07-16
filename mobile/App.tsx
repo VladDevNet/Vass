@@ -39,7 +39,7 @@ function Root() {
 
   useEffect(() => {
     if (!user) return;
-    reconcileLocalReminders().catch((err) => {
+    reconcileLocalReminders(user.id).catch((err) => {
       log('warn', 'app', 'reminder reconciliation failed', {
         error: err instanceof Error ? err.message : String(err),
       });

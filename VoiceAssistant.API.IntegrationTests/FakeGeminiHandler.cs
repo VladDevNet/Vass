@@ -123,6 +123,21 @@ public class FakeGeminiHandler : HttpMessageHandler
         if (content.Contains("экране", StringComparison.OrdinalIgnoreCase) ||
             content.Contains("screen", StringComparison.OrdinalIgnoreCase))
             return BuildFunctionCall("screen_capture_once", new { });
+        if (content.Contains("без downgrade", StringComparison.OrdinalIgnoreCase))
+            return BuildFunctionCall("periodic_reminder_create", new
+            {
+                text = "принять витамин D",
+                startAtLocal = "2030-01-01T09:00:00",
+                rrule = "FREQ=DAILY;INTERVAL=2"
+            });
+        if (content.Contains("каждый день", StringComparison.OrdinalIgnoreCase) ||
+            content.Contains("периодичес", StringComparison.OrdinalIgnoreCase))
+            return BuildFunctionCall("periodic_reminder_create", new
+            {
+                text = "принять витамин D",
+                startAtLocal = "2030-01-01T09:00:00",
+                rrule = "FREQ=DAILY"
+            });
         if (content.Contains("напомни", StringComparison.OrdinalIgnoreCase))
             return BuildFunctionCall("reminder_create", new { text = "позвонить врачу", dueAtLocal = "2030-01-01T09:00:00" });
         if (content.Contains("космонав", StringComparison.OrdinalIgnoreCase))
@@ -168,6 +183,11 @@ public class FakeGeminiHandler : HttpMessageHandler
 
         if (HasFunctionResponse(body, "reminder_create"))
             return BuildModelText("Передала напоминание телефону и жду его подтверждения.");
+        if (HasFunctionResponse(body, "periodic_reminder_create") &&
+            ReadAllText(body).Contains("без downgrade", StringComparison.OrdinalIgnoreCase))
+            return BuildFunctionCall("reminder_create", new { text = "принять витамин D", dueAtLocal = "2030-01-01T09:00:00" });
+        if (HasFunctionResponse(body, "periodic_reminder_create"))
+            return BuildModelText("Передала периодическое напоминание телефону и жду его подтверждения.");
 
         if (HasFunctionResponse(body, "youtube_watch"))
             return BuildModelText("Открываю выбранное видео в YouTube.");

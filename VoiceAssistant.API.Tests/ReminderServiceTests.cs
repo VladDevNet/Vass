@@ -76,4 +76,33 @@ public class ReminderServiceTests
     {
         Assert.False(ReminderService.IsValidDeviceId(deviceId));
     }
+
+    [Theory]
+    [InlineData("FREQ=DAILY", "2026-07-17T09:00:00", "FREQ=DAILY")]
+    [InlineData("RRULE:FREQ=WEEKLY;BYDAY=SU", "2026-07-19T18:00:00", "FREQ=WEEKLY;BYDAY=SU")]
+    [InlineData("FREQ=HOURLY;INTERVAL=2", "2026-07-16T14:00:00", "FREQ=HOURLY;INTERVAL=2")]
+    [InlineData("FREQ=MINUTELY;INTERVAL=15", "2026-07-16T12:15:00", "FREQ=MINUTELY;INTERVAL=15")]
+    public void Recurrence_SupportedRule_ReturnsCanonicalRule(
+        string rawRule,
+        string startAtLocal,
+        string expected)
+    {
+        Assert.True(ReminderRecurrence.TryParse(rawRule, startAtLocal, out var rule));
+        Assert.Equal(expected, rule.CanonicalRule);
+    }
+
+    [Theory]
+    [InlineData("FREQ=WEEKLY;BYDAY=MO,WE", "2026-07-20T09:00:00")]
+    [InlineData("FREQ=WEEKLY;BYDAY=SU", "2026-07-20T09:00:00")]
+    [InlineData("FREQ=DAILY;INTERVAL=2", "2026-07-20T09:00:00")]
+    [InlineData("FREQ=DAILY;COUNT=10", "2026-07-20T09:00:00")]
+    [InlineData("FREQ=MONTHLY", "2026-07-29T09:00:00")]
+    [InlineData("FREQ=MINUTELY;INTERVAL=1", "2026-07-20T09:00:00")]
+    [InlineData("FREQ=MINUTELY;INTERVAL=5", "2026-07-20T09:00:00")]
+    [InlineData("FREQ=DAILY;", "2026-07-20T09:00:00")]
+    [InlineData("FREQ=DAILY;;", "2026-07-20T09:00:00")]
+    public void Recurrence_UnsupportedOrInconsistentRule_ReturnsFalse(string rule, string startAtLocal)
+    {
+        Assert.False(ReminderRecurrence.TryParse(rule, startAtLocal, out _));
+    }
 }

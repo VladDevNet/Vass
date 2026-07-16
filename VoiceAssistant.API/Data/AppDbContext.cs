@@ -219,9 +219,11 @@ public class AppDbContext : IdentityDbContext<User>
                 .HasForeignKey(r => r.UserId).OnDelete(DeleteBehavior.Cascade);
             e.Property(r => r.Text).HasMaxLength(500);
             e.Property(r => r.TimeZoneId).HasMaxLength(100);
+            e.Property(r => r.RecurrenceRule).HasMaxLength(200);
             e.Property(r => r.Status).HasMaxLength(20);
             e.Property(r => r.CreatedByDeviceId).HasMaxLength(64);
             e.HasIndex(r => new { r.UserId, r.Status, r.DueAtUtc });
+            e.HasIndex(r => new { r.UserId, r.OperationId }).IsUnique();
         });
 
         builder.Entity<ReminderDelivery>(e =>

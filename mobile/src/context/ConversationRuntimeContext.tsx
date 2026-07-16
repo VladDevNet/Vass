@@ -59,7 +59,7 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
       ? 'screen capture consent is pending'
       : 'screen capture consent finished');
   }, []);
-  const runtime = useVoiceChat(sessionId, {
+  const runtime = useVoiceChat(sessionId, user?.id ?? null, {
     getPendingVisual: visual.getPendingVisual,
     consumePendingVisual: visual.consumePendingVisual,
     stageVisualAsset: visual.stageVisualAsset,

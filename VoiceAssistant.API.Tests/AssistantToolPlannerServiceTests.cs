@@ -59,6 +59,7 @@ public class AssistantToolPlannerServiceTests
         Assert.NotNull(result.ModelContent);
         Assert.Contains("thoughtSignature", result.ModelContent!.Value.GetRawText());
         Assert.Contains("functionDeclarations", requestBody!);
+        Assert.Contains("periodic_reminder_create", requestBody);
     }
 
     private static AssistantToolPlannerService CreatePlanner(HttpMessageHandler handler)

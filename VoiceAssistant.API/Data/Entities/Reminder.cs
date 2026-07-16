@@ -8,6 +8,8 @@ public class Reminder
     public string Text { get; set; } = null!;
     public DateTime DueAtUtc { get; set; }
     public string TimeZoneId { get; set; } = null!;
+    public string? RecurrenceRule { get; set; }
+    public Guid? OperationId { get; set; }
     public string Status { get; set; } = ReminderStatuses.Active;
     public string CreatedByDeviceId { get; set; } = null!;
     public int? SourceMessageId { get; set; }

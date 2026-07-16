@@ -312,7 +312,9 @@ public class ChatController : ControllerBase
         bool SupportsExternalActions = false,
         Guid? VisualAssetId = null,
         bool SupportsScreenAnalysis = false,
-        string? SharedContent = null);
+        string? SharedContent = null,
+        int ReminderProtocolVersion = 1,
+        Guid? ClientTurnId = null);
 
     private const long MaxAudioSize = 5 * 1024 * 1024; // 5MB
     private const long MaxImageSize = 10 * 1024 * 1024; // 10MB
@@ -680,13 +682,17 @@ public class ChatController : ControllerBase
         // Persist a content-free record of the runtime capabilities the model
         // sees for this turn. It makes a later diagnosis reproducible without
         // logging the prompt, user text, attachment, or provider payload.
+        var supportsReminderDevice = ReminderService.IsValidDeviceId(req.DeviceId) &&
+                                     ReminderService.TryResolveTimeZone(req.TimeZoneId, out _);
         var capabilityContext = new AssistantRuntimeContext(
-            visualAsset is not null,
-            req.SupportsScreenAnalysis,
-            req.SupportsExternalActions,
-            ReminderService.IsValidDeviceId(req.DeviceId),
-            req.DeviceId,
-            req.TimeZoneId);
+            HasVisualAttachment: visualAsset is not null,
+            SupportsScreenAnalysis: req.SupportsScreenAnalysis,
+            SupportsExternalActions: req.SupportsExternalActions,
+            SupportsReminders: supportsReminderDevice,
+            DeviceId: req.DeviceId,
+            TimeZoneId: req.TimeZoneId,
+            SupportsPeriodicReminders: supportsReminderDevice && req.ReminderProtocolVersion >= 2,
+            ClientTurnId: req.ClientTurnId);
         var capabilitySnapshot = _capabilities.GetSnapshot(capabilityContext);
 
         // Save user message
@@ -789,8 +795,11 @@ public class ChatController : ControllerBase
 
             if (capabilityContext.SupportsReminders)
             {
-                systemPrompt = "Для напоминаний вызывай reminder_create только с точным будущим временем; " +
-                               "при неоднозначности сначала задай один короткий уточняющий вопрос.\n\n" +
+                systemPrompt = "Для одного срабатывания вызывай reminder_create с точным будущим временем. " +
+                               (capabilityContext.SupportsPeriodicReminders
+                                   ? "Для повторения вызывай только periodic_reminder_create: передай ближайший точный startAtLocal и поддерживаемый RRULE; при неоднозначности или неподдерживаемом RRULE сначала задай один короткий уточняющий вопрос. "
+                                   : "Периодические напоминания этот клиент пока не поддерживает; не вызывай periodic_reminder_create и честно сообщи ограничение. ") +
+                               "Не создавай больше одного напоминания за ход.\n\n" +
                                systemPrompt;
             }
         }
@@ -811,6 +820,8 @@ public class ChatController : ControllerBase
         var toolExecutions = agentTurn.ToolExecutions;
         var screenCaptureRequested = agentTurn.RequestsScreenCapture;
         var reminderDraft = toolExecutions.Select(result => result.Reminder).FirstOrDefault(reminder => reminder is not null);
+        var attemptedReminder = toolExecutions.Any(result =>
+            result.Name is "reminder_create" or "periodic_reminder_create");
         var actionExecution = toolExecutions.FirstOrDefault(result => result.ExternalAction is not null && result.ActionReceiptId is not null);
         var externalAction = actionExecution?.ExternalAction;
         var actionProposal = actionExecution is null || actionExecution.ActionReceiptId is not { } actionId || externalAction is null
@@ -830,6 +841,15 @@ public class ChatController : ControllerBase
             var verifiedResults = string.Join("\n", toolExecutions.Select(result => $"- {result.Name}: {result.Summary}"));
             systemPrompt = $"Инструменты уже выполнились и вернули только следующие подтвержденные результаты:\n{verifiedResults}\n" +
                            "Не вызывай и не обещай новых действий. Сформулируй короткий ответ строго по этим результатам.\n\n" + systemPrompt;
+        }
+        else if (attemptedReminder && reminderDraft is null)
+        {
+            var reminderResults = string.Join("\n", toolExecutions
+                .Where(result => result.Name is "reminder_create" or "periodic_reminder_create")
+                .Select(result => $"- {result.Name}: {result.Summary}"));
+            systemPrompt = $"Напоминание не было создано. Проверенные результаты:\n{reminderResults}\n" +
+                           "Не утверждай, что оно установлено; кратко объясни ограничение или попроси недостающее уточнение.\n\n" +
+                           systemPrompt;
         }
 
         // SSE streaming response
@@ -894,24 +914,38 @@ public class ChatController : ControllerBase
 
         var memoryUpdateTask = !toolExecutions.Any(result =>
                                    result.Name.StartsWith("memory_", StringComparison.Ordinal) ||
-                                   result.Name == "reminder_create")
+                                   result.Name is "reminder_create" or "periodic_reminder_create")
             ? _longTermMemory.ExtractAndStoreAsync(
                 userId, userMessage.Id, messageText, geminiKey, HttpContext.RequestAborted)
             : Task.CompletedTask;
 
         if (reminderDraft is { } reminder)
         {
-            var reminderData = JsonSerializer.Serialize(new
-            {
-                reminder = new
+            var reminderData = reminder.IsPeriodic
+                ? JsonSerializer.Serialize(new
                 {
-                    id = reminder.Id,
-                    text = reminder.Text,
-                    dueAtUtc = reminder.DueAtUtc,
-                    timeZoneId = reminder.TimeZoneId,
-                    localNotificationId = reminder.LocalNotificationId
-                }
-            });
+                    periodicReminder = new
+                    {
+                        contractVersion = 2,
+                        id = reminder.Id,
+                        text = reminder.Text,
+                        startAtUtc = reminder.DueAtUtc,
+                        timeZoneId = reminder.TimeZoneId,
+                        rrule = reminder.RecurrenceRule,
+                        localNotificationId = reminder.LocalNotificationId
+                    }
+                })
+                : JsonSerializer.Serialize(new
+                {
+                    reminder = new
+                    {
+                        id = reminder.Id,
+                        text = reminder.Text,
+                        dueAtUtc = reminder.DueAtUtc,
+                        timeZoneId = reminder.TimeZoneId,
+                        localNotificationId = reminder.LocalNotificationId
+                    }
+                });
             await Response.WriteAsync($"data: {reminderData}\n\n");
             await Response.Body.FlushAsync();
 
@@ -923,7 +957,9 @@ public class ChatController : ControllerBase
             systemPrompt = deliveryStatus switch
             {
                 ReminderDeliveryStatuses.Scheduled =>
-                    $"Телефон подтвердил локальное напоминание «{reminder.Text}» на {reminder.DueAtUtc:O}. Кратко подтверди пользователю, что оно установлено и сработает без интернета.\n\n{systemPrompt}",
+                    reminder.IsPeriodic
+                        ? $"Телефон зарегистрировал периодическое локальное напоминание «{reminder.Text}»: первый запуск {reminder.DueAtUtc:O}, правило {reminder.RecurrenceRule}. Кратко подтверди расписание и что оно работает локально без интернета; не обещай абсолютную минутную точность.\n\n{systemPrompt}"
+                        : $"Телефон подтвердил локальное напоминание «{reminder.Text}» на {reminder.DueAtUtc:O}. Кратко подтверди пользователю, что оно установлено и сработает без интернета.\n\n{systemPrompt}",
                 ReminderDeliveryStatuses.Failed =>
                     $"Телефон не смог установить локальное напоминание «{reminder.Text}». Честно сообщи об ошибке и не обещай, что напоминание сработает.\n\n{systemPrompt}",
                 _ =>
@@ -945,7 +981,7 @@ public class ChatController : ControllerBase
         // first tool-loop reply was generated before that receipt exists, so
         // use the verified receipt-aware prompt instead of risking an early
         // "set" confirmation from the model.
-        var useAgentFinalText = reminderDraft is null && !string.IsNullOrWhiteSpace(agentTurn.FinalText);
+        var useAgentFinalText = !attemptedReminder && reminderDraft is null && !string.IsNullOrWhiteSpace(agentTurn.FinalText);
 
         // Kick off a fast, non-grounded "will this need search/deep thought?" check
         // in parallel with the real (possibly slow, search-grounded) response, so we

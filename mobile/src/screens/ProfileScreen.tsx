@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Pressable,
   ScrollView,
@@ -140,6 +141,17 @@ export function ProfileScreen({ mode, onDone, onOpenMemory }: ProfileScreenProps
     } finally {
       setIsGeneratingCode(false);
     }
+  }
+
+  function handleLogout() {
+    Alert.alert(
+      'Выйти из Vass?',
+      'Напоминания этого аккаунта перестанут срабатывать на телефоне до следующего входа. Серии «каждые N минут/часов» потребуется создать заново.',
+      [
+        { text: 'Остаться', style: 'cancel' },
+        { text: 'Выйти', style: 'destructive', onPress: () => { void logout(); } },
+      ],
+    );
   }
 
   // Android's Google TTS engine doesn't give voices a human name (raw
@@ -317,7 +329,7 @@ export function ProfileScreen({ mode, onDone, onOpenMemory }: ProfileScreenProps
 
           <View style={styles.divider} />
 
-          <Pressable style={styles.logoutButton} onPress={logout}>
+          <Pressable style={styles.logoutButton} onPress={handleLogout}>
             <Text style={styles.logoutText}>Выйти</Text>
           </Pressable>
         </>

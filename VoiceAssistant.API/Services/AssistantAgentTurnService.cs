@@ -81,7 +81,9 @@ public sealed class AssistantAgentTurnService
                     sourceMessageId,
                     context with
                     {
-                        HasProposedClientAction = executions.Any(execution => execution.ExternalAction is not null)
+                        HasProposedClientAction = executions.Any(execution => execution.ExternalAction is not null),
+                        HasAttemptedReminder = executions.Any(execution =>
+                            execution.Name is "reminder_create" or "periodic_reminder_create")
                     },
                     turnCancellationToken);
                 executions.AddRange(stepExecutions);

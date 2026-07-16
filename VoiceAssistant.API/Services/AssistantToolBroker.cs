@@ -48,6 +48,7 @@ public sealed class AssistantToolBroker
         var results = new List<AssistantToolExecution>();
         var index = 0;
         var hasProposedClientAction = context.HasProposedClientAction;
+        var hasAttemptedReminder = context.HasAttemptedReminder;
         foreach (var call in calls)
         {
             AssistantToolExecution execution;
@@ -67,6 +68,14 @@ public sealed class AssistantToolBroker
                     "В одном интерактивном ходе разрешено только одно действие на клиенте.",
                     Data: ToData(new { status = "rejected", code = "client_action_already_proposed" }));
             }
+            else if (IsReminderTool(call.Name) && hasAttemptedReminder)
+            {
+                execution = new AssistantToolExecution(
+                    call.Name,
+                    "rejected",
+                    "В одном ходе разрешено создать только одно напоминание.",
+                    Data: ToData(new { status = "rejected", code = "reminder_already_created" }));
+            }
             else
             {
                 execution = await ExecuteOneAsync(
@@ -74,12 +83,18 @@ public sealed class AssistantToolBroker
                     userId,
                     sourceMessageId,
                     context,
-                    CreateOperationId(sourceMessageId, call),
+                    CreateOperationId(sourceMessageId, call, context.ClientTurnId),
                     cancellationToken);
             }
 
             if (execution.ExternalAction is not null)
                 hasProposedClientAction = true;
+            // A failed recurring proposal must not be silently downgraded to
+            // a one-shot (or retried with changed semantics) later in the same
+            // turn. Any reminder tool attempt consumes the single reminder
+            // side-effect slot; clarification happens in the next user turn.
+            if (IsReminderTool(call.Name))
+                hasAttemptedReminder = true;
             results.Add(execution with { CallId = call.CallId });
         }
 
@@ -110,7 +125,16 @@ public sealed class AssistantToolBroker
             "memory_remember" => await RememberAsync(userId, sourceMessageId, GetString(call.Arguments, "text"), operationId, cancellationToken),
             "memory_correct" => await CorrectAsync(userId, GetString(call.Arguments, "memoryId"), GetString(call.Arguments, "text"), operationId, cancellationToken),
             "memory_forget" => await ForgetAsync(userId, GetString(call.Arguments, "memoryId"), operationId, cancellationToken),
-            "reminder_create" => await CreateReminderAsync(userId, sourceMessageId, GetString(call.Arguments, "text"), GetString(call.Arguments, "dueAtLocal"), context, cancellationToken),
+            "reminder_create" => await CreateReminderAsync(userId, sourceMessageId, GetString(call.Arguments, "text"), GetString(call.Arguments, "dueAtLocal"), context, operationId, cancellationToken),
+            "periodic_reminder_create" => await CreatePeriodicReminderAsync(
+                userId,
+                sourceMessageId,
+                GetString(call.Arguments, "text"),
+                GetString(call.Arguments, "startAtLocal"),
+                GetString(call.Arguments, "rrule"),
+                context,
+                operationId,
+                cancellationToken),
             "screen_capture_once" => RequestScreenCapture(call.Name, context),
             "open_vass" => await ProposeActionAsync(call.Name, ExternalActionTypes.OpenVass, null, null, userId, sourceMessageId, context, cancellationToken),
             "youtube_search" => await ProposeActionAsync(call.Name, ExternalActionTypes.YouTubeSearch, GetString(call.Arguments, "query"), null, userId, sourceMessageId, context, cancellationToken),
@@ -251,6 +275,7 @@ public sealed class AssistantToolBroker
         string? text,
         string? dueAtLocal,
         AssistantRuntimeContext context,
+        Guid operationId,
         CancellationToken ct)
     {
         if (!context.SupportsReminders)
@@ -264,7 +289,8 @@ public sealed class AssistantToolBroker
             dueAtLocal,
             context.DeviceId,
             context.TimeZoneId,
-            ct);
+            ct,
+            operationId);
         if (result.State != ReminderInterpretationState.Created || result.Reminder is not { } reminder)
         {
             return new("reminder_create", "needs_clarification", "Точное будущее время или параметры напоминания требуют уточнения.",
@@ -279,6 +305,53 @@ public sealed class AssistantToolBroker
                 text = reminder.Text,
                 dueAtUtc = reminder.DueAtUtc,
                 timeZoneId = reminder.TimeZoneId,
+                clientReceiptRequired = true
+            }),
+            Reminder: reminder);
+    }
+
+    private async Task<AssistantToolExecution> CreatePeriodicReminderAsync(
+        string userId,
+        int sourceMessageId,
+        string? text,
+        string? startAtLocal,
+        string? recurrenceRule,
+        AssistantRuntimeContext context,
+        Guid operationId,
+        CancellationToken ct)
+    {
+        if (!context.SupportsPeriodicReminders)
+            return new("periodic_reminder_create", "unavailable",
+                "Периодические напоминания требуют клиента с protocol version 2 и корректным часовым поясом.",
+                Data: ToData(new { status = "unavailable", code = "periodic_reminder_client_required" }));
+
+        var result = await _reminders.CreatePeriodicFromToolAsync(
+            userId,
+            sourceMessageId,
+            text,
+            startAtLocal,
+            recurrenceRule,
+            context.DeviceId,
+            context.TimeZoneId,
+            operationId,
+            ct);
+        if (result.State != ReminderInterpretationState.Created || result.Reminder is not { } reminder)
+        {
+            return new("periodic_reminder_create", "needs_clarification",
+                "Нужны точный первый локальный запуск и поддерживаемое правило повторения.",
+                Data: ToData(new { status = "needs_clarification", code = "invalid_or_unsupported_recurrence" }));
+        }
+
+        return new("periodic_reminder_create", "created",
+            $"Периодическое напоминание сохранено: {reminder.Text}; {reminder.RecurrenceRule}.",
+            Data: ToData(new
+            {
+                status = "created",
+                reminderId = reminder.Id,
+                text = reminder.Text,
+                startAtUtc = reminder.DueAtUtc,
+                timeZoneId = reminder.TimeZoneId,
+                rrule = reminder.RecurrenceRule,
                 clientReceiptRequired = true
             }),
             Reminder: reminder);
@@ -356,6 +429,7 @@ public sealed class AssistantToolBroker
         value.Length == 11 && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-');
 
     private static bool IsClientAction(string name) => name is "open_vass" or "youtube_search" or "youtube_watch";
+    private static bool IsReminderTool(string name) => name is "reminder_create" or "periodic_reminder_create";
 
     private static IReadOnlyList<object> ToToolItems(IEnumerable<MemoryItemResponse> items) =>
         items.Take(8).Select(item => (object)new
@@ -373,11 +447,74 @@ public sealed class AssistantToolBroker
         return selected.Length == 0 ? "Подходящих записей нет." : string.Join("\n", selected);
     }
 
-    private static Guid CreateOperationId(int sourceMessageId, AssistantToolCall call)
+    private static Guid CreateOperationId(int sourceMessageId, AssistantToolCall call, Guid? clientTurnId)
     {
-        var material = $"{sourceMessageId}\n{call.Name}\n{call.Arguments.GetRawText()}";
+        var turnKey = clientTurnId is { } stableId ? $"turn:{stableId:N}" : $"message:{sourceMessageId}";
+        // A retry invokes the model again, so relative schedules can be
+        // re-extracted with a different timestamp. Reminders therefore use
+        // one stable side-effect slot per client turn; first successful write
+        // wins even if a replay changes arguments or switches between the
+        // one-shot and periodic tool. Other tools retain argument-sensitive
+        // operation IDs so multiple distinct calls remain possible.
+        var operation = IsReminderTool(call.Name)
+            ? "reminder-slot"
+            : $"{call.Name}\n{Canonicalize(call.Arguments)}";
+        var material = $"{turnKey}\n{operation}";
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(material));
         return new Guid(hash.AsSpan(0, 16));
+    }
+
+    private static string Canonicalize(JsonElement value)
+    {
+        var builder = new StringBuilder();
+        AppendCanonical(builder, value);
+        return builder.ToString();
+    }
+
+    private static void AppendCanonical(StringBuilder builder, JsonElement value)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.Object:
+                builder.Append('{');
+                var firstProperty = true;
+                foreach (var property in value.EnumerateObject().OrderBy(property => property.Name, StringComparer.Ordinal))
+                {
+                    if (!firstProperty) builder.Append(',');
+                    firstProperty = false;
+                    builder.Append(JsonSerializer.Serialize(property.Name)).Append(':');
+                    AppendCanonical(builder, property.Value);
+                }
+                builder.Append('}');
+                break;
+            case JsonValueKind.Array:
+                builder.Append('[');
+                var firstItem = true;
+                foreach (var item in value.EnumerateArray())
+                {
+                    if (!firstItem) builder.Append(',');
+                    firstItem = false;
+                    AppendCanonical(builder, item);
+                }
+                builder.Append(']');
+                break;
+            case JsonValueKind.String:
+                builder.Append(JsonSerializer.Serialize(value.GetString()));
+                break;
+            case JsonValueKind.True:
+                builder.Append("true");
+                break;
+            case JsonValueKind.False:
+                builder.Append("false");
+                break;
+            case JsonValueKind.Null:
+            case JsonValueKind.Undefined:
+                builder.Append("null");
+                break;
+            default:
+                builder.Append(value.GetRawText());
+                break;
+        }
     }
 
     private static JsonElement ToData<T>(T value) => JsonSerializer.SerializeToElement(value);

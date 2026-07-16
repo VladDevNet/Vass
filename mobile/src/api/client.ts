@@ -348,8 +348,8 @@ export const api = {
       body: JSON.stringify({ actionId, status, resultCode }),
     }),
 
-  getReminders: (deviceId: string): Promise<ReminderSyncItem[]> =>
-    request<ReminderSyncItem[]>(`/reminders?deviceId=${encodeURIComponent(deviceId)}`),
+  getReminders: (deviceId: string, protocolVersion = 2): Promise<ReminderSyncItem[]> =>
+    request<ReminderSyncItem[]>(`/reminders?deviceId=${encodeURIComponent(deviceId)}&protocolVersion=${protocolVersion}`),
 
   markReminderScheduled: (id: number, deviceId: string, localNotificationId: string): Promise<void> =>
     request<void>(`/reminders/${id}/scheduled`, {
@@ -529,6 +529,8 @@ export interface SendMessageParams {
   audioFileName?: string;
   deviceId?: string;
   timeZoneId?: string;
+  reminderProtocolVersion?: number;
+  clientTurnId?: string;
   supportsExternalActions?: boolean;
   supportsScreenAnalysis?: boolean;
   visualAssetId?: string;
@@ -559,7 +561,22 @@ export interface ReminderEvent {
   localNotificationId?: string | null;
 }
 
-export interface ReminderSyncItem extends ReminderEvent {
+export interface PeriodicReminderEvent {
+  contractVersion: 2;
+  id: number;
+  text: string;
+  startAtUtc: string;
+  timeZoneId: string;
+  rrule: string;
+  localNotificationId?: string | null;
+}
+
+export interface ReminderSyncItem {
+  id: number;
+  text: string;
+  dueAtUtc: string;
+  timeZoneId: string;
+  recurrenceRule: string | null;
   status: string;
   deliveryStatus: string | null;
   localNotificationId: string | null;
@@ -569,6 +586,7 @@ export interface SendMessageCallbacks {
   onTranscription?: (text: string) => void;
   onChunk?: (text: string) => void;
   onReminder?: (reminder: ReminderEvent) => Promise<void>;
+  onPeriodicReminder?: (reminder: PeriodicReminderEvent) => Promise<void>;
   onExternalAction?: (action: ExternalActionEvent) => Promise<void>;
   onScreenCapture?: (request: ScreenCaptureRequest) => void;
 }
@@ -593,6 +611,28 @@ function parseScreenCapture(value: unknown): ScreenCaptureRequest | null {
   if (!value || typeof value !== 'object') return null;
   const prompt = (value as Record<string, unknown>).prompt;
   return typeof prompt === 'string' && prompt.trim() ? { prompt } : null;
+}
+
+function parsePeriodicReminder(value: unknown): PeriodicReminderEvent | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.contractVersion !== 2 || typeof candidate.id !== 'number' ||
+      typeof candidate.text !== 'string' || typeof candidate.startAtUtc !== 'string' ||
+      typeof candidate.timeZoneId !== 'string' || typeof candidate.rrule !== 'string') {
+    return null;
+  }
+
+  return {
+    contractVersion: 2,
+    id: candidate.id,
+    text: candidate.text,
+    startAtUtc: candidate.startAtUtc,
+    timeZoneId: candidate.timeZoneId,
+    rrule: candidate.rrule,
+    localNotificationId: typeof candidate.localNotificationId === 'string'
+      ? candidate.localNotificationId
+      : null,
+  };
 }
 
 // Streams POST /chat/send (SSE-style `data: {...}` lines) and resolves with
@@ -691,6 +731,9 @@ export async function sendMessage(params: SendMessageParams, callbacks: SendMess
           callbacks.onChunk?.(parsed.text);
         } else if (parsed.reminder && callbacks.onReminder) {
           await callbacks.onReminder(parsed.reminder as ReminderEvent);
+        } else if (parsed.periodicReminder && callbacks.onPeriodicReminder) {
+          const reminder = parsePeriodicReminder(parsed.periodicReminder);
+          if (reminder) await callbacks.onPeriodicReminder(reminder);
         } else if (parsed.externalAction && callbacks.onExternalAction) {
           const action = parseExternalAction(parsed.externalAction);
           if (action) await callbacks.onExternalAction(action);

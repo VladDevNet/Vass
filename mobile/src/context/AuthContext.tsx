@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   api,
   getToken,
@@ -7,6 +7,10 @@ import {
   setUnauthorizedHandler,
   type CurrentUser,
 } from '../api/client';
+import {
+  blockReminderSchedulingForOwner,
+  cancelAllLocalRemindersForSignedOutUser,
+} from '../reminders/localReminders';
 
 interface AuthContextValue {
   isLoading: boolean;
@@ -39,6 +43,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [assistantName, setAssistantName] = useState<string | null>(null);
   const [avatarId, setAvatarId] = useState<string | null>(null);
+  const userRef = useRef<CurrentUser | null>(null);
+  userRef.current = user;
 
   async function refreshProfile() {
     try {
@@ -63,6 +69,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // LoginScreen instead of leaving the user stuck on HomeScreen retrying
     // a dead token — see client.ts's setUnauthorizedHandler.
     setUnauthorizedHandler(() => {
+      // Token expiry is not an explicit logout. Native reminders must keep
+      // working offline, but a late SSE from the expired session must not
+      // create a new alarm after another account signs in.
+      blockReminderSchedulingForOwner(userRef.current?.id ?? null);
       setUser(null);
       setDisplayName(null);
       setAssistantName(null);
@@ -103,6 +113,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function logout() {
+    if (user) {
+      await cancelAllLocalRemindersForSignedOutUser(user.id).catch(() => {
+        // Signing out must not be blocked by a native notification error.
+      });
+    }
     await setToken(null);
     setUser(null);
     setDisplayName(null);

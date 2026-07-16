@@ -52,6 +52,15 @@ class NativeOperationTimeoutError extends Error {
   }
 }
 
+function createClientTurnId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+
+  // Idempotency correlation, not a credential. Keep a valid GUID fallback
+  // for runtimes that do not expose Web Crypto's randomUUID.
+  const randomHex = () => Math.floor(Math.random() * 0x1_0000).toString(16).padStart(4, '0');
+  return `${randomHex()}${randomHex()}-${randomHex()}-4${randomHex().slice(1)}-a${randomHex().slice(1)}-${randomHex()}${randomHex()}${randomHex()}`;
+}
+
 // Android owns the consent UI and the user may need time to choose a display.
 // The turn stays correlated with this one request for the full period instead
 // of treating a legitimate late consent as an unrelated future attachment.
@@ -291,7 +300,11 @@ function extractCompleteSentences(buffer: string): { sentences: string[]; rest: 
   return { sentences, rest: buffer.slice(consumed) };
 }
 
-export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurnBridge) {
+export function useVoiceChat(
+  sessionId: number | null,
+  ownerId: string | null,
+  visualBridge?: VisualTurnBridge,
+) {
   const [state, setState] = useState<VoiceState>('idle');
   const [appState, setAppState] = useState(AppState.currentState);
   const [micArmed, setMicArmed] = useState(false);
@@ -898,8 +911,12 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
       try {
         let fullReply: string;
         const reminderDevice = await getReminderDeviceContext();
+        const supportsLocalReminders = Platform.OS === 'android' || Platform.OS === 'ios';
+        const clientTurnId = createClientTurnId();
         const handleReminder = async (reminder: Parameters<typeof scheduleAndAcknowledgeReminder>[0]) => {
-          const result = await scheduleAndAcknowledgeReminder(reminder, reminderDevice.deviceId);
+          const result = mountedRef.current && ownerId
+            ? await scheduleAndAcknowledgeReminder(reminder, reminderDevice.deviceId, ownerId)
+            : { success: false, error: 'Сессия владельца локального напоминания уже завершена' };
           if (!result.success && myTurn === turnGenerationRef.current) {
             setError(result.error ?? 'Не удалось установить локальное напоминание');
           }
@@ -978,8 +995,10 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
           fullReply = await sendMessage({
             sessionId: sid,
             message: combinedText,
-            deviceId: reminderDevice.deviceId,
+            deviceId: supportsLocalReminders ? reminderDevice.deviceId : undefined,
             timeZoneId: reminderDevice.timeZoneId,
+            reminderProtocolVersion: supportsLocalReminders ? 2 : 0,
+            clientTurnId,
             supportsExternalActions: true,
             supportsScreenAnalysis,
             visualAssetId,
@@ -987,6 +1006,7 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
           }, {
             onChunk: handleChunk,
             onReminder: handleReminder,
+            onPeriodicReminder: handleReminder,
             onExternalAction: handleExternalAction,
             onScreenCapture: handleScreenCapture,
           });
@@ -997,8 +1017,10 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
               sessionId: sid,
               message: '',
               audioFileName: fileName,
-              deviceId: reminderDevice.deviceId,
+              deviceId: supportsLocalReminders ? reminderDevice.deviceId : undefined,
               timeZoneId: reminderDevice.timeZoneId,
+              reminderProtocolVersion: supportsLocalReminders ? 2 : 0,
+              clientTurnId,
               supportsExternalActions: true,
               supportsScreenAnalysis,
               visualAssetId,
@@ -1012,6 +1034,7 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
               },
               onChunk: handleChunk,
               onReminder: handleReminder,
+              onPeriodicReminder: handleReminder,
               onExternalAction: handleExternalAction,
               onScreenCapture: handleScreenCapture,
             }
@@ -1073,14 +1096,17 @@ export function useVoiceChat(sessionId: number | null, visualBridge?: VisualTurn
           fullReply = await sendMessage({
             sessionId: sid,
             message: capturePrompt,
-            deviceId: reminderDevice.deviceId,
+            deviceId: supportsLocalReminders ? reminderDevice.deviceId : undefined,
             timeZoneId: reminderDevice.timeZoneId,
+            reminderProtocolVersion: supportsLocalReminders ? 2 : 0,
+            clientTurnId,
             supportsExternalActions: true,
             supportsScreenAnalysis: false,
             visualAssetId,
           }, {
             onChunk: handleChunk,
             onReminder: handleReminder,
+            onPeriodicReminder: handleReminder,
             onExternalAction: handleExternalAction,
           });
         }

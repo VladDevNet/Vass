@@ -34,4 +34,24 @@ public class AssistantCapabilityRegistryTests
             .FindProperty(nameof(Message.CapabilitySnapshotJson))!;
         Assert.Null(property.GetMaxLength());
     }
+
+    [Fact]
+    public void PeriodicReminderCapability_RequiresProtocolV2Client()
+    {
+        var registry = new AssistantCapabilityRegistry(new ConfigurationBuilder().Build());
+        var unsupported = registry.GetSnapshot(new AssistantRuntimeContext(
+            HasVisualAttachment: false,
+            SupportsScreenAnalysis: false,
+            SupportsExternalActions: false,
+            SupportsReminders: true));
+        var supported = registry.GetSnapshot(new AssistantRuntimeContext(
+            HasVisualAttachment: false,
+            SupportsScreenAnalysis: false,
+            SupportsExternalActions: false,
+            SupportsReminders: true,
+            SupportsPeriodicReminders: true));
+
+        Assert.Equal("unsupported_client", unsupported.Capabilities.Single(item => item.Id == "reminder.periodic").State);
+        Assert.Equal("available", supported.Capabilities.Single(item => item.Id == "reminder.periodic").State);
+    }
 }

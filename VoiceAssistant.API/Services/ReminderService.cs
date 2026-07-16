@@ -22,7 +22,11 @@ public record ReminderDraft(
     DateTime DueAtUtc,
     string TimeZoneId,
     string DeviceId,
-    string? LocalNotificationId = null);
+    string? LocalNotificationId = null,
+    string? RecurrenceRule = null)
+{
+    public bool IsPeriodic => RecurrenceRule is not null;
+}
 public record ReminderInterpretation(ReminderInterpretationState State, ReminderDraft? Reminder = null);
 public record ParsedReminder(bool IsReminder, bool NeedsClarification, string? Text, string? DueAtLocal);
 
@@ -143,7 +147,8 @@ public class ReminderService
         string? dueAtLocal,
         string? deviceId,
         string? timeZoneId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? operationId = null)
     {
         if (!IsValidDeviceId(deviceId) || !TryResolveTimeZone(timeZoneId, out var timeZone) ||
             string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(dueAtLocal))
@@ -163,37 +168,108 @@ public class ReminderService
         if (normalizedText.Length == 0)
             return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
 
+        return await PersistAsync(
+            userId,
+            sourceMessageId,
+            normalizedText,
+            dueAtUtc,
+            timeZone.Id,
+            deviceId!,
+            recurrenceRule: null,
+            operationId,
+            cancellationToken);
+    }
+
+    public async Task<ReminderInterpretation> CreatePeriodicFromToolAsync(
+        string userId,
+        int sourceMessageId,
+        string? text,
+        string? startAtLocal,
+        string? recurrenceRule,
+        string? deviceId,
+        string? timeZoneId,
+        Guid operationId,
+        CancellationToken cancellationToken)
+    {
+        if (!IsValidDeviceId(deviceId) || !TryResolveTimeZone(timeZoneId, out var timeZone) ||
+            string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(startAtLocal) ||
+            !ReminderRecurrence.TryParse(recurrenceRule, startAtLocal, out var recurrence) ||
+            !TryConvertToUtc(startAtLocal, timeZone, out var startAtUtc))
+        {
+            return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
+        }
+
+        var nowUtc = DateTime.UtcNow;
+        if (startAtUtc <= nowUtc.AddMinutes(1) || startAtUtc > nowUtc.AddYears(5))
+            return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
+
+        var normalizedText = NormalizeText(text);
+        if (normalizedText.Length == 0)
+            return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
+
+        return await PersistAsync(
+            userId,
+            sourceMessageId,
+            normalizedText,
+            startAtUtc,
+            timeZone.Id,
+            deviceId!,
+            recurrence.CanonicalRule,
+            operationId,
+            cancellationToken);
+    }
+
+    private async Task<ReminderInterpretation> PersistAsync(
+        string userId,
+        int sourceMessageId,
+        string normalizedText,
+        DateTime dueAtUtc,
+        string timeZoneId,
+        string deviceId,
+        string? recurrenceRule,
+        Guid? operationId,
+        CancellationToken cancellationToken)
+    {
         try
         {
             await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
-            var existing = await db.Reminders
+            var reminders = db.Reminders
                 .Include(item => item.Deliveries)
-                .Where(item => item.UserId == userId &&
-                               item.Status == ReminderStatuses.Active &&
-                               item.CreatedByDeviceId == deviceId &&
-                               item.Text == normalizedText &&
-                               item.DueAtUtc == dueAtUtc)
-                .FirstOrDefaultAsync(cancellationToken);
+                .Where(item => item.UserId == userId);
+            var existing = operationId is { } id
+                ? await reminders.FirstOrDefaultAsync(item => item.OperationId == id, cancellationToken)
+                : null;
+            var replayedOperation = existing is not null;
+            existing ??= await reminders.FirstOrDefaultAsync(item =>
+                    item.Status == ReminderStatuses.Active &&
+                    item.CreatedByDeviceId == deviceId &&
+                    item.Text == normalizedText &&
+                    item.DueAtUtc == dueAtUtc &&
+                    item.RecurrenceRule == recurrenceRule, cancellationToken);
             if (existing is not null)
             {
-                var delivery = existing.Deliveries.Single(item => item.DeviceId == deviceId);
-                if (delivery.Status == ReminderDeliveryStatuses.Failed)
+                // A stable client-turn replay must never resurrect a reminder
+                // the user cancelled after the original request completed.
+                if (existing.Status != ReminderStatuses.Active)
+                    return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
+
+                var delivery = existing.Deliveries.SingleOrDefault(item => item.DeviceId == deviceId);
+                if (delivery?.Status == ReminderDeliveryStatuses.Cancelled && replayedOperation)
+                    return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
+                if (delivery is null)
+                {
+                    delivery = new ReminderDelivery { DeviceId = deviceId };
+                    existing.Deliveries.Add(delivery);
+                }
+                else if (delivery.Status is ReminderDeliveryStatuses.Failed or ReminderDeliveryStatuses.Cancelled)
                 {
                     delivery.Status = ReminderDeliveryStatuses.Pending;
                     delivery.Error = null;
                     delivery.UpdatedAt = DateTime.UtcNow;
-                    await db.SaveChangesAsync(cancellationToken);
                 }
 
-                return new ReminderInterpretation(
-                    ReminderInterpretationState.Created,
-                    new ReminderDraft(
-                        existing.Id,
-                        existing.Text,
-                        existing.DueAtUtc,
-                        existing.TimeZoneId,
-                        deviceId!,
-                        delivery.LocalNotificationId));
+                await db.SaveChangesAsync(cancellationToken);
+                return Created(existing, delivery, deviceId);
             }
 
             var reminder = new Reminder
@@ -201,28 +277,45 @@ public class ReminderService
                 UserId = userId,
                 Text = normalizedText,
                 DueAtUtc = dueAtUtc,
-                TimeZoneId = timeZone.Id,
-                CreatedByDeviceId = deviceId!,
+                TimeZoneId = timeZoneId,
+                RecurrenceRule = recurrenceRule,
+                OperationId = operationId,
+                CreatedByDeviceId = deviceId,
                 SourceMessageId = sourceMessageId,
                 Deliveries =
                 [
                     new ReminderDelivery
                     {
-                        DeviceId = deviceId!,
+                        DeviceId = deviceId,
                         Status = ReminderDeliveryStatuses.Pending
                     }
                 ]
             };
             db.Reminders.Add(reminder);
             await db.SaveChangesAsync(cancellationToken);
-
-            return new ReminderInterpretation(
-                ReminderInterpretationState.Created,
-                new ReminderDraft(reminder.Id, reminder.Text, reminder.DueAtUtc, reminder.TimeZoneId, deviceId!));
+            return Created(reminder, reminder.Deliveries.Single(), deviceId);
         }
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (DbUpdateException) when (operationId is not null)
+        {
+            await using var replayDb = await _dbFactory.CreateDbContextAsync(cancellationToken);
+            var replay = await replayDb.Reminders
+                .AsNoTracking()
+                .Include(item => item.Deliveries)
+                .FirstOrDefaultAsync(item => item.UserId == userId && item.OperationId == operationId, cancellationToken);
+            if (replay is not null && replay.Status == ReminderStatuses.Active)
+            {
+                var delivery = replay.Deliveries.SingleOrDefault(item => item.DeviceId == deviceId)
+                               ?? new ReminderDelivery { DeviceId = deviceId };
+                if (delivery.Status == ReminderDeliveryStatuses.Cancelled)
+                    return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
+                return Created(replay, delivery, deviceId);
+            }
+
+            return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
         }
         catch (Exception ex)
         {
@@ -230,6 +323,18 @@ public class ReminderService
             return new ReminderInterpretation(ReminderInterpretationState.NeedsClarification);
         }
     }
+
+    private static ReminderInterpretation Created(Reminder reminder, ReminderDelivery delivery, string deviceId) =>
+        new(
+            ReminderInterpretationState.Created,
+            new ReminderDraft(
+                reminder.Id,
+                reminder.Text,
+                reminder.DueAtUtc,
+                reminder.TimeZoneId,
+                deviceId,
+                delivery.LocalNotificationId,
+                reminder.RecurrenceRule));
 
     public async Task<string> WaitForDeliveryStatusAsync(
         int reminderId,
