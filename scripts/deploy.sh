@@ -70,7 +70,10 @@ echo "==> Pulling latest main and rebuilding api + admin + database runtime..."
 ssh "$HOST" "cd '$REMOTE_DIR' && git pull && docker compose build api admin db"
 
 echo "==> Restarting api, admin, and nginx containers..."
-ssh "$HOST" "cd '$REMOTE_DIR' && docker compose up -d api admin nginx"
+# `tts` was intentionally removed from compose: prune its old orphan here so
+# a VPS upgraded from a previous release cannot keep the retired Piper
+# runtime alive in the background.
+ssh "$HOST" "cd '$REMOTE_DIR' && docker compose up -d --remove-orphans api admin nginx"
 
 echo "==> Waiting for readiness (up to ${READY_TIMEOUT_S}s)..."
 elapsed=0

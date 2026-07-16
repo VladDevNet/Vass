@@ -8,7 +8,11 @@ import {
   useAudioRecorder,
 } from 'expo-audio';
 import { api, sendMessage, type ExternalActionEvent, type ScreenCaptureRequest } from '../api/client';
-import { getReminderDeviceContext, scheduleAndAcknowledgeReminder } from '../reminders/localReminders';
+import {
+  cancelLocalReminder,
+  getReminderDeviceContext,
+  scheduleAndAcknowledgeReminder,
+} from '../reminders/localReminders';
 import {
   createStreamingSpeech,
   hasSpeechToResume,
@@ -921,6 +925,10 @@ export function useVoiceChat(
             setError(result.error ?? 'Не удалось установить локальное напоминание');
           }
         };
+        const handleReminderCancelled = async (reminder: { id: number }) => {
+          if (!mountedRef.current || !ownerId) return;
+          await cancelLocalReminder(reminder.id, ownerId);
+        };
         const recordActionStatus = (
           action: Parameters<typeof executeExternalAction>[0],
           status: 'handler_dispatched' | 'failed' | 'cancelled',
@@ -1007,6 +1015,7 @@ export function useVoiceChat(
             onChunk: handleChunk,
             onReminder: handleReminder,
             onPeriodicReminder: handleReminder,
+            onReminderCancelled: handleReminderCancelled,
             onExternalAction: handleExternalAction,
             onScreenCapture: handleScreenCapture,
           });
@@ -1035,6 +1044,7 @@ export function useVoiceChat(
               onChunk: handleChunk,
               onReminder: handleReminder,
               onPeriodicReminder: handleReminder,
+              onReminderCancelled: handleReminderCancelled,
               onExternalAction: handleExternalAction,
               onScreenCapture: handleScreenCapture,
             }
@@ -1079,6 +1089,7 @@ export function useVoiceChat(
               error: err instanceof Error ? err.message : String(err),
             });
           }
+          await speakSystemNotice('Снимок экрана получен.');
           setReply('Снимок получен. Отправляю его на разбор…');
           log('info', 'screen-capture', 'staging captured screen image');
           const staged = await visualBridgeRef.current?.stageVisualAsset({
@@ -1107,6 +1118,7 @@ export function useVoiceChat(
             onChunk: handleChunk,
             onReminder: handleReminder,
             onPeriodicReminder: handleReminder,
+            onReminderCancelled: handleReminderCancelled,
             onExternalAction: handleExternalAction,
           });
         }
@@ -1536,6 +1548,17 @@ export function useVoiceChat(
     }
   }, [rearmRecorderOnly, armMic, stopRecorderIfLive]);
 
+  // A shared item or accepted screen frame is a device event, not a model
+  // reply. Pause the live recorder around its local spoken acknowledgement so
+  // Vass never transcribes its own phrase, then restore the prior listening
+  // state. A user-selected pause remains a pause.
+  const announceSystemNotice = useCallback(async (text: string) => {
+    const wasPaused = pausedRef.current;
+    if (!wasPaused) await pauseConversation();
+    await speakSystemNotice(text);
+    if (!wasPaused && mountedRef.current) await resumeConversation();
+  }, [pauseConversation, resumeConversation]);
+
   // Reconfiguring expo-audio's recorder foreground-service mode requires a
   // fresh prepare. Pause first (synchronously guarded by pausedRef), switch
   // the mode while the Activity is visible, then resume through the normal
@@ -1635,6 +1658,7 @@ export function useVoiceChat(
     forceFinalize,
     pauseConversation,
     resumeConversation,
+    announceSystemNotice,
     configureBackgroundRecording,
     micArmed,
   };

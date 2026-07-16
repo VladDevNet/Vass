@@ -10,6 +10,7 @@ public class MemoryItem
     public string UserId { get; set; } = null!;
     public User User { get; set; } = null!;
     public string Kind { get; set; } = "semantic_fact";
+    public string Category { get; set; } = MemoryCategories.Other;
     public string Text { get; set; } = null!;
     public string ContentHash { get; set; } = null!;
     public string Status { get; set; } = "active";
@@ -17,6 +18,8 @@ public class MemoryItem
     public Guid? SupersedesMemoryItemId { get; set; }
     public int? LegacyMemoryFactId { get; set; }
     public int? SourceMessageId { get; set; }
+    public Guid? VisualAssetId { get; set; }
+    public VisualAsset? VisualAsset { get; set; }
     public DateTime? TombstonedAt { get; set; }
     public DateTime? ExpiresAt { get; set; }
     public Vector? Embedding { get; set; }

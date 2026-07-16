@@ -12,4 +12,5 @@ public class User : IdentityUser
 
     public ICollection<ChatSession> ChatSessions { get; set; } = [];
     public ICollection<VisualAsset> VisualAssets { get; set; } = [];
+    public ICollection<MemoryItem> MemoryItems { get; set; } = [];
 }

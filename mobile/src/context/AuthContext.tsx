@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import {
   api,
   getToken,
+  isApprovalRequiredError,
   loadStoredToken,
   setToken,
   setUnauthorizedHandler,
@@ -28,10 +29,12 @@ interface AuthContextValue {
   // в контекст. Резолюция дефолта/неизвестных значений — на стороне
   // потребителей (HomeScreen.tsx, ProfileScreen.tsx), не здесь.
   avatarId: string | null;
+  approvalPendingEmail: string | null;
   refreshProfile: () => Promise<void>;
-  login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string) => Promise<void>;
-  loginWithDeviceCode: (code: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<'authenticated' | 'approval_pending'>;
+  register: (email: string, password: string) => Promise<'authenticated' | 'approval_pending'>;
+  loginWithDeviceCode: (code: string) => Promise<'authenticated' | 'approval_pending'>;
+  dismissApprovalPending: () => void;
   logout: () => Promise<void>;
 }
 
@@ -43,6 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [assistantName, setAssistantName] = useState<string | null>(null);
   const [avatarId, setAvatarId] = useState<string | null>(null);
+  const [approvalPendingEmail, setApprovalPendingEmail] = useState<string | null>(null);
   const userRef = useRef<CurrentUser | null>(null);
   userRef.current = user;
 
@@ -94,22 +98,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => setUnauthorizedHandler(null);
   }, []);
 
-  async function login(email: string, password: string) {
-    const { token } = await api.login(email, password);
-    await setToken(token);
+  async function completeAuth(response: Awaited<ReturnType<typeof api.login>>, email: string) {
+    if (response.approvalRequired || !response.token) {
+      setApprovalPendingEmail(email);
+      return 'approval_pending' as const;
+    }
+    await setToken(response.token);
     await loadUser();
+    return 'authenticated' as const;
+  }
+
+  async function login(email: string, password: string) {
+    try {
+      return await completeAuth(await api.login(email, password), email);
+    } catch (error) {
+      if (isApprovalRequiredError(error)) {
+        setApprovalPendingEmail(email);
+        return 'approval_pending' as const;
+      }
+      throw error;
+    }
   }
 
   async function register(email: string, password: string) {
-    const { token } = await api.register(email, password);
-    await setToken(token);
-    await loadUser();
+    return completeAuth(await api.register(email, password), email);
   }
 
   async function loginWithDeviceCode(code: string) {
-    const { token } = await api.redeemDeviceLink(code);
-    await setToken(token);
-    await loadUser();
+    try {
+      return await completeAuth(await api.redeemDeviceLink(code), '');
+    } catch (error) {
+      if (isApprovalRequiredError(error)) {
+        setApprovalPendingEmail('');
+        return 'approval_pending' as const;
+      }
+      throw error;
+    }
   }
 
   async function logout() {
@@ -123,6 +147,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setDisplayName(null);
     setAssistantName(null);
     setAvatarId(null);
+    setApprovalPendingEmail(null);
   }
 
   return (
@@ -133,10 +158,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         displayName,
         assistantName,
         avatarId,
+        approvalPendingEmail,
         refreshProfile,
         login,
         register,
         loginWithDeviceCode,
+        dismissApprovalPending: () => setApprovalPendingEmail(null),
         logout,
       }}
     >

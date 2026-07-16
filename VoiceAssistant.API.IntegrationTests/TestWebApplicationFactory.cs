@@ -19,6 +19,16 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>, IAsyncL
 {
     private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"vass-it-{Guid.NewGuid():N}.db");
     private readonly string _visualPath = Path.Combine(Path.GetTempPath(), $"vass-visual-it-{Guid.NewGuid():N}");
+    private readonly bool _registrationAutoApprove;
+
+    public TestWebApplicationFactory() : this(registrationAutoApprove: true)
+    {
+    }
+
+    internal TestWebApplicationFactory(bool registrationAutoApprove)
+    {
+        _registrationAutoApprove = registrationAutoApprove;
+    }
 
     // Program.cs's original options.UseNpgsql(...) call registers Npgsql's own
     // internal EF Core services (IDatabaseProvider etc.) directly into the
@@ -75,6 +85,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>, IAsyncL
                 // never sent anywhere real, the HTTP client itself is faked below.
                 ["Gemini:ApiKey"] = "test-fake-gemini-key",
                 ["Visual:Path"] = _visualPath,
+                ["Registration:AutoApprove"] = _registrationAutoApprove.ToString(),
                 // Registration is protected by a per-IP production limiter.
                 // TestServer uses one synthetic IP for every generated test
                 // account, so keep the policy enabled but raise its test-only
@@ -106,7 +117,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>, IAsyncL
             services.AddScoped<AppDbContext>(sp =>
                 sp.GetRequiredService<IDbContextFactory<AppDbContext>>().CreateDbContext());
 
-            // GeminiService/AudioAnalysisService/PiperTtsService/SpeakerIdService all
+            // GeminiService, AudioAnalysisService, and SpeakerIdService all
             // resolve their HttpClient via IHttpClientFactory.CreateClient() (the
             // unnamed, empty-string-named default client) -- overriding that name's
             // primary handler routes every one of them through FakeGeminiHandler.

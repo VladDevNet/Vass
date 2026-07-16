@@ -162,9 +162,10 @@ public class AppDbContext : IdentityDbContext<User>
 
         builder.Entity<MemoryItem>(e =>
         {
-            e.HasOne(m => m.User).WithMany()
+            e.HasOne(m => m.User).WithMany(u => u.MemoryItems)
                 .HasForeignKey(m => m.UserId).OnDelete(DeleteBehavior.Cascade);
             e.Property(m => m.Kind).HasMaxLength(40);
+            e.Property(m => m.Category).HasMaxLength(40).HasDefaultValue(MemoryCategories.Other);
             e.Property(m => m.Text).HasMaxLength(1000);
             e.Property(m => m.ContentHash).HasMaxLength(64);
             e.Property(m => m.Status).HasMaxLength(20);
@@ -172,7 +173,10 @@ public class AppDbContext : IdentityDbContext<User>
             e.Property(m => m.EmbeddingState).HasMaxLength(20);
             e.HasIndex(m => new { m.UserId, m.ContentHash }).IsUnique();
             e.HasIndex(m => new { m.UserId, m.Status, m.UpdatedAt });
+            e.HasIndex(m => new { m.UserId, m.Category, m.Status, m.UpdatedAt });
             e.HasIndex(m => m.LegacyMemoryFactId).IsUnique();
+            e.HasOne(m => m.VisualAsset).WithMany(asset => asset.MemoryItems)
+                .HasForeignKey(m => m.VisualAssetId).OnDelete(DeleteBehavior.Restrict);
 
             if (Database.IsNpgsql())
             {

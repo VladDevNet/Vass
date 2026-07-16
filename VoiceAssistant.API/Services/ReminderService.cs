@@ -29,6 +29,18 @@ public record ReminderDraft(
 }
 public record ReminderInterpretation(ReminderInterpretationState State, ReminderDraft? Reminder = null);
 public record ParsedReminder(bool IsReminder, bool NeedsClarification, string? Text, string? DueAtLocal);
+public record ManagedReminder(
+    int Id,
+    string Text,
+    DateTime DueAtUtc,
+    string TimeZoneId,
+    string? RecurrenceRule,
+    string Status);
+public record ReminderDeliveryTarget(string DeviceId, string? LocalNotificationId);
+public record ReminderCancellationResult(
+    int ReminderId,
+    string Text,
+    IReadOnlyList<ReminderDeliveryTarget> Deliveries);
 
 public class ReminderService
 {
@@ -61,6 +73,50 @@ public class ReminderService
     public static bool MayContainReminder(string message) => ReminderKeyword.IsMatch(message);
     public static bool IsValidDeviceId(string? deviceId) =>
         !string.IsNullOrWhiteSpace(deviceId) && DeviceIdPattern.IsMatch(deviceId);
+
+    public async Task<IReadOnlyList<ManagedReminder>> ListActiveAsync(string userId, CancellationToken cancellationToken)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
+        return await db.Reminders
+            .AsNoTracking()
+            .Where(item => item.UserId == userId && item.Status == ReminderStatuses.Active)
+            .OrderBy(item => item.DueAtUtc)
+            .Take(100)
+            .Select(item => new ManagedReminder(
+                item.Id,
+                item.Text,
+                item.DueAtUtc,
+                item.TimeZoneId,
+                item.RecurrenceRule,
+                item.Status))
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<ReminderCancellationResult?> CancelAsync(
+        string userId,
+        int reminderId,
+        CancellationToken cancellationToken)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
+        var reminder = await db.Reminders
+            .Include(item => item.Deliveries)
+            .SingleOrDefaultAsync(item => item.Id == reminderId && item.UserId == userId, cancellationToken);
+        if (reminder is null) return null;
+
+        if (reminder.Status == ReminderStatuses.Active)
+        {
+            reminder.Status = ReminderStatuses.Cancelled;
+            reminder.UpdatedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        return new ReminderCancellationResult(
+            reminder.Id,
+            reminder.Text,
+            reminder.Deliveries
+                .Select(delivery => new ReminderDeliveryTarget(delivery.DeviceId, delivery.LocalNotificationId))
+                .ToArray());
+    }
 
     public async Task<ReminderInterpretation> TryCreateAsync(
         string userId,

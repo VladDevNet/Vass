@@ -34,6 +34,7 @@ public class AuthController : ControllerBase
 
     public record RegisterRequest(string Email, string Password, string? NativeLang);
     public record LoginRequest(string Email, string Password);
+    public record AuthResponse(string? Token = null, bool ApprovalRequired = false);
 
     [EnableRateLimiting("auth")]
     [HttpPost("register")]
@@ -71,10 +72,10 @@ public class AuthController : ControllerBase
 
         if (!user.IsApproved)
         {
-            return Accepted(new { approvalRequired = true });
+            return Accepted(new AuthResponse(ApprovalRequired: true));
         }
 
-        return Ok(new { token = await GenerateTokenAsync(user) });
+        return Ok(new AuthResponse(await GenerateTokenAsync(user)));
     }
 
     [EnableRateLimiting("auth")]
@@ -90,13 +91,18 @@ public class AuthController : ControllerBase
 
         if (!user.IsApproved)
         {
-            return StatusCode(StatusCodes.Status403Forbidden, new { error = "Account pending approval" });
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "Account pending approval",
+                code = "approval_required",
+                approvalRequired = true
+            });
         }
 
         user.LastActiveAt = DateTime.UtcNow;
         await _userManager.UpdateAsync(user);
 
-        return Ok(new { token = await GenerateTokenAsync(user) });
+        return Ok(new AuthResponse(await GenerateTokenAsync(user)));
     }
 
     // Elderly-friendly login: an already-logged-in device (e.g. a family
@@ -150,12 +156,17 @@ public class AuthController : ControllerBase
         var user = await _userManager.FindByIdAsync(link.UserId);
         if (user == null) return BadRequest(new { error = "Код недействителен или истёк" });
         if (!user.IsApproved)
-            return StatusCode(StatusCodes.Status403Forbidden, new { error = "Account pending approval" });
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                error = "Account pending approval",
+                code = "approval_required",
+                approvalRequired = true
+            });
 
         user.LastActiveAt = DateTime.UtcNow;
         await _userManager.UpdateAsync(user);
 
-        return Ok(new { token = await GenerateTokenAsync(user) });
+        return Ok(new AuthResponse(await GenerateTokenAsync(user)));
     }
 
     [Authorize]

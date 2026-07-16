@@ -9,9 +9,11 @@ using VoiceAssistant.API.Data.Entities;
 namespace VoiceAssistant.API.Services;
 
 public sealed record MemoryStatusResponse(string Availability, int ActiveCount, bool SemanticSearchAvailable);
+public sealed record MemoryAttachmentResponse(Guid Id, string MimeType, long SizeBytes, string? OriginalFileName);
 public sealed record MemoryItemResponse(
-    Guid Id, string Text, string Kind, int Revision, string Status,
-    DateTime CreatedAt, DateTime UpdatedAt, DateTime? LastRecalledAt, string EmbeddingState);
+    Guid Id, string Text, string Kind, string Category, int Revision, string Status,
+    DateTime CreatedAt, DateTime UpdatedAt, DateTime? LastRecalledAt, string EmbeddingState,
+    MemoryAttachmentResponse? Attachment);
 public sealed record MemorySearchResponse(string Status, string Retrieval, IReadOnlyList<MemoryItemResponse> Items);
 public sealed record MemoryOperationResult(
     Guid OperationId, string Status, string Code, Guid? MemoryItemId = null,
@@ -53,6 +55,7 @@ public sealed class MemoryItemService
         if (!_enabled) return [];
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
         return await db.MemoryItems.AsNoTracking()
+            .Include(item => item.VisualAsset)
             .Where(item => item.UserId == userId && item.Status == "active")
             .OrderByDescending(item => item.UpdatedAt)
             .Take(Math.Clamp(limit, 1, 100))
@@ -69,6 +72,7 @@ public sealed class MemoryItemService
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
         var needle = normalized.ToLowerInvariant();
         var lexical = await db.MemoryItems.AsNoTracking()
+            .Include(item => item.VisualAsset)
             .Where(item => item.UserId == userId && item.Status == "active" && item.Text.ToLower().Contains(needle))
             .OrderByDescending(item => item.UpdatedAt)
             .Take(20)
@@ -87,6 +91,7 @@ public sealed class MemoryItemService
                 var vector = new Vector(await _gemini.GenerateEmbeddingAsync(
                     $"task: search result | query: {normalized}", apiKey, cancellationToken));
                 var semantic = await db.MemoryItems
+                    .Include(item => item.VisualAsset)
                     .Where(item => item.UserId == userId && item.Status == "active" &&
                                    item.EmbeddingState == "ready" && item.EmbeddingModel == GeminiService.EmbeddingModel &&
                                    item.Embedding != null)
@@ -119,16 +124,32 @@ public sealed class MemoryItemService
     }
 
     public async Task<MemoryOperationResult> RememberAsync(
-        string userId, string text, int? sourceMessageId, Guid? operationId, CancellationToken cancellationToken)
+        string userId,
+        string text,
+        int? sourceMessageId,
+        Guid? operationId,
+        CancellationToken cancellationToken,
+        string? category = null,
+        Guid? visualAssetId = null)
     {
         var normalized = NormalizeText(text);
-        return await MutateAsync(userId, "remember", operationId, normalized, async (db, operation) =>
+        var normalizedCategory = MemoryCategories.NormalizeOrDefault(
+            category,
+            visualAssetId is null ? MemoryCategories.Other : "documents");
+        var arguments = $"{normalized}\n{normalizedCategory}\n{visualAssetId?.ToString("N")}";
+        return await MutateAsync(userId, "remember", operationId, arguments, async (db, operation) =>
         {
             if (!_enabled) return Complete(operation, "rejected", "memory_disabled");
             if (normalized.Length == 0) return Complete(operation, "rejected", "invalid_text");
             if (LooksSensitive(normalized)) return Complete(operation, "rejected", "sensitive_content_not_allowed");
+            if (!string.IsNullOrWhiteSpace(category) && !MemoryCategories.IsValid(category))
+                return Complete(operation, "rejected", "invalid_category");
+            if (visualAssetId is not null && !await db.VisualAssets.AnyAsync(asset =>
+                    asset.Id == visualAssetId && asset.UserId == userId, cancellationToken))
+                return Complete(operation, "rejected", "visual_asset_not_found");
 
-            var hash = LongTermMemoryService.ComputeContentHash(normalized);
+            var hash = LongTermMemoryService.ComputeContentHash(
+                visualAssetId is null ? normalized : $"{normalized}\n{visualAssetId:N}");
             var existing = await db.MemoryItems.SingleOrDefaultAsync(item => item.UserId == userId && item.ContentHash == hash, cancellationToken);
             if (existing?.Status == "active") return Complete(operation, "completed", "already_known", existing.Id);
             if (existing is not null)
@@ -138,6 +159,9 @@ public sealed class MemoryItemService
                 existing.UpdatedAt = DateTime.UtcNow;
                 existing.Revision++;
                 existing.SourceMessageId = sourceMessageId ?? existing.SourceMessageId;
+                existing.Category = normalizedCategory;
+                existing.VisualAssetId = visualAssetId ?? existing.VisualAssetId;
+                existing.Kind = existing.VisualAssetId is null ? "semantic_fact" : "attachment";
                 operation.MemoryItemId = existing.Id;
                 await db.SaveChangesAsync(cancellationToken);
                 await PopulateEmbeddingAsync(existing.Id, userId, cancellationToken);
@@ -150,6 +174,9 @@ public sealed class MemoryItemService
                 Text = normalized,
                 ContentHash = hash,
                 SourceMessageId = sourceMessageId,
+                Category = normalizedCategory,
+                VisualAssetId = visualAssetId,
+                Kind = visualAssetId is null ? "semantic_fact" : "attachment",
                 EmbeddingState = "pending"
             };
             db.MemoryItems.Add(item);
@@ -161,13 +188,21 @@ public sealed class MemoryItemService
     }
 
     public async Task<MemoryOperationResult> CorrectAsync(
-        string userId, Guid id, string text, Guid? operationId, CancellationToken cancellationToken)
+        string userId,
+        Guid id,
+        string text,
+        Guid? operationId,
+        CancellationToken cancellationToken,
+        string? category = null)
     {
         var normalized = NormalizeText(text);
-        return await MutateAsync(userId, "correct", operationId, $"{id:N}:{normalized}", async (db, operation) =>
+        var normalizedCategory = MemoryCategories.NormalizeOrDefault(category);
+        return await MutateAsync(userId, "correct", operationId, $"{id:N}:{normalized}:{category}", async (db, operation) =>
         {
             if (!_enabled) return Complete(operation, "rejected", "memory_disabled");
             if (normalized.Length == 0 || LooksSensitive(normalized)) return Complete(operation, "rejected", "invalid_text");
+            if (!string.IsNullOrWhiteSpace(category) && !MemoryCategories.IsValid(category))
+                return Complete(operation, "rejected", "invalid_category");
             var oldItem = await db.MemoryItems.SingleOrDefaultAsync(item => item.Id == id && item.UserId == userId && item.Status == "active", cancellationToken);
             if (oldItem is null) return Complete(operation, "completed", "not_found");
 
@@ -180,6 +215,8 @@ public sealed class MemoryItemService
             oldItem.TombstonedAt = DateTime.UtcNow;
             oldItem.UpdatedAt = DateTime.UtcNow;
             oldItem.Revision++;
+            var inheritedVisualAssetId = oldItem.VisualAssetId;
+            oldItem.VisualAssetId = null;
             var replacement = new MemoryItem
             {
                 UserId = userId,
@@ -188,6 +225,9 @@ public sealed class MemoryItemService
                 SupersedesMemoryItemId = oldItem.Id,
                 Revision = oldItem.Revision,
                 SourceMessageId = oldItem.SourceMessageId,
+                Category = string.IsNullOrWhiteSpace(category) ? oldItem.Category : normalizedCategory,
+                VisualAssetId = inheritedVisualAssetId,
+                Kind = oldItem.Kind,
                 EmbeddingState = "pending"
             };
             db.MemoryItems.Add(replacement);
@@ -208,6 +248,7 @@ public sealed class MemoryItemService
             item.TombstonedAt = DateTime.UtcNow;
             item.UpdatedAt = DateTime.UtcNow;
             item.Revision++;
+            item.VisualAssetId = null;
             operation.MemoryItemId = item.Id;
             await db.SaveChangesAsync(cancellationToken);
             return Complete(operation, "completed", "forgotten", item.Id);
@@ -256,6 +297,7 @@ public sealed class MemoryItemService
             item.TombstonedAt = now;
             item.UpdatedAt = now;
             item.Revision++;
+            item.VisualAssetId = null;
         }
         operation.ConfirmationTokenHash = null;
         var result = Complete(operation, "completed", "cleared");
@@ -272,7 +314,14 @@ public sealed class MemoryItemService
         var hash = LongTermMemoryService.ComputeContentHash(normalized);
         await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
         if (await db.MemoryItems.AnyAsync(item => item.UserId == userId && item.ContentHash == hash, cancellationToken)) return;
-        var item = new MemoryItem { UserId = userId, Text = normalized, ContentHash = hash, SourceMessageId = sourceMessageId };
+        var item = new MemoryItem
+        {
+            UserId = userId,
+            Text = normalized,
+            ContentHash = hash,
+            SourceMessageId = sourceMessageId,
+            Category = MemoryCategories.Other
+        };
         db.MemoryItems.Add(item);
         await db.SaveChangesAsync(cancellationToken);
         await PopulateEmbeddingAsync(item.Id, userId, cancellationToken);
@@ -336,8 +385,23 @@ public sealed class MemoryItemService
             : new(operation.Id, "rejected", "idempotency_conflict");
 
     private static MemoryItemResponse ToResponse(MemoryItem item) => new(
-        item.Id, item.Text, item.Kind, item.Revision, item.Status, item.CreatedAt,
-        item.UpdatedAt, item.LastRecalledAt, item.EmbeddingState);
+        item.Id,
+        item.Text,
+        item.Kind,
+        item.Category,
+        item.Revision,
+        item.Status,
+        item.CreatedAt,
+        item.UpdatedAt,
+        item.LastRecalledAt,
+        item.EmbeddingState,
+        item.VisualAsset is null
+            ? null
+            : new MemoryAttachmentResponse(
+                item.VisualAsset.Id,
+                item.VisualAsset.MimeType,
+                item.VisualAsset.SizeBytes,
+                item.VisualAsset.OriginalFileName));
 
     private static string NormalizeText(string? value)
     {

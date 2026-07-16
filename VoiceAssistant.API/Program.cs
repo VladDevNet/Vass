@@ -124,7 +124,6 @@ builder.Services.AddHttpClient();
 // Services
 builder.Services.AddSingleton<GeminiService>();
 builder.Services.AddSingleton<VisualAssetService>();
-builder.Services.AddSingleton<PiperTtsService>();
 builder.Services.AddSingleton<CompanionPromptService>();
 builder.Services.AddSingleton<AudioAnalysisService>();
 builder.Services.AddSingleton<SpeakerIdService>();
@@ -359,14 +358,10 @@ app.MapGet("/api/health", () => Results.Ok("healthy"));
 // Readiness -- can this instance actually serve the user-facing flow right
 // now? Checks real DB connectivity and that the audio volume is writable
 // (both hard requirements -- reflected in the overall status/HTTP code).
-// TTS is checked but reported as its own degraded-dependency field, not a
-// hard failure, per PROJECT-AUDIT-2026-07-10 REL-03's recommendation: a
-// synthesis outage shouldn't make monitoring treat the whole API as down.
 // Gemini is checked by CONFIGURATION presence only (never a real paid API
 // call) -- also per REL-03, so probing readiness doesn't cost money/quota.
 app.MapGet("/api/health/ready", async (
     AppDbContext db,
-    PiperTtsService tts,
     IConfiguration configuration,
     IWebHostEnvironment hostEnv,
     ILogger<Program> readinessLogger) =>
@@ -376,9 +371,8 @@ app.MapGet("/api/health/ready", async (
 
     try
     {
-        // Explicit bound, matching the deliberate 3s cap on the TTS check
-        // below -- Npgsql's own default connect timeout (15s) would
-        // otherwise apply, which is a real bound but an inconsistent one.
+        // Explicit bound -- Npgsql's own default connect timeout (15s) would
+        // otherwise make a readiness probe linger far longer than intended.
         using var dbTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         checks["database"] = await db.Database.CanConnectAsync(dbTimeout.Token) ? "ok" : "unavailable";
         if (checks["database"] != "ok") ready = false;
@@ -446,8 +440,6 @@ app.MapGet("/api/health/ready", async (
 
     checks["gemini"] = string.IsNullOrWhiteSpace(configuration["Gemini:ApiKey"]) ? "not_configured" : "configured";
     if (checks["gemini"] == "not_configured") ready = false;
-
-    checks["tts"] = await tts.IsHealthyAsync() ? "ok" : "degraded";
 
     var payload = new { status = ready ? "ready" : "not_ready", checks };
     return ready ? Results.Ok(payload) : Results.Json(payload, statusCode: StatusCodes.Status503ServiceUnavailable);

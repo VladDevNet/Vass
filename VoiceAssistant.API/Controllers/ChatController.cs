@@ -26,7 +26,6 @@ public class ChatController : ControllerBase
     private readonly SpeakerRegistryService _speakerRegistry;
     private readonly ConversationMemoryService _conversationMemory;
     private readonly LongTermMemoryService _longTermMemory;
-    private readonly MemoryItemService _memoryItems;
     private readonly ReminderService _reminders;
     private readonly VisualAssetService _visualAssets;
     private readonly AssistantCapabilityRegistry _capabilities;
@@ -36,19 +35,15 @@ public class ChatController : ControllerBase
     private readonly ILogger<ChatController> _logger;
     private readonly string _audioPath;
 
-    private readonly PiperTtsService _ttsService;
-
     public ChatController(AppDbContext db, IDbContextFactory<AppDbContext> dbContextFactory, UserManager<User> userManager,
         GeminiService gemini, CompanionPromptService tutor,
         AudioAnalysisService audioAnalysis, SpeakerRegistryService speakerRegistry, ConversationMemoryService conversationMemory,
         LongTermMemoryService longTermMemory,
-        MemoryItemService memoryItems,
         ReminderService reminders,
         VisualAssetService visualAssets,
         AssistantCapabilityRegistry capabilities,
         ActionReceiptService actionReceipts,
         AssistantAgentTurnService agentTurn,
-        PiperTtsService ttsService,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
     {
         _db = db;
@@ -60,13 +55,11 @@ public class ChatController : ControllerBase
         _speakerRegistry = speakerRegistry;
         _conversationMemory = conversationMemory;
         _longTermMemory = longTermMemory;
-        _memoryItems = memoryItems;
         _reminders = reminders;
         _visualAssets = visualAssets;
         _capabilities = capabilities;
         _actionReceipts = actionReceipts;
         _agentTurn = agentTurn;
-        _ttsService = ttsService;
         _config = config;
         _logger = logger;
 
@@ -99,36 +92,6 @@ public class ChatController : ControllerBase
     private static readonly Regex SafeAudioFileNamePattern =
         new(@"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.webm\z", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-    // Transitional server-side command adapter. The model still does not
-    // receive a free-form tool call; this recognizes only a direct user
-    // request and returns a durable receipt before the model can confirm it.
-    private static readonly Regex RememberCommandPattern = new(
-        @"(?<!\p{L})(?:запомни(?:те|м)?|сохрани(?:те|м)?|запиши(?:те|м)?|добавь(?:те)?|внеси(?:те)?|положи(?:те|м)?|запомнить|сохранить|записать|добавить|внести|положить)\b(?<text>[^.!?\r\n]*)",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    private static readonly Regex RememberLeadingFillerPattern = new(
-        @"\A(?:(?:мне|нам|пожалуйста|давай(?:-ка)?|ну|вот|там|не\s+знаю)\s*,?\s*|(?:в\s+(?:(?:долгосрочную|обычную)\s+)?память)\s*,?\s*)+",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    private static readonly Regex RememberTrailingMemoryPattern = new(
-        @"\s+(?:в\s+(?:(?:долгосрочную|обычную)\s+)?память)\s*\z",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    private static readonly Regex RememberLinkReferencePattern = new(
-        @"(?:ссылк\p{L}*|линк\p{L}*|виде\p{L}*|ролик\p{L}*)",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    // A share target is commonly referenced in natural speech as just "ее",
-    // "это" or "вот". Those words have no value as a memory on their own;
-    // when a shared URL is available, they unambiguously point to that URL.
-    private static readonly Regex RememberSharedReferenceOnlyPattern = new(
-        @"\A(?:\s|,|(?:пожалуйста|давай(?:-ка)?|ну|вот|там|э+|м+|это|этот|эту|эти|его|её|ее|их))+$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    private static readonly Regex UrlPattern = new(
-        @"https?://[^\s<>()]+",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
     // Static and parameterized on audioRootPath (not reading _audioPath
     // directly) so it's testable without constructing a full ChatController.
     public static bool TryResolveSafeAudioPath(string audioRootPath, string fileName, out string filePath)
@@ -142,98 +105,6 @@ public class ChatController : ControllerBase
 
         filePath = candidate;
         return true;
-    }
-
-    private sealed record ExplicitMemoryCommandResult(MemoryOperationResult Receipt, string Text);
-
-    private async Task<ExplicitMemoryCommandResult?> TryRememberCommandAsync(
-        string userId, int sourceMessageId, string messageText, string? sharedContent,
-        IEnumerable<Message> conversation, string? geminiApiKey, CancellationToken cancellationToken)
-    {
-        var text = TryGetExplicitMemoryTarget(
-            messageText,
-            sharedContent,
-            conversation.Where(item => item.Role == "user").Select(item => item.Content));
-        if (string.IsNullOrWhiteSpace(text)) return null;
-
-        using var normalizationTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        normalizationTimeout.CancelAfter(TimeSpan.FromSeconds(5));
-        var normalizedText = await _longTermMemory.NormalizeExplicitMemoryAsync(
-            text, geminiApiKey, normalizationTimeout.Token);
-        if (string.IsNullOrWhiteSpace(normalizedText)) normalizedText = text;
-
-        var receipt = await _memoryItems.RememberAsync(
-            userId,
-            normalizedText,
-            sourceMessageId,
-            Guid.NewGuid(),
-            cancellationToken);
-        return new(receipt, normalizedText);
-    }
-
-    // Kept public as a narrow, deterministic test seam: this is deliberately
-    // syntax/attachment routing, not a decision delegated to the chat model.
-    // The model may refine the durable wording later, but it must never be
-    // allowed to lose the URL that the user explicitly asked to retain.
-    public static string? TryGetExplicitMemoryTarget(
-        string messageText, string? sharedContent, IEnumerable<string?> previousUserMessages)
-    {
-        var match = RememberCommandPattern.Match(messageText);
-        if (!match.Success) return null;
-
-        var target = match.Groups["text"].Value.Trim(' ', ',', ':', '-');
-        while (true)
-        {
-            var withoutFiller = RememberLeadingFillerPattern.Replace(target, "");
-            if (withoutFiller == target) break;
-            target = withoutFiller.Trim(' ', ',', ':', '-');
-        }
-        target = RememberTrailingMemoryPattern.Replace(target, "").Trim(' ', ',', ':', '-');
-        if (target.StartsWith("что ", StringComparison.OrdinalIgnoreCase)) target = target[4..].Trim();
-
-        var directUrl = GetLatestUrl(target);
-        if (directUrl is not null) return FormatSavedLink(directUrl);
-
-        var sharedUrl = GetLatestUrl(sharedContent) ?? GetLatestUrl(previousUserMessages);
-        if (sharedUrl is not null &&
-            (RememberLinkReferencePattern.IsMatch(target) || RememberSharedReferenceOnlyPattern.IsMatch(target)))
-        {
-            return FormatSavedLink(sharedUrl);
-        }
-
-        // Do not create a memory from a bare pronoun if there is no share
-        // context to resolve it against. A normal chat reply is preferable to
-        // silently persisting "ее, пожалуйста" as a supposed fact.
-        return RememberSharedReferenceOnlyPattern.IsMatch(target) ? null : target;
-    }
-
-    private static string? GetLatestUrl(string? content)
-    {
-        var matches = UrlPattern.Matches(content ?? "");
-        return matches.Count == 0 ? null : matches[^1].Value.TrimEnd('.', ',', ';', ':', ')', ']', '}');
-    }
-
-    private static string? GetLatestUrl(IEnumerable<string?> messages)
-    {
-        foreach (var message in messages.Reverse())
-        {
-            var url = GetLatestUrl(message);
-            if (url is not null) return url;
-        }
-        return null;
-    }
-
-    private static string FormatSavedLink(string url)
-    {
-        if (Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
-            (uri.Host.Equals("youtube.com", StringComparison.OrdinalIgnoreCase) ||
-             uri.Host.EndsWith(".youtube.com", StringComparison.OrdinalIgnoreCase) ||
-             uri.Host.Equals("youtu.be", StringComparison.OrdinalIgnoreCase)))
-        {
-            return $"Сохраненная ссылка на YouTube: {url}";
-        }
-
-        return $"Сохраненная ссылка: {url}";
     }
 
     // Kept as a public compatibility seam for existing security tests and
@@ -274,17 +145,6 @@ public class ChatController : ControllerBase
         ExternalActionTypes.OpenVass => "Возвращаюсь в Vass.",
         ExternalActionTypes.YouTubeWatch => "Открываю выбранное видео в YouTube.",
         _ => "Открываю поиск в YouTube."
-    };
-
-    private static string GetMemoryReceiptFallback(MemoryOperationResult receipt, string? savedText = null) => receipt.Code switch
-    {
-        "remembered" when !string.IsNullOrWhiteSpace(savedText) => $"Сохранено в долгосрочную память: {savedText}.",
-        "remembered" => "Сохранено в долгосрочную память.",
-        "already_known" when !string.IsNullOrWhiteSpace(savedText) => $"Это уже сохранено в долгосрочной памяти: {savedText}.",
-        "already_known" => "Это уже сохранено в долгосрочной памяти.",
-        "memory_disabled" => "Долгосрочная память сейчас отключена, поэтому сохранить не удалось.",
-        "sensitive_content_not_allowed" => "Такую чувствительную информацию я не сохраняю в долгосрочную память.",
-        _ => "Не удалось подтвердить сохранение в долгосрочную память."
     };
 
     private const int MaxSharedContentLength = 20_000;
@@ -328,16 +188,6 @@ public class ChatController : ControllerBase
     // real enforced ceiling on file content.
     private const long MaxAudioRequestBodySize = MaxAudioSize + 64 * 1024;
 
-    // TTS synthesizes whatever text it's given — an unbounded string is free
-    // CPU-burning fuel for any authenticated caller (PROJECT-AUDIT-2026-07-10
-    // SEC-07). 2000 chars is generous for a single spoken utterance (the
-    // streaming path already sends one sentence at a time — see PR #55).
-    private const int MaxTtsTextLength = 2000;
-
-    // Human-readable chat session title, same class of field as
-    // DisplayName/AssistantName below in SettingsController.
-    private const int MaxSessionTitleLength = 200;
-
     // GetPreambleIfNeededAsync/MaybeUpdateCustomInstructionsAsync below only ever
     // need a short yes/no/short-phrase answer, not a full reply -- kept public
     // (not just small) because VoiceAssistant.API.IntegrationTests' FakeGeminiHandler
@@ -348,49 +198,6 @@ public class ChatController : ControllerBase
     // (PROJECT-AUDIT-2026-07-10 QA-01).
     public const int PreambleCheckMaxTokens = 30;
     public const int CustomInstructionCheckMaxTokens = 200;
-
-    public record TtsRequest(string Text, string? Voice = null);
-
-    [HttpPost("tts")]
-    public async Task<IActionResult> GenerateTts([FromBody] TtsRequest req)
-    {
-        if (string.IsNullOrWhiteSpace(req.Text)) return BadRequest();
-        if (req.Text.Length > MaxTtsTextLength)
-            return BadRequest(new { error = $"Text too long (max {MaxTtsTextLength} characters)" });
-
-        var sw = Stopwatch.StartNew();
-        var audioBytes = await _ttsService.GenerateSpeechAsync(req.Text);
-        sw.Stop();
-        _logger.LogInformation("VoiceAssistant Performance Stats - TTS: {TtsMs}ms for {Chars} chars", sw.ElapsedMilliseconds, req.Text.Length);
-
-        if (audioBytes == null)
-        {
-            return BadRequest(new { error = "Neural TTS generation failed" });
-        }
-
-        return File(audioBytes, "audio/wav", "speech.wav");
-    }
-
-    // Streams raw 16-bit mono PCM (22050 Hz, little-endian) as it's synthesized,
-    // instead of waiting for the whole utterance like /tts does.
-    [HttpPost("tts_stream")]
-    public async Task GenerateTtsStream([FromBody] TtsRequest req)
-    {
-        if (string.IsNullOrWhiteSpace(req.Text)) { Response.StatusCode = 400; return; }
-        if (req.Text.Length > MaxTtsTextLength) { Response.StatusCode = 400; return; }
-
-        Response.ContentType = "application/octet-stream";
-
-        var sw = Stopwatch.StartNew();
-        var ok = await _ttsService.StreamSpeechAsync(req.Text, Response.Body, HttpContext.RequestAborted);
-        sw.Stop();
-        _logger.LogInformation("VoiceAssistant Performance Stats - TTS (streamed): {TtsMs}ms for {Chars} chars", sw.ElapsedMilliseconds, req.Text.Length);
-
-        if (!ok && !Response.HasStarted)
-        {
-            Response.StatusCode = 500;
-        }
-    }
 
     // Pure read -- PROJECT-AUDIT-2026-07-10 section 6 flagged this endpoint
     // creating a session as a side effect of a GET. The user's initial
@@ -409,73 +216,6 @@ public class ChatController : ControllerBase
             .FirstOrDefaultAsync();
 
         return Ok(session == null ? Array.Empty<object>() : [session]);
-    }
-
-    public record RenameSessionRequest(string Title);
-
-    [HttpPatch("sessions/{id:int}")]
-    public async Task<IActionResult> RenameSession(int id, [FromBody] RenameSessionRequest req)
-    {
-        if (req.Title.Length > MaxSessionTitleLength)
-            return BadRequest(new { error = $"Заголовок слишком длинный (максимум {MaxSessionTitleLength} символов)" });
-
-        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
-        var session = await _db.ChatSessions.FirstOrDefaultAsync(s => s.Id == id && s.UserId == userId);
-        if (session == null) return NotFound();
-        session.Title = req.Title;
-        await _db.SaveChangesAsync();
-        return Ok(new { session.Id, session.Title });
-    }
-
-    [HttpDelete("sessions/{id:int}")]
-    public async Task<IActionResult> DeleteSession(int id)
-    {
-        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
-        var session = await _db.ChatSessions
-            .Include(s => s.Messages)
-            .FirstOrDefaultAsync(s => s.Id == id && s.UserId == userId);
-
-        if (session == null) return NotFound();
-
-        var visualAssetIds = await _db.MessageAttachments
-            .Where(attachment => attachment.Message.ChatSessionId == id)
-            .Select(attachment => attachment.VisualAssetId)
-            .Distinct()
-            .ToListAsync(HttpContext.RequestAborted);
-
-        foreach (var msg in session.Messages)
-        {
-            // Re-validated here too, not just at the one write site that
-            // currently persists AudioFileName — this is the actual
-            // File.Delete sink, so it shouldn't have to trust that every
-            // past or future write path got the check right.
-            if (!string.IsNullOrEmpty(msg.AudioFileName) &&
-                TryResolveSafeAudioPath(_audioPath, msg.AudioFileName, out var filePath) &&
-                System.IO.File.Exists(filePath))
-            {
-                System.IO.File.Delete(filePath);
-            }
-        }
-
-        _db.ChatSessions.Remove(session);
-        await _db.SaveChangesAsync();
-
-        // An asset can be referenced by repeated/superseding attempts. Remove
-        // only files whose last message link disappeared with this session.
-        var orphanedVisualAssets = await _db.VisualAssets
-            .Where(asset => visualAssetIds.Contains(asset.Id) && !asset.MessageAttachments.Any())
-            .ToListAsync(HttpContext.RequestAborted);
-        _db.VisualAssets.RemoveRange(orphanedVisualAssets);
-        await _db.SaveChangesAsync(HttpContext.RequestAborted);
-        foreach (var asset in orphanedVisualAssets)
-        {
-            try { await _visualAssets.DeleteIfExistsAsync(asset.StorageFileName); }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Could not delete orphaned visual asset file after session deletion: AssetId={AssetId}", asset.Id);
-            }
-        }
-        return NoContent();
     }
 
     // Paginated: `before` (a message Id) walks backward from the newest message
@@ -623,10 +363,9 @@ public class ChatController : ControllerBase
             }
         }
 
-        // Keep the spoken/typed command apart from the share payload until
-        // explicit-memory routing has identified its target. Once merged, a
-        // regex can mistake the trailing share text for the command itself.
-        var commandText = messageText;
+        // The central model receives the original request and share payload
+        // together, so it can form a meaningful memory entry that retains a
+        // complete URL instead of a client-side regex extracting fragments.
         messageText = IncludeSharedContent(messageText ?? "", sharedContent);
 
         if (string.IsNullOrWhiteSpace(messageText))
@@ -692,7 +431,8 @@ public class ChatController : ControllerBase
             DeviceId: req.DeviceId,
             TimeZoneId: req.TimeZoneId,
             SupportsPeriodicReminders: supportsReminderDevice && req.ReminderProtocolVersion >= 2,
-            ClientTurnId: req.ClientTurnId);
+            ClientTurnId: req.ClientTurnId,
+            VisualAssetId: visualAsset?.Id);
         var capabilitySnapshot = _capabilities.GetSnapshot(capabilityContext);
 
         // Save user message
@@ -820,6 +560,9 @@ public class ChatController : ControllerBase
         var toolExecutions = agentTurn.ToolExecutions;
         var screenCaptureRequested = agentTurn.RequestsScreenCapture;
         var reminderDraft = toolExecutions.Select(result => result.Reminder).FirstOrDefault(reminder => reminder is not null);
+        var reminderCancellation = toolExecutions
+            .Select(result => result.ReminderCancellation)
+            .FirstOrDefault(cancellation => cancellation is not null);
         var attemptedReminder = toolExecutions.Any(result =>
             result.Name is "reminder_create" or "periodic_reminder_create");
         var actionExecution = toolExecutions.FirstOrDefault(result => result.ExternalAction is not null && result.ActionReceiptId is not null);
@@ -882,6 +625,25 @@ public class ChatController : ControllerBase
             await Response.Body.FlushAsync();
         }
 
+        if (reminderCancellation is not null)
+        {
+            var cancellationData = JsonSerializer.Serialize(new
+            {
+                reminderCancelled = new
+                {
+                    id = reminderCancellation.ReminderId,
+                    text = reminderCancellation.Text,
+                    deliveries = reminderCancellation.Deliveries.Select(delivery => new
+                    {
+                        deviceId = delivery.DeviceId,
+                        localNotificationId = delivery.LocalNotificationId
+                    })
+                }
+            });
+            await Response.WriteAsync($"data: {cancellationData}\n\n");
+            await Response.Body.FlushAsync();
+        }
+
         if (screenCaptureRequested)
         {
             // This was an orchestration preflight. The retry with the actual
@@ -912,9 +674,7 @@ public class ChatController : ControllerBase
             return;
         }
 
-        var memoryUpdateTask = !toolExecutions.Any(result =>
-                                   result.Name.StartsWith("memory_", StringComparison.Ordinal) ||
-                                   result.Name is "reminder_create" or "periodic_reminder_create")
+        var memoryUpdateTask = !agentTurn.UsedTools
             ? _longTermMemory.ExtractAndStoreAsync(
                 userId, userMessage.Id, messageText, geminiKey, HttpContext.RequestAborted)
             : Task.CompletedTask;

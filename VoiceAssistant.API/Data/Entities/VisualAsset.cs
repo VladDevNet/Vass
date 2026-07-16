@@ -12,4 +12,5 @@ public class VisualAsset
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public ICollection<MessageAttachment> MessageAttachments { get; set; } = [];
+    public ICollection<MemoryItem> MemoryItems { get; set; } = [];
 }

@@ -69,7 +69,7 @@ public class MemoryControllerTests : IClassFixture<TestWebApplicationFactory>
         var operationId = Guid.NewGuid();
 
         var firstWrite = await first.Client.PostAsJsonAsync("/api/v1/memory/remember",
-            new MemoryController.RememberRequest("Влад предпочитает зеленый чай", operationId));
+            new MemoryController.RememberRequest("Влад предпочитает зеленый чай", Category: "food", OperationId: operationId));
         firstWrite.EnsureSuccessStatusCode();
         var receipt = await firstWrite.Content.ReadFromJsonAsync<MemoryOperationResult>();
         Assert.NotNull(receipt);
@@ -77,13 +77,14 @@ public class MemoryControllerTests : IClassFixture<TestWebApplicationFactory>
         Assert.NotNull(receipt.MemoryItemId);
 
         var retry = await first.Client.PostAsJsonAsync("/api/v1/memory/remember",
-            new MemoryController.RememberRequest("Влад предпочитает зеленый чай", operationId));
+            new MemoryController.RememberRequest("Влад предпочитает зеленый чай", Category: "food", OperationId: operationId));
         var retryReceipt = await retry.Content.ReadFromJsonAsync<MemoryOperationResult>();
         Assert.Equal("remembered", retryReceipt!.Code);
 
         var firstItems = await first.Client.GetFromJsonAsync<List<MemoryItemResponse>>("/api/v1/memory/items");
         var item = Assert.Single(firstItems!);
         Assert.Equal("Влад предпочитает зеленый чай", item.Text);
+        Assert.Equal("food", item.Category);
 
         var foreignForget = await second.Client.PostAsJsonAsync("/api/v1/memory/forget",
             new MemoryController.ForgetRequest(item.Id, Guid.NewGuid()));
@@ -97,7 +98,7 @@ public class MemoryControllerTests : IClassFixture<TestWebApplicationFactory>
     {
         var user = await RegisterClientAsync("verified-memory-clear");
         await user.Client.PostAsJsonAsync("/api/v1/memory/remember",
-            new MemoryController.RememberRequest("Пользователь любит прогулки", Guid.NewGuid()));
+            new MemoryController.RememberRequest("Пользователь любит прогулки", OperationId: Guid.NewGuid()));
 
         var prepare = await user.Client.PostAsJsonAsync("/api/v1/memory/clear/prepare",
             new MemoryController.PrepareClearRequest(Guid.NewGuid()));

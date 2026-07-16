@@ -57,20 +57,20 @@ public class ChatControllerTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Fact]
-    public async Task GetSessions_NoSessions_ReturnsEmptyArray()
+    public async Task LegacySessionDelete_IsNotExposed()
     {
         var client = await CreateAuthenticatedClientAsync();
         var sessionResponse = await client.GetAsync("/api/v1/chat/sessions");
         var sessionId = (await sessionResponse.Content.ReadFromJsonAsync<JsonElement>()).EnumerateArray().First().GetProperty("id").GetInt32();
 
         var deleteResponse = await client.DeleteAsync($"/api/v1/chat/sessions/{sessionId}");
-        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, deleteResponse.StatusCode);
 
         var response = await client.GetAsync("/api/v1/chat/sessions");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Empty(body.EnumerateArray());
+        Assert.Single(body.EnumerateArray());
     }
 
     [Fact]

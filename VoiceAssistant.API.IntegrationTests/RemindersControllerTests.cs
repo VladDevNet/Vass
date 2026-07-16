@@ -70,8 +70,14 @@ public class RemindersControllerTests : IClassFixture<TestWebApplicationFactory>
         Assert.Equal("scheduled", saved.DeliveryStatus);
         Assert.Equal("local-notification-123", saved.LocalNotificationId);
 
+        var managed = await client.GetFromJsonAsync<List<JsonElement>>("/api/v1/reminders/manage");
+        var managedReminder = Assert.Single(managed!);
+        Assert.Equal(reminderId, managedReminder.GetProperty("id").GetInt32());
+        Assert.Equal("active", managedReminder.GetProperty("status").GetString());
+
         var cancel = await client.DeleteAsync($"/api/v1/reminders/{reminderId}");
         cancel.EnsureSuccessStatusCode();
+        Assert.Empty((await client.GetFromJsonAsync<List<JsonElement>>("/api/v1/reminders/manage"))!);
         var tombstones = await client.GetFromJsonAsync<List<RemindersController.ReminderResponse>>(
             $"/api/v1/reminders?deviceId={DeviceId}");
         Assert.Equal("cancelled", Assert.Single(tombstones!).Status);

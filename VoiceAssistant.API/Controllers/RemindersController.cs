@@ -14,10 +14,12 @@ namespace VoiceAssistant.API.Controllers;
 public class RemindersController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly ReminderService _reminders;
 
-    public RemindersController(AppDbContext db)
+    public RemindersController(AppDbContext db, ReminderService reminders)
     {
         _db = db;
+        _reminders = reminders;
     }
 
     public record DeliveryAckRequest(string DeviceId, string? LocalNotificationId, string? Error);
@@ -30,6 +32,10 @@ public class RemindersController : ControllerBase
         string Status,
         string? DeliveryStatus,
         string? LocalNotificationId);
+
+    [HttpGet("manage")]
+    public async Task<ActionResult<IReadOnlyList<ManagedReminder>>> GetManaged(CancellationToken cancellationToken) =>
+        Ok(await _reminders.ListActiveAsync(User.FindFirstValue(ClaimTypes.NameIdentifier)!, cancellationToken));
 
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<ReminderResponse>>> GetForDevice(
@@ -97,15 +103,9 @@ public class RemindersController : ControllerBase
     public async Task<IActionResult> Cancel(int id, CancellationToken cancellationToken)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
-        var reminder = await _db.Reminders
-            .Include(item => item.Deliveries)
-            .SingleOrDefaultAsync(item => item.Id == id && item.UserId == userId, cancellationToken);
-        if (reminder is null) return NotFound();
-
-        reminder.Status = ReminderStatuses.Cancelled;
-        reminder.UpdatedAt = DateTime.UtcNow;
-        await _db.SaveChangesAsync(cancellationToken);
-        return Ok(reminder.Deliveries
+        var cancellation = await _reminders.CancelAsync(userId, id, cancellationToken);
+        if (cancellation is null) return NotFound();
+        return Ok(cancellation.Deliveries
             .Where(delivery => !string.IsNullOrWhiteSpace(delivery.LocalNotificationId))
             .Select(delivery => new { delivery.DeviceId, delivery.LocalNotificationId }));
     }

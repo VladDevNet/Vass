@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using VoiceAssistant.API.Data.Entities;
 
 namespace VoiceAssistant.API.Services;
 
@@ -13,7 +14,8 @@ public sealed record AssistantToolExecution(
     bool RequestsScreenCapture = false,
     JsonElement? Data = null,
     string? CallId = null,
-    ReminderDraft? Reminder = null);
+    ReminderDraft? Reminder = null,
+    ReminderCancellationResult? ReminderCancellation = null);
 
 // The only authority that turns a model proposal into a side effect. Every
 // branch is owner-scoped and validates its arguments independently of Gemini.
@@ -25,17 +27,20 @@ public sealed class AssistantToolBroker
     private readonly ConversationSearchService _conversationSearch;
     private readonly ReminderService _reminders;
     private readonly ActionReceiptService _actionReceipts;
+    private readonly AssistantCapabilityRegistry _capabilities;
 
     public AssistantToolBroker(
         MemoryItemService memory,
         ConversationSearchService conversationSearch,
         ReminderService reminders,
-        ActionReceiptService actionReceipts)
+        ActionReceiptService actionReceipts,
+        AssistantCapabilityRegistry capabilities)
     {
         _memory = memory;
         _conversationSearch = conversationSearch;
         _reminders = reminders;
         _actionReceipts = actionReceipts;
+        _capabilities = capabilities;
     }
 
     public async Task<IReadOnlyList<AssistantToolExecution>> ExecuteAsync(
@@ -122,8 +127,22 @@ public sealed class AssistantToolBroker
                 context.TimeZoneId,
                 sourceMessageId,
                 cancellationToken),
-            "memory_remember" => await RememberAsync(userId, sourceMessageId, GetString(call.Arguments, "text"), operationId, cancellationToken),
-            "memory_correct" => await CorrectAsync(userId, GetString(call.Arguments, "memoryId"), GetString(call.Arguments, "text"), operationId, cancellationToken),
+            "memory_remember" => await RememberAsync(
+                userId,
+                sourceMessageId,
+                GetString(call.Arguments, "text"),
+                GetString(call.Arguments, "category"),
+                GetBoolean(call.Arguments, "saveCurrentAttachment"),
+                context,
+                operationId,
+                cancellationToken),
+            "memory_correct" => await CorrectAsync(
+                userId,
+                GetString(call.Arguments, "memoryId"),
+                GetString(call.Arguments, "text"),
+                GetString(call.Arguments, "category"),
+                operationId,
+                cancellationToken),
             "memory_forget" => await ForgetAsync(userId, GetString(call.Arguments, "memoryId"), operationId, cancellationToken),
             "reminder_create" => await CreateReminderAsync(userId, sourceMessageId, GetString(call.Arguments, "text"), GetString(call.Arguments, "dueAtLocal"), context, operationId, cancellationToken),
             "periodic_reminder_create" => await CreatePeriodicReminderAsync(
@@ -135,6 +154,12 @@ public sealed class AssistantToolBroker
                 context,
                 operationId,
                 cancellationToken),
+            "reminder_list" => await ReminderListAsync(userId, cancellationToken),
+            "reminder_cancel" => await CancelReminderAsync(
+                userId,
+                GetInteger(call.Arguments, "reminderId"),
+                cancellationToken),
+            "capability_help" => CapabilityHelp(context, GetString(call.Arguments, "topic")),
             "screen_capture_once" => RequestScreenCapture(call.Name, context),
             "open_vass" => await ProposeActionAsync(call.Name, ExternalActionTypes.OpenVass, null, null, userId, sourceMessageId, context, cancellationToken),
             "youtube_search" => await ProposeActionAsync(call.Name, ExternalActionTypes.YouTubeSearch, GetString(call.Arguments, "query"), null, userId, sourceMessageId, context, cancellationToken),
@@ -208,15 +233,31 @@ public sealed class AssistantToolBroker
         string userId,
         int sourceMessageId,
         string? text,
+        string? category,
+        bool saveCurrentAttachment,
+        AssistantRuntimeContext context,
         Guid operationId,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(text) || text.Length > 1000)
             return new("memory_remember", "invalid", "Нужна одна короткая осмысленная запись памяти.",
                 Data: ToData(new { status = "invalid", code = "invalid_text" }));
+        if (saveCurrentAttachment && context.VisualAssetId is null)
+            return new("memory_remember", "invalid", "К этой реплике не приложен документ или изображение для сохранения.",
+                Data: ToData(new { status = "invalid", code = "visual_attachment_required" }));
 
         var normalized = text.Trim();
-        var result = await _memory.RememberAsync(userId, normalized, sourceMessageId, operationId, ct);
+        var resolvedCategory = MemoryCategories.NormalizeOrDefault(
+            category,
+            saveCurrentAttachment ? "documents" : MemoryCategories.Other);
+        var result = await _memory.RememberAsync(
+            userId,
+            normalized,
+            sourceMessageId,
+            operationId,
+            ct,
+            category,
+            saveCurrentAttachment ? context.VisualAssetId : null);
         var confirmed = result.Code is "remembered" or "already_known";
         return new("memory_remember", result.Code,
             confirmed ? $"Запись памяти подтверждена: {normalized}" : "Запись памяти не подтверждена.",
@@ -225,7 +266,9 @@ public sealed class AssistantToolBroker
                 status = result.Status,
                 code = result.Code,
                 memoryId = result.MemoryItemId,
-                text = confirmed ? normalized : null
+                text = confirmed ? normalized : null,
+                category = confirmed ? resolvedCategory : null,
+                savedCurrentAttachment = confirmed && saveCurrentAttachment
             }));
     }
 
@@ -233,6 +276,7 @@ public sealed class AssistantToolBroker
         string userId,
         string? id,
         string? text,
+        string? category,
         Guid operationId,
         CancellationToken ct)
     {
@@ -241,7 +285,7 @@ public sealed class AssistantToolBroker
                 Data: ToData(new { status = "invalid", code = "invalid_arguments" }));
 
         var normalized = text.Trim();
-        var result = await _memory.CorrectAsync(userId, memoryId, normalized, operationId, ct);
+        var result = await _memory.CorrectAsync(userId, memoryId, normalized, operationId, ct, category);
         return new("memory_correct", result.Code,
             result.Code == "corrected" ? $"Запись исправлена: {normalized}" : "Запись не была исправлена.",
             Data: ToData(new
@@ -249,7 +293,8 @@ public sealed class AssistantToolBroker
                 status = result.Status,
                 code = result.Code,
                 memoryId = result.MemoryItemId,
-                text = result.Code == "corrected" ? normalized : null
+                text = result.Code == "corrected" ? normalized : null,
+                category = result.Code == "corrected" ? category : null
             }));
     }
 
@@ -357,6 +402,76 @@ public sealed class AssistantToolBroker
             Reminder: reminder);
     }
 
+    private async Task<AssistantToolExecution> ReminderListAsync(string userId, CancellationToken ct)
+    {
+        var reminders = await _reminders.ListActiveAsync(userId, ct);
+        return new("reminder_list", "ok",
+            reminders.Count == 0
+                ? "Активных напоминаний нет."
+                : string.Join("\n", reminders.Take(20).Select(reminder =>
+                    $"[{reminder.Id}] {reminder.Text}; {reminder.DueAtUtc:O}; {reminder.RecurrenceRule ?? "одноразовое"}")),
+            Data: ToData(new
+            {
+                status = "ok",
+                reminders = reminders.Take(20).Select(reminder => new
+                {
+                    id = reminder.Id,
+                    text = reminder.Text,
+                    dueAtUtc = reminder.DueAtUtc,
+                    timeZoneId = reminder.TimeZoneId,
+                    recurrenceRule = reminder.RecurrenceRule,
+                    status = reminder.Status
+                })
+            }));
+    }
+
+    private async Task<AssistantToolExecution> CancelReminderAsync(string userId, int? reminderId, CancellationToken ct)
+    {
+        if (reminderId is not > 0)
+            return new("reminder_cancel", "invalid", "Нужен ID конкретного напоминания из reminder_list.",
+                Data: ToData(new { status = "invalid", code = "invalid_reminder_id" }));
+
+        var cancellation = await _reminders.CancelAsync(userId, reminderId.Value, ct);
+        if (cancellation is null)
+            return new("reminder_cancel", "not_found", "Активное напоминание с таким ID не найдено.",
+                Data: ToData(new { status = "not_found", code = "reminder_not_found" }));
+
+        return new("reminder_cancel", "cancelled", $"Напоминание отменено: {cancellation.Text}.",
+            Data: ToData(new
+            {
+                status = "cancelled",
+                reminderId = cancellation.ReminderId,
+                text = cancellation.Text,
+                deliveries = cancellation.Deliveries.Select(delivery => new
+                {
+                    deviceId = delivery.DeviceId,
+                    localNotificationId = delivery.LocalNotificationId
+                })
+            }),
+            ReminderCancellation: cancellation);
+    }
+
+    private AssistantToolExecution CapabilityHelp(AssistantRuntimeContext context, string? topic)
+    {
+        var items = _capabilities.GetHelp(context, topic).Take(8).ToArray();
+        return new("capability_help", "ok",
+            items.Length == 0
+                ? "Сейчас нет доступных подсказок по этой теме."
+                : string.Join("\n", items.Select(item => $"{item.Title}: {item.Description}")),
+            Data: ToData(new
+            {
+                status = "ok",
+                items = items.Select(item => new
+                {
+                    id = item.Id,
+                    title = item.Title,
+                    description = item.Description,
+                    examples = item.Examples,
+                    interfaceHint = item.InterfaceHint
+                })
+            }));
+    }
+
     private static AssistantToolExecution RequestScreenCapture(string name, AssistantRuntimeContext context)
     {
         if (!context.SupportsScreenAnalysis)
@@ -418,6 +533,14 @@ public sealed class AssistantToolBroker
     private static string? GetString(JsonElement arguments, string name) =>
         arguments.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString()?.Trim() : null;
 
+    private static bool GetBoolean(JsonElement arguments, string name) =>
+        arguments.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
+
+    private static int? GetInteger(JsonElement arguments, string name) =>
+        arguments.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var result)
+            ? result
+            : null;
+
     private static string? NormalizeQuery(string? query)
     {
         if (string.IsNullOrWhiteSpace(query)) return null;
@@ -437,13 +560,17 @@ public sealed class AssistantToolBroker
             id = item.Id,
             text = item.Text,
             kind = item.Kind,
+            category = item.Category,
+            hasAttachment = item.Attachment is not null,
+            attachmentName = item.Attachment?.OriginalFileName,
             revision = item.Revision,
             updatedAt = item.UpdatedAt
         }).ToArray();
 
     private static string FormatItems(IEnumerable<MemoryItemResponse> items)
     {
-        var selected = items.Take(8).Select(item => $"[{item.Id}] {item.Text}").ToArray();
+        var selected = items.Take(8).Select(item =>
+            $"[{item.Id}; {item.Category}] {item.Text}{(item.Attachment is null ? "" : " (сохраненное вложение)")}").ToArray();
         return selected.Length == 0 ? "Подходящих записей нет." : string.Join("\n", selected);
     }
 

@@ -54,4 +54,32 @@ public class AssistantCapabilityRegistryTests
         Assert.Equal("unsupported_client", unsupported.Capabilities.Single(item => item.Id == "reminder.periodic").State);
         Assert.Equal("available", supported.Capabilities.Single(item => item.Id == "reminder.periodic").State);
     }
+
+    [Fact]
+    public void HelpCatalog_UsesRuntimeCapabilities_AndProvidesInterfaceHints()
+    {
+        var registry = new AssistantCapabilityRegistry(new ConfigurationBuilder().Build());
+        var fullContext = new AssistantRuntimeContext(
+            HasVisualAttachment: false,
+            SupportsScreenAnalysis: true,
+            SupportsExternalActions: true,
+            SupportsReminders: true,
+            SupportsPeriodicReminders: true);
+        var restrictedContext = fullContext with
+        {
+            SupportsScreenAnalysis = false,
+            SupportsExternalActions = false
+        };
+
+        var fullHelp = registry.GetHelp(fullContext);
+        var restrictedHelp = registry.GetHelp(restrictedContext);
+
+        var memory = Assert.Single(fullHelp, item => item.Id == "memory");
+        Assert.NotEmpty(memory.Examples);
+        Assert.False(string.IsNullOrWhiteSpace(memory.InterfaceHint));
+        Assert.Contains(fullHelp, item => item.Id == "screen");
+        Assert.Contains(fullHelp, item => item.Id == "youtube");
+        Assert.DoesNotContain(restrictedHelp, item => item.Id == "screen");
+        Assert.DoesNotContain(restrictedHelp, item => item.Id == "youtube");
+    }
 }

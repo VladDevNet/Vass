@@ -25,7 +25,7 @@ import {
 } from '../tts/systemSpeech';
 import type { AvatarId } from '../components/LayeredAvatar';
 import { OverlaySettings } from '../components/OverlaySettings';
-import { BrainCircuit } from 'lucide-react-native';
+import { BellRing, BrainCircuit, CircleHelp } from 'lucide-react-native';
 
 interface ProfileScreenProps {
   mode: 'onboarding' | 'settings';
@@ -35,9 +35,11 @@ interface ProfileScreenProps {
   // doesn't re-prompt on every future launch).
   onDone: () => void;
   onOpenMemory?: () => void;
+  onOpenReminders?: () => void;
+  onOpenHelp?: () => void;
 }
 
-export function ProfileScreen({ mode, onDone, onOpenMemory }: ProfileScreenProps) {
+export function ProfileScreen({ mode, onDone, onOpenMemory, onOpenReminders, onOpenHelp }: ProfileScreenProps) {
   const { displayName, assistantName, avatarId, refreshProfile, logout } = useAuth();
   const [name, setName] = useState(displayName ?? '');
   const [assistantNameInput, setAssistantNameInput] = useState(assistantName ?? '');
@@ -277,6 +279,14 @@ export function ProfileScreen({ mode, onDone, onOpenMemory }: ProfileScreenProps
           <Pressable style={styles.memoryButton} onPress={onOpenMemory}>
             <BrainCircuit size={20} color="#4a6fa5" />
             <Text style={styles.memoryButtonText}>Открыть память</Text>
+          </Pressable>
+          <Pressable style={[styles.memoryButton, styles.secondaryToolButton]} onPress={onOpenReminders}>
+            <BellRing size={20} color="#4a6fa5" />
+            <Text style={styles.memoryButtonText}>Напоминания</Text>
+          </Pressable>
+          <Pressable style={[styles.memoryButton, styles.secondaryToolButton]} onPress={onOpenHelp}>
+            <CircleHelp size={20} color="#4a6fa5" />
+            <Text style={styles.memoryButtonText}>Возможности Vass</Text>
           </Pressable>
         </>
       )}
@@ -531,6 +541,9 @@ const styles = StyleSheet.create({
     color: '#4a6fa5',
     fontSize: 16,
     fontWeight: '600',
+  },
+  secondaryToolButton: {
+    marginTop: 10,
   },
   logoutButton: {
     borderWidth: 1,

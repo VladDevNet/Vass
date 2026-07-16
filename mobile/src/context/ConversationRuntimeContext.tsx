@@ -19,6 +19,7 @@ interface ConversationRuntimeValue {
   forceFinalize: () => void;
   pauseConversation: () => Promise<void>;
   resumeConversation: () => Promise<void>;
+  announceSystemNotice: (text: string) => Promise<void>;
   prepareOverlayMode: () => Promise<void>;
   disableOverlayMode: (resumeWhenVisible: boolean) => Promise<void>;
   pendingVisual: PendingVisualInput | null;
@@ -119,6 +120,10 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
       if (shared.status === 'ready' && shared.kind === 'text' && shared.text?.trim()) {
         stageSharedText({ requestId: shared.requestId, content: shared.text.trim() });
         await VassOverlay.acknowledgeSharedContent(shared.requestId);
+        await VassOverlay.openApp().catch(() => undefined);
+        await actionsRef.current.announceSystemNotice(
+          /(?:https?:\/\/|www\.)/i.test(shared.text) ? 'Получена ссылка.' : 'Получен текст.'
+        );
         log('info', 'share', 'shared text staged for next voice turn', { length: shared.text.length });
         return;
       }
@@ -142,6 +147,10 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
         return;
       }
       await VassOverlay.acknowledgeSharedContent(shared.requestId);
+      await VassOverlay.openApp().catch(() => undefined);
+      await actionsRef.current.announceSystemNotice(
+        shared.mimeType.startsWith('image/') ? 'Получено изображение.' : 'Получен документ.'
+      );
       log('info', 'visual', 'shared attachment staged for next voice turn', { mimeType: shared.mimeType });
     };
 
@@ -284,6 +293,7 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
         forceFinalize: runtime.forceFinalize,
         pauseConversation: runtime.pauseConversation,
         resumeConversation: runtime.resumeConversation,
+        announceSystemNotice: runtime.announceSystemNotice,
         prepareOverlayMode,
         disableOverlayMode,
         pendingVisual: visual.pendingVisual,

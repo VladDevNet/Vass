@@ -10,17 +10,22 @@ import {
   View,
 } from 'react-native';
 import { useAuth } from '../context/AuthContext';
+import { RegistrationPendingScreen } from './RegistrationPendingScreen';
 
 type Mode = 'login' | 'register' | 'code';
 
 export function LoginScreen() {
-  const { login, register, loginWithDeviceCode } = useAuth();
+  const { login, register, loginWithDeviceCode, approvalPendingEmail, dismissApprovalPending } = useAuth();
   const [mode, setMode] = useState<Mode>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  if (approvalPendingEmail !== null) {
+    return <RegistrationPendingScreen email={approvalPendingEmail} onBack={dismissApprovalPending} />;
+  }
 
   async function handleSubmit() {
     setError(null);

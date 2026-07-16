@@ -17,6 +17,8 @@ import { amoled } from '../theme/amoled';
 import { ProfileScreen } from './ProfileScreen';
 import { ChatHistoryScreen } from './ChatHistoryScreen';
 import { MemoryScreen } from './MemoryScreen';
+import { RemindersScreen } from './RemindersScreen';
+import { CapabilityHelpScreen } from './CapabilityHelpScreen';
 import { VisualInputButton } from '../components/VisualInputButton';
 import { VisualSourceSheet } from '../components/VisualSourceSheet';
 import { PendingVisualPreview } from '../components/PendingVisualPreview';
@@ -55,6 +57,8 @@ export function HomeScreen() {
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
+  const [showReminders, setShowReminders] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [showVisualSources, setShowVisualSources] = useState(false);
   // Ошибка загрузки любого слоя LayeredAvatar — падаем на AvatarFace
   // на остаток сессии, без retry-петли. См. spec, «Обработка ошибок».
@@ -91,11 +95,25 @@ export function HomeScreen() {
   useGreeting(micArmed && state === 'idle' && !!sessionId);
 
   if (showSettings) {
-    return <ProfileScreen mode="settings" onDone={() => setShowSettings(false)} onOpenMemory={() => { setShowSettings(false); setShowMemory(true); }} />;
+    return <ProfileScreen
+      mode="settings"
+      onDone={() => setShowSettings(false)}
+      onOpenMemory={() => { setShowSettings(false); setShowMemory(true); }}
+      onOpenReminders={() => { setShowSettings(false); setShowReminders(true); }}
+      onOpenHelp={() => { setShowSettings(false); setShowHelp(true); }}
+    />;
   }
 
   if (showMemory) {
     return <MemoryScreen onDone={() => setShowMemory(false)} />;
+  }
+
+  if (showReminders) {
+    return <RemindersScreen onDone={() => setShowReminders(false)} />;
+  }
+
+  if (showHelp) {
+    return <CapabilityHelpScreen onDone={() => setShowHelp(false)} />;
   }
 
   if (showHistory && sessionId) {

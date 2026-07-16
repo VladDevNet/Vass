@@ -2,7 +2,7 @@
   "expo": {
     "name": "Vass",
     "slug": "vass-mobile",
-    "version": "1.2.12",
+    "version": "1.2.13",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -12,7 +12,7 @@
     },
     "android": {
       "package": "com.vass.assistant",
-      "versionCode": 16,
+      "versionCode": 17,
       "permissions": [
         "android.permission.SCHEDULE_EXACT_ALARM",
         "android.permission.CAMERA"
@@ -47,7 +47,8 @@
       ],
       "expo-document-picker",
       "expo-notifications",
-      "./modules/vass-overlay/app.plugin.js"
+      "./modules/vass-overlay/app.plugin.js",
+      "expo-sharing"
     ]
   }
 }

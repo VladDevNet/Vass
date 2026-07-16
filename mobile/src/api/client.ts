@@ -1,6 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { fetch as expoFetch } from 'expo/fetch';
-import { File } from 'expo-file-system';
+import { File, Paths } from 'expo-file-system';
 import { Blob as ExpoBlob } from 'expo-blob';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'https://vass.it-consult.services';
@@ -61,7 +61,16 @@ export async function dismissOnboarding(): Promise<void> {
   }
 }
 
-class ApiError extends Error {}
+export class ApiError extends Error {
+  constructor(message: string, public readonly status?: number, public readonly code?: string) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+export function isApprovalRequiredError(error: unknown): boolean {
+  return error instanceof ApiError && error.code === 'approval_required';
+}
 
 // A stalled request (dead wifi, unreachable server) would otherwise hang the
 // UI forever — every fetch below is capped and turns a timeout into a clear
@@ -124,12 +133,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   if (res.status === 401) {
     await handleUnauthorized();
-    throw new ApiError('Unauthorized');
+    throw new ApiError('Unauthorized', res.status);
   }
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new ApiError(data.error ?? data.errors?.join(', ') ?? `HTTP ${res.status}`);
+    throw new ApiError(data.error ?? data.errors?.join(', ') ?? `HTTP ${res.status}`, res.status, data.code);
   }
 
   if (res.status === 204) return undefined as T;
@@ -137,7 +146,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export interface AuthResponse {
-  token: string;
+  token?: string;
+  approvalRequired?: boolean;
 }
 
 export interface CurrentUser {
@@ -190,12 +200,21 @@ export interface MemoryItem {
   id: string;
   text: string;
   kind: string;
+  category: string;
   revision: number;
   status: string;
   createdAt: string;
   updatedAt: string;
   lastRecalledAt: string | null;
   embeddingState: 'pending' | 'ready' | 'failed';
+  attachment: MemoryAttachment | null;
+}
+
+export interface MemoryAttachment {
+  id: string;
+  mimeType: string;
+  sizeBytes: number;
+  originalFileName: string | null;
 }
 
 export interface MemorySearchResult {
@@ -211,6 +230,23 @@ export interface MemoryOperationResult {
   memoryItemId: string | null;
   confirmationToken?: string | null;
   confirmationExpiresAt?: string | null;
+}
+
+export interface ManagedReminder {
+  id: number;
+  text: string;
+  dueAtUtc: string;
+  timeZoneId: string;
+  recurrenceRule: string | null;
+  status: string;
+}
+
+export interface CapabilityHelpItem {
+  id: string;
+  title: string;
+  description: string;
+  examples: string[];
+  interfaceHint: string;
 }
 
 // Not `extends ChatSession` — GET /chat/sessions/{id} (unlike the list
@@ -315,16 +351,16 @@ export const api = {
   searchMemory: (query: string): Promise<MemorySearchResult> =>
     request<MemorySearchResult>(`/memory/search?query=${encodeURIComponent(query)}`),
 
-  remember: (text: string, operationId?: string): Promise<MemoryOperationResult> =>
+  remember: (text: string, category?: string, operationId?: string): Promise<MemoryOperationResult> =>
     request<MemoryOperationResult>('/memory/remember', {
       method: 'POST',
-      body: JSON.stringify({ text, operationId }),
+      body: JSON.stringify({ text, category, operationId }),
     }),
 
-  correctMemory: (id: string, text: string, operationId?: string): Promise<MemoryOperationResult> =>
+  correctMemory: (id: string, text: string, category?: string, operationId?: string): Promise<MemoryOperationResult> =>
     request<MemoryOperationResult>('/memory/correct', {
       method: 'POST',
-      body: JSON.stringify({ id, text, operationId }),
+      body: JSON.stringify({ id, text, category, operationId }),
     }),
 
   forgetMemory: (id: string, operationId?: string): Promise<MemoryOperationResult> =>
@@ -350,6 +386,26 @@ export const api = {
 
   getReminders: (deviceId: string, protocolVersion = 2): Promise<ReminderSyncItem[]> =>
     request<ReminderSyncItem[]>(`/reminders?deviceId=${encodeURIComponent(deviceId)}&protocolVersion=${protocolVersion}`),
+
+  getManagedReminders: (): Promise<ManagedReminder[]> => request<ManagedReminder[]>('/reminders/manage'),
+
+  cancelReminder: (id: number): Promise<Array<{ deviceId: string; localNotificationId: string }>> =>
+    request<Array<{ deviceId: string; localNotificationId: string }>>(`/reminders/${id}`, { method: 'DELETE' }),
+
+  getCapabilityHelp: (params: {
+    supportsReminders: boolean;
+    supportsPeriodicReminders: boolean;
+    supportsExternalActions: boolean;
+    supportsScreenAnalysis: boolean;
+  }): Promise<CapabilityHelpItem[]> => {
+    const query = new URLSearchParams({
+      supportsReminders: String(params.supportsReminders),
+      supportsPeriodicReminders: String(params.supportsPeriodicReminders),
+      supportsExternalActions: String(params.supportsExternalActions),
+      supportsScreenAnalysis: String(params.supportsScreenAnalysis),
+    });
+    return request<CapabilityHelpItem[]>(`/capabilities/help?${query.toString()}`);
+  },
 
   markReminderScheduled: (id: number, deviceId: string, localNotificationId: string): Promise<void> =>
     request<void>(`/reminders/${id}/scheduled`, {
@@ -471,6 +527,19 @@ export const api = {
     ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
   }),
 
+  downloadVisualAsset: async (id: string, originalFileName?: string | null): Promise<File> => {
+    const safeName = (originalFileName?.replace(/[^A-Za-z0-9._-]/g, '_') || 'attachment.bin').slice(-120);
+    const target = new File(Paths.cache, `vass-memory-${id}-${safeName}`);
+    return File.downloadFileAsync(
+      `${API_URL}/api/v1/chat/visual-assets/${encodeURIComponent(id)}/content`,
+      target,
+      {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        idempotent: true,
+      },
+    );
+  },
+
   // Transcribes a continuation segment WITHOUT triggering a full model
   // reply — POST /chat/check-utterance, already used by the web client
   // (frontend/js/api.js's checkUtteranceComplete) and needing no backend
@@ -571,6 +640,12 @@ export interface PeriodicReminderEvent {
   localNotificationId?: string | null;
 }
 
+export interface ReminderCancelledEvent {
+  id: number;
+  text: string;
+  deliveries: Array<{ deviceId: string; localNotificationId: string | null }>;
+}
+
 export interface ReminderSyncItem {
   id: number;
   text: string;
@@ -587,6 +662,7 @@ export interface SendMessageCallbacks {
   onChunk?: (text: string) => void;
   onReminder?: (reminder: ReminderEvent) => Promise<void>;
   onPeriodicReminder?: (reminder: PeriodicReminderEvent) => Promise<void>;
+  onReminderCancelled?: (reminder: ReminderCancelledEvent) => Promise<void>;
   onExternalAction?: (action: ExternalActionEvent) => Promise<void>;
   onScreenCapture?: (request: ScreenCaptureRequest) => void;
 }
@@ -633,6 +709,23 @@ function parsePeriodicReminder(value: unknown): PeriodicReminderEvent | null {
       ? candidate.localNotificationId
       : null,
   };
+}
+
+function parseReminderCancelled(value: unknown): ReminderCancelledEvent | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.id !== 'number' || !Number.isSafeInteger(candidate.id) || candidate.id <= 0 ||
+      typeof candidate.text !== 'string' || !Array.isArray(candidate.deliveries)) {
+    return null;
+  }
+  const deliveries = candidate.deliveries
+    .filter((delivery): delivery is Record<string, unknown> => !!delivery && typeof delivery === 'object')
+    .filter(delivery => typeof delivery.deviceId === 'string')
+    .map(delivery => ({
+      deviceId: delivery.deviceId as string,
+      localNotificationId: typeof delivery.localNotificationId === 'string' ? delivery.localNotificationId : null,
+    }));
+  return { id: candidate.id, text: candidate.text, deliveries };
 }
 
 // Streams POST /chat/send (SSE-style `data: {...}` lines) and resolves with
@@ -734,6 +827,9 @@ export async function sendMessage(params: SendMessageParams, callbacks: SendMess
         } else if (parsed.periodicReminder && callbacks.onPeriodicReminder) {
           const reminder = parsePeriodicReminder(parsed.periodicReminder);
           if (reminder) await callbacks.onPeriodicReminder(reminder);
+        } else if (parsed.reminderCancelled && callbacks.onReminderCancelled) {
+          const reminder = parseReminderCancelled(parsed.reminderCancelled);
+          if (reminder) await callbacks.onReminderCancelled(reminder);
         } else if (parsed.externalAction && callbacks.onExternalAction) {
           const action = parseExternalAction(parsed.externalAction);
           if (action) await callbacks.onExternalAction(action);

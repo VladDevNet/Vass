@@ -16,8 +16,7 @@ const VOICE_GENDER_TAGS_KEY = 'vass_voice_gender_tags';
 const MAX_CHUNK_LENGTH = Math.min(Speech.maxSpeechInputLength - 100, 3500);
 
 // A stalled/never-firing onDone would otherwise leave the UI stuck in
-// 'speaking' forever — same MAX_PLAYBACK_MS safety-net pattern already used
-// for network TTS playback in useVoiceChat.ts. Per CHUNK, not per reply —
+// 'speaking' forever. The guard is per CHUNK, not per reply —
 // a single chunk can run up to MAX_CHUNK_LENGTH (~3400 chars), and a real
 // production reply that long legitimately took longer than a flat 60s to
 // read aloud and got silently truncated mid-sentence by what was previously
@@ -31,8 +30,8 @@ const MIN_CHUNK_SPEECH_MS = 30_000;
 // Android TTS normally reports onStart within well under a second (confirmed
 // by production logs). After returning from YouTube we observed utterances
 // that produced neither onStart nor sound and only hit the old 30s duration
-// timeout. Fail fast into the network-TTS fallback instead of showing
-// `speaking` silently for half a minute.
+// timeout. Fail fast so the reply remains visible and the voice loop can
+// return to listening instead of showing `speaking` silently for half a minute.
 const MAX_CHUNK_START_MS = 5_000;
 
 // undefined = not looked up yet this session, null = no Russian voice found.
@@ -374,11 +373,10 @@ function consumeExpectedStop(): boolean {
 // node_modules/expo-speech/android/.../SpeechModule.kt's onStop), so this
 // is the only signal available to tell the two apart. Treating every
 // onStopped as success (the previous behavior) meant a lost-focus interrupt
-// silently ended the reply with no error and no fallback — the exact
+// silently ended the reply with no error — the exact
 // "assistant just goes quiet mid-reply" symptom reported from a real
-// device. Rejecting instead lets speakChunkSafely's caller re-throw, which
-// triggers useVoiceChat's existing network-TTS fallback — same recovery
-// path as any other on-device TTS failure.
+// device. Rejecting lets the caller leave the already-visible reply as text
+// and complete the turn cleanly.
 function speakChunk(
   text: string,
   voice: string,
@@ -427,7 +425,7 @@ function speakChunk(
 
 // Wraps speakChunk with two independent watchdogs: one for an utterance that
 // never starts at all, and one for playback that starts but never finishes.
-// Both reject so useVoiceChat's existing network-TTS fallback actually runs.
+// Both reject so the caller can finish the turn without leaving speech stuck.
 async function speakChunkSafely(
   text: string,
   voice: string,
@@ -580,16 +578,10 @@ export function createStreamingSpeech(
       if (!armed) {
         // onBeforeFirstSpeech runs FIRST, before even checking whether a
         // voice exists — arming the recorder and entering 'speaking' has
-        // to happen regardless of whether on-device TTS ends up working at
-        // all, since the caller falls back to network TTS on failure
-        // (including "no voice") and still needs barge-in live for THAT
-        // playback. Getting this order backwards was a real regression
-        // found by independent review: with the voice check first, a
-        // voice-less device never left 'thinking' during the entire
-        // fallback playback, silently disabling both voice and tap
-        // barge-in for it — the old (pre-streaming) design set 'speaking'
-        // unconditionally before ever attempting on-device speech, and
-        // this restores that guarantee. Guarded by `armed` so a pause/
+        // to happen before attempting synthesis so an actual utterance has
+        // barge-in live from its first sound. A device without a Russian
+        // voice still needs to leave the transient `thinking` state cleanly.
+        // Guarded by `armed` so a pause/
         // resume cycle doesn't repeat these side effects on every loop
         // — except when paused DURING setup itself (below), where
         // repeating them on the next resume is correct, not accidental.
@@ -787,9 +779,8 @@ const GREETING_PHRASES = [
 // barge-in's Speech.stop() then stops BOTH utterances in one native call,
 // only ONE of their onStopped handlers can actually consume the shared
 // flag — the other would wrongly see it already cleared and reject as
-// "unexpected," sending a real, cleanly-interrupted reply into the
-// network-TTS fallback path instead of just stopping. A filler doesn't
-// need that fallback machinery at all — it's a non-critical nicety — so it
+// "unexpected," marking a real, cleanly-interrupted reply as failed instead
+// of just stopping. A filler is a non-critical nicety, so it
 // simply never participates in expectedStop tracking. Found by independent
 // review.
 function speakBackchannelPhrase(text: string, voice: string): Promise<void> {

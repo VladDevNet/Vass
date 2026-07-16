@@ -416,6 +416,47 @@ export function scheduleAndAcknowledgeReminder(
   return enqueueReminderLifecycle(() => scheduleAndAcknowledgeReminderInternal(reminder, deviceId, ownerId));
 }
 
+async function cancelLocalReminderInternal(reminderId: number, ownerId: string): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const { deviceId } = await getReminderDeviceContext();
+  const [requests, presented] = await Promise.all([
+    Notifications.getAllScheduledNotificationsAsync(),
+    Notifications.getPresentedNotificationsAsync(),
+  ]);
+
+  for (const request of requests) {
+    if (getScheduledReminderId(request) !== reminderId) continue;
+    const requestOwnerId = typeof request.content.data?.ownerId === 'string'
+      ? request.content.data.ownerId
+      : null;
+    if (requestOwnerId !== null && requestOwnerId !== ownerId) continue;
+    await Notifications.cancelScheduledNotificationAsync(request.identifier);
+  }
+
+  for (const notification of presented) {
+    if (getScheduledReminderId(notification.request) !== reminderId) continue;
+    const notificationOwnerId = typeof notification.request.content.data?.ownerId === 'string'
+      ? notification.request.content.data.ownerId
+      : null;
+    if (notificationOwnerId !== null && notificationOwnerId !== ownerId) continue;
+    await Notifications.dismissNotificationAsync(notification.request.identifier);
+  }
+
+  try {
+    await api.markReminderCancelled(reminderId, deviceId);
+  } catch {
+    await rememberPendingCancellation({ ownerId, deviceId, reminderId });
+  }
+  log('info', 'app', 'local reminder cancelled by Vass', { reminderId });
+}
+
+// Used both by the management screen and by the server-driven tool receipt.
+// The server is authoritative about cancellation; this function only removes
+// this device's OS notifications and persists a retryable acknowledgement.
+export function cancelLocalReminder(reminderId: number, ownerId: string): Promise<void> {
+  return enqueueReminderLifecycle(() => cancelLocalReminderInternal(reminderId, ownerId));
+}
+
 async function cancelAllLocalRemindersForSignedOutUserInternal(
   ownerId: string | null,
 ): Promise<void> {

@@ -13,6 +13,13 @@ public sealed record AssistantCapabilitySnapshot(
     int Version,
     IReadOnlyList<AssistantCapabilityDescriptor> Capabilities);
 
+public sealed record AssistantCapabilityHelpItem(
+    string Id,
+    string Title,
+    string Description,
+    IReadOnlyList<string> Examples,
+    string InterfaceHint);
+
 public sealed record AssistantRuntimeContext(
     bool HasVisualAttachment,
     bool SupportsScreenAnalysis,
@@ -23,13 +30,14 @@ public sealed record AssistantRuntimeContext(
     bool HasProposedClientAction = false,
     bool HasAttemptedReminder = false,
     bool SupportsPeriodicReminders = false,
-    Guid? ClientTurnId = null);
+    Guid? ClientTurnId = null,
+    Guid? VisualAssetId = null);
 
 // This registry is intentionally declarative. It describes what this turn can
 // actually do; it never turns UI-only controls into model-callable actions.
 public sealed class AssistantCapabilityRegistry
 {
-    public const int SnapshotVersion = 2;
+    public const int SnapshotVersion = 3;
     private readonly bool _memoryEnabled;
 
     public AssistantCapabilityRegistry(IConfiguration configuration)
@@ -50,12 +58,15 @@ public sealed class AssistantCapabilityRegistry
             new("memory.clear", _memoryEnabled ? "confirmation_required" : "disabled", "server", AssistantActionTaxonomies.ServerLocal, "Очистка памяти с отдельным подтверждением"),
             new("reminder.schedule", context.SupportsReminders ? "available" : "device_context_required", "server", AssistantActionTaxonomies.ServerLocal, "Локальное напоминание требует связанный телефон и его подтверждение"),
             new("reminder.periodic", context.SupportsPeriodicReminders ? "available" : "unsupported_client", "server", AssistantActionTaxonomies.ServerLocal, "Периодическое локальное напоминание использует startAtLocal и ограниченный RRULE-контракт"),
+            new("reminder.list", "available", "server", AssistantActionTaxonomies.ServerLocal, "Показать активные напоминания владельца"),
+            new("reminder.cancel", "available", "server", AssistantActionTaxonomies.ServerLocal, "Отменить конкретное найденное напоминание"),
             new("navigation.open_vass", context.SupportsExternalActions ? "available" : "unavailable", "client", AssistantActionTaxonomies.Navigation, "Развернуть Vass; клиент подтверждает только передачу команды в handler"),
             new("youtube.search", context.SupportsExternalActions ? "available" : "unavailable", "client", AssistantActionTaxonomies.External, "Открыть разрешенный поиск YouTube; не подтверждает воспроизведение"),
             new("youtube.watch", context.SupportsExternalActions ? "available" : "unavailable", "client", AssistantActionTaxonomies.External, "Открыть конкретный валидный ролик YouTube; не подтверждает воспроизведение"),
             new("provider.web_search", "available", "provider", AssistantActionTaxonomies.ProviderHosted, "Провайдер может использовать web search внутри ответа; это не действие на устройстве"),
             new("visual.input", context.HasVisualAttachment ? "attached" : "user_control_only", "client", AssistantActionTaxonomies.UserControl, "Камера, галерея и share доступны только пользователю через UI"),
-            new("screen.analysis", context.SupportsScreenAnalysis ? "available_with_consent" : "unavailable", "client", AssistantActionTaxonomies.UserControl, "Снимок экрана требует системного согласия")
+            new("screen.analysis", context.SupportsScreenAnalysis ? "available_with_consent" : "unavailable", "client", AssistantActionTaxonomies.UserControl, "Снимок экрана требует системного согласия"),
+            new("capability.help", "available", "server", AssistantActionTaxonomies.ServerLocal, "Кратко объяснить доступные возможности и следующий шаг")
         ]);
 
     public string BuildPromptManifest(AssistantRuntimeContext context)
@@ -67,6 +78,49 @@ public sealed class AssistantCapabilityRegistry
                "\nНе обещай действие, которого нет в manifest. Камера, галерея, файлы и screen capture запускаются только пользователем в UI. " +
                "Говори «я запомнила», «исправила» или «забыла» только когда в системном контексте есть подтвержденный receipt операции памяти.";
     }
+
+    public IReadOnlyList<AssistantCapabilityHelpItem> GetHelp(AssistantRuntimeContext context, string? topic = null)
+    {
+        var available = GetSnapshot(context).Capabilities
+            .Where(item => item.State is "available" or "available_with_consent" or "attached")
+            .Select(item => item.Id)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var items = new List<AssistantCapabilityHelpItem>
+        {
+            new("conversation", "Обычный разговор", "Можно говорить естественными фразами и уточнять предыдущий ответ.", ["Объясни это проще", "Продолжим с прошлого вопроса"], "Нажмите центральную кнопку или коснитесь аватара, чтобы завершить фразу раньше."),
+            new("memory", "Долгосрочная память", "По явной просьбе я формирую связанную запись, выбираю категорию и подтверждаю сохранение.", ["Запомни, что я предпочитаю утренние встречи", "Найди, что ты помнишь о моей поездке"], "В настройках есть экран «Память»: там можно просматривать, исправлять и удалять записи."),
+            new("reminders", "Напоминания", "Напоминания сохраняются на телефоне и срабатывают локально, даже без интернета.", ["Напомни завтра в девять позвонить маме", "Какие напоминания у меня есть?", "Отмени напоминание про звонок"], "В настройках есть экран «Напоминания» со списком и отменой."),
+            new("visual", "Фото и файлы", "Можно приложить фото, изображение, PDF или другой документ и попросить разобрать его.", ["Посмотри этот документ", "Что на этой фотографии?"], "Кнопка с плюсом рядом с разговором открывает камеру, галерею и выбор файла."),
+            new("share", "Получение из других приложений", "Ссылки, текст, изображения и документы можно отправить через системное «Поделиться» в Vass.", ["Вот ссылка, кратко объясни", "Запомни этот документ"], "В другом приложении выберите «Поделиться» и Vass; приложение откроется с подготовленным вложением."),
+            new("screen", "Снимок экрана", "По голосовой просьбе я запрошу один снимок текущего экрана. Android всегда покажет системное подтверждение.", ["Сделай снимок экрана и объясни", "Посмотри, почему здесь ошибка"], "После подтверждения Vass вернется на экран и сообщит, что снимок получен."),
+            new("youtube", "YouTube", "Могу открыть поиск или конкретное видео в YouTube, когда есть точный запрос или ссылка.", ["Найди на YouTube лекцию о космосе", "Открой это видео"], "Во время видео Vass ставит слушание на паузу; вернитесь в Vass или коснитесь overlay, чтобы продолжить."),
+            new("overlay", "Плавающий режим", "Небольшой аватар может оставаться поверх других приложений, чтобы быстро вернуться к Vass или поставить разговор на паузу.", ["Разверни Vass обратно"], "В настройках включите «Поверх других приложений»; касание открывает Vass, долгое нажатие ставит разговор на паузу."),
+        };
+
+        items = items.Where(item => IsHelpAvailable(item.Id, available)).ToList();
+        if (string.IsNullOrWhiteSpace(topic)) return items;
+
+        var needle = topic.Trim().ToLowerInvariant();
+        var matches = items.Where(item =>
+                item.Id.Contains(needle, StringComparison.OrdinalIgnoreCase) ||
+                item.Title.Contains(needle, StringComparison.OrdinalIgnoreCase) ||
+                item.Description.Contains(needle, StringComparison.OrdinalIgnoreCase) ||
+                item.Examples.Any(example => example.Contains(needle, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+        return matches.Count > 0 ? matches : items;
+    }
+
+    private static bool IsHelpAvailable(string id, ISet<string> available) => id switch
+    {
+        "conversation" or "share" or "visual" => true,
+        "memory" => available.Contains("memory.remember"),
+        "reminders" => available.Contains("reminder.list"),
+        "screen" => available.Contains("screen.analysis"),
+        "youtube" => available.Contains("youtube.search") || available.Contains("youtube.watch"),
+        "overlay" => available.Contains("navigation.open_vass"),
+        _ => false
+    };
 
     public static string SerializeContentFreeSnapshot(AssistantCapabilitySnapshot snapshot) =>
         JsonSerializer.Serialize(snapshot);

@@ -66,14 +66,21 @@ public sealed class AssistantToolPlannerService
 
                             Ты управляешь только объявленными инструментами Vass. Вызывай
                             инструмент, когда пользователь явно просит выполнить действие
-                            или получить данные: сохранить/найти/исправить память, сделать
-                            одноразовое или периодическое напоминание, разовый снимок экрана,
+                            или получить данные: сохранить/найти/исправить память, управлять
+                            напоминаниями, объяснить возможности, сделать разовый снимок экрана,
                             развернуть Vass или открыть YouTube.
                             Сам выбирай инструмент по смыслу фразы, а не по отдельным
                             словам. Не вызывай инструмент при обычном разговоре.
                             Если к текущей реплике уже приложено изображение или документ
                             и пользователь просит разобрать именно его, используй это
                             вложение, а не запрашивай второй снимок экрана.
+                            Если пользователь явно просит запомнить текущий документ или
+                            изображение, вызови memory_remember с осмысленным названием или
+                            кратким содержанием и saveCurrentAttachment=true. Никогда не
+                            сохраняй вложение в память без прямой просьбы пользователя.
+                            Для memory_remember формируй связную запись по смыслу всего
+                            контекста, а не копируй команду пользователя. Для ссылок сохраняй
+                            полный URL и понятное назначение ссылки.
                             Когда сервер вернёт результат инструмента, используй именно его:
                             можешь вызвать следующий необходимый инструмент либо дай короткий
                             естественный ответ пользователю. Никогда не выдумывай receipt.
@@ -170,11 +177,14 @@ public sealed class AssistantToolPlannerService
         new { name = "memory_list", description = "Показывает недавние записи долгосрочной памяти.", parameters = EmptyObjectSchema() },
         new { name = "memory_search", description = "Ищет в долгосрочной памяти по смыслу запроса пользователя.", parameters = ObjectSchema(new { query = StringProperty("Короткий поисковый запрос.") }, ["query"]) },
         new { name = "conversation_search", description = "Ищет в собственной прошлой истории диалогов пользователя и возвращает короткие фрагменты с датой и message ID. Используй, когда пользователь явно просит вспомнить прежний разговор. query и диапазон дат можно сочетать; для «вчера/позавчера» передай fromDateLocal и toDateLocal как включительные даты yyyy-MM-dd, вычисленные из текущего локального времени. Если предмет поиска и дата неясны, сначала задай уточняющий вопрос.", parameters = ObjectSchema(new { query = StringProperty("Необязательные ключевые слова или короткий смысл прежнего разговора."), fromDateLocal = StringProperty("Необязательная начальная локальная дата yyyy-MM-dd, включительно."), toDateLocal = StringProperty("Необязательная конечная локальная дата yyyy-MM-dd, включительно.") }, []) },
-        new { name = "memory_remember", description = "Сохраняет одну связанную, осмысленную запись в долгосрочную память только по явной просьбе пользователя. Для ссылки сохрани URL полностью.", parameters = ObjectSchema(new { text = StringProperty("Готовая осмысленная запись; не команда и не местоимение.") }, ["text"]) },
-        new { name = "memory_correct", description = "Исправляет найденную запись памяти. Сначала получи ID через memory_search или memory_list.", parameters = ObjectSchema(new { memoryId = StringProperty("UUID записи."), text = StringProperty("Новая осмысленная формулировка.") }, ["memoryId", "text"]) },
+        new { name = "memory_remember", description = "Сохраняет одну связанную, осмысленную запись в долгосрочную память только по явной просьбе пользователя. Для ссылки сохрани URL полностью и объясни, что это за ссылка. Для текущего приложенного документа или изображения ставь saveCurrentAttachment=true только при явной просьбе сохранить вложение.", parameters = ObjectSchema(new { text = StringProperty("Готовая осмысленная запись; не команда и не местоимение."), category = StringProperty("Одна категория: profile, family, contacts, health, medications, allergies, habits, work, education, finance, home, pets, shopping, recipes, food, travel, transport, events, tasks, projects, hobbies, books, films, music, games, technology, links, documents, other."), saveCurrentAttachment = BooleanProperty("true только если пользователь явно просит сохранить приложенный к этой реплике документ или изображение.") }, ["text"]) },
+        new { name = "memory_correct", description = "Исправляет найденную запись памяти. Сначала получи ID через memory_search или memory_list.", parameters = ObjectSchema(new { memoryId = StringProperty("UUID записи."), text = StringProperty("Новая осмысленная формулировка."), category = StringProperty("Необязательная новая категория из списка memory_remember.") }, ["memoryId", "text"]) },
         new { name = "memory_forget", description = "Удаляет одну конкретную найденную запись памяти. Сначала получи ID через memory_search или memory_list.", parameters = ObjectSchema(new { memoryId = StringProperty("UUID записи.") }, ["memoryId"]) },
         new { name = "reminder_create", description = "Создает одно локальное напоминание только по явной просьбе пользователя. Передавай короткий текст задачи и точный будущий local date-time в ISO формате yyyy-MM-ddTHH:mm:ss. Если времени недостаточно, сначала задай уточняющий вопрос, а не вызывай инструмент.", parameters = ObjectSchema(new { text = StringProperty("Короткая задача без слов 'напомни мне'."), dueAtLocal = StringProperty("Будущий локальный момент в формате yyyy-MM-ddTHH:mm:ss.") }, ["text", "dueAtLocal"]) },
         new { name = "periodic_reminder_create", description = "Создает одно периодическое локальное напоминание только по явной просьбе и только если manifest показывает reminder.periodic=available. Передавай ближайший точный первый запуск startAtLocal и RRULE без префикса RRULE:. V1 поддерживает только FREQ=DAILY; FREQ=WEEKLY с одним BYDAY; FREQ=MONTHLY для дня 1..28; FREQ=YEARLY кроме 29 февраля; FREQ=HOURLY с INTERVAL 1..168; FREQ=MINUTELY с INTERVAL 15..10080. Для HOURLY/MINUTELY startAtLocal должен быть ровно через один interval от текущего времени. COUNT, UNTIL, несколько BYDAY и INTERVAL>1 для календарных правил не поддерживаются — сначала уточни или честно сообщи ограничение.", parameters = ObjectSchema(new { text = StringProperty("Короткая задача без слов 'напоминай мне'."), startAtLocal = StringProperty("Ближайший первый локальный запуск yyyy-MM-ddTHH:mm:ss; секунды 00."), rrule = StringProperty("Поддерживаемая строка iCalendar RRULE без префикса, например FREQ=WEEKLY;BYDAY=SU или FREQ=HOURLY;INTERVAL=2.") }, ["text", "startAtLocal", "rrule"]) },
+        new { name = "reminder_list", description = "Показывает активные напоминания пользователя. Используй, когда он спрашивает, что запланировано, или перед отменой, если конкретное напоминание неясно.", parameters = EmptyObjectSchema() },
+        new { name = "reminder_cancel", description = "Отменяет конкретное активное напоминание по ID. Сначала получи ID через reminder_list, если пользователь не назвал его однозначно.", parameters = ObjectSchema(new { reminderId = IntegerProperty("Числовой ID конкретного активного напоминания.") }, ["reminderId"]) },
+        new { name = "capability_help", description = "Возвращает краткие возможности Vass, примеры естественных фраз и подсказку, где это находится в интерфейсе. Используй, когда пользователь спрашивает, что ты умеешь или как выполнить действие.", parameters = ObjectSchema(new { topic = StringProperty("Необязательная тема: память, напоминания, фото, файл, share, экран, YouTube, overlay.") }, []) },
         new { name = "screen_capture_once", description = "Запрашивает один снимок текущего экрана только когда пользователь явно попросил сделать, посмотреть или объяснить экран. Android покажет системное подтверждение.", parameters = EmptyObjectSchema() },
         new { name = "open_vass", description = "Разворачивает Vass из overlay в обычное полноэкранное приложение.", parameters = EmptyObjectSchema() },
         new { name = "youtube_search", description = "Открывает поиск YouTube по запросу пользователя.", parameters = ObjectSchema(new { query = StringProperty("Что искать на YouTube, без слов открыть или найти.") }, ["query"]) },
@@ -183,5 +193,7 @@ public sealed class AssistantToolPlannerService
 
     private static object EmptyObjectSchema() => new { type = "object", properties = new { } };
     private static object StringProperty(string description) => new { type = "string", description };
+    private static object BooleanProperty(string description) => new { type = "boolean", description };
+    private static object IntegerProperty(string description) => new { type = "integer", description };
     private static object ObjectSchema(object properties, string[] required) => new { type = "object", properties, required };
 }

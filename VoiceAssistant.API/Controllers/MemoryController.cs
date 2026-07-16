@@ -22,8 +22,8 @@ public class MemoryController : ControllerBase
     }
 
     public record MemoryFactResponse(int Id, string Fact, DateTime CreatedAt, DateTime UpdatedAt, DateTime? LastRecalledAt);
-    public record RememberRequest(string Text, Guid? OperationId = null);
-    public record CorrectRequest(Guid Id, string Text, Guid? OperationId = null);
+    public record RememberRequest(string Text, string? Category = null, Guid? OperationId = null);
+    public record CorrectRequest(Guid Id, string Text, string? Category = null, Guid? OperationId = null);
     public record ForgetRequest(Guid Id, Guid? OperationId = null);
     public record PrepareClearRequest(Guid? OperationId = null);
     public record ClearRequest(Guid OperationId, string ConfirmationToken);
@@ -43,11 +43,23 @@ public class MemoryController : ControllerBase
 
     [HttpPost("remember")]
     public async Task<ActionResult<MemoryOperationResult>> Remember([FromBody] RememberRequest request, CancellationToken cancellationToken) =>
-        Ok(await _memory.RememberAsync(User.FindFirstValue(ClaimTypes.NameIdentifier)!, request.Text, null, request.OperationId, cancellationToken));
+        Ok(await _memory.RememberAsync(
+            User.FindFirstValue(ClaimTypes.NameIdentifier)!,
+            request.Text,
+            null,
+            request.OperationId,
+            cancellationToken,
+            request.Category));
 
     [HttpPost("correct")]
     public async Task<ActionResult<MemoryOperationResult>> Correct([FromBody] CorrectRequest request, CancellationToken cancellationToken) =>
-        Ok(await _memory.CorrectAsync(User.FindFirstValue(ClaimTypes.NameIdentifier)!, request.Id, request.Text, request.OperationId, cancellationToken));
+        Ok(await _memory.CorrectAsync(
+            User.FindFirstValue(ClaimTypes.NameIdentifier)!,
+            request.Id,
+            request.Text,
+            request.OperationId,
+            cancellationToken,
+            request.Category));
 
     [HttpPost("forget")]
     public async Task<ActionResult<MemoryOperationResult>> Forget([FromBody] ForgetRequest request, CancellationToken cancellationToken) =>

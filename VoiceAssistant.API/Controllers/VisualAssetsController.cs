@@ -100,6 +100,10 @@ public class VisualAssetsController : ControllerBase
             .AnyAsync(item => item.VisualAssetId == id, HttpContext.RequestAborted);
         if (isAttached) return Conflict(new { error = "Вложение уже прикреплено к сообщению." });
 
+        var isSavedInMemory = await _db.MemoryItems
+            .AnyAsync(item => item.VisualAssetId == id && item.Status == "active", HttpContext.RequestAborted);
+        if (isSavedInMemory) return Conflict(new { error = "Вложение сохранено в долгосрочной памяти." });
+
         _db.VisualAssets.Remove(asset);
         await _db.SaveChangesAsync(HttpContext.RequestAborted);
         try
