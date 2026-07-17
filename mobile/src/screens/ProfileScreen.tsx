@@ -167,6 +167,7 @@ export function ProfileScreen({ mode, onDone, onOpenMemory, onOpenReminders, onO
   const localVoices = voices?.filter((v) => isLikelyLocalVoice(v.identifier)) ?? [];
   const displayVoices = voices === undefined ? undefined : localVoices.length > 0 ? localVoices : voices;
   const showingNetworkVoices = displayVoices?.some((v) => !isLikelyLocalVoice(v.identifier)) ?? false;
+  const hasCustomAssistantName = assistantNameInput.trim().length > 0;
 
   const maleVoices = displayVoices?.filter((v) => genderTags[v.identifier] === 'male') ?? [];
   const femaleVoices = displayVoices?.filter((v) => genderTags[v.identifier] === 'female') ?? [];
@@ -255,16 +256,22 @@ export function ProfileScreen({ mode, onDone, onOpenMemory, onOpenReminders, onO
         <Pressable
           style={[styles.avatarOption, (avatarId ?? 'olga') !== 'male' && styles.avatarOptionSelected]}
           onPress={() => handleSelectAvatar('olga')}
+          accessibilityRole="button"
+          accessibilityLabel="Выбрать женский образ ассистента"
+          accessibilityState={{ selected: (avatarId ?? 'olga') !== 'male' }}
         >
-          <Image source={require('../../assets/avatar/olga_base.png')} style={styles.avatarThumb} />
-          <Text style={styles.hint}>Ольга</Text>
+          <Image source={require('../../assets/avatar/olga_base.png')} style={[styles.avatarThumb, hasCustomAssistantName && styles.avatarThumbWithoutLabel]} />
+          {!hasCustomAssistantName && <Text style={styles.hint}>Ольга</Text>}
         </Pressable>
         <Pressable
           style={[styles.avatarOption, avatarId === 'male' && styles.avatarOptionSelected]}
           onPress={() => handleSelectAvatar('male')}
+          accessibilityRole="button"
+          accessibilityLabel="Выбрать мужской образ ассистента"
+          accessibilityState={{ selected: avatarId === 'male' }}
         >
-          <Image source={require('../../assets/avatar/male_base.png')} style={styles.avatarThumb} />
-          <Text style={styles.hint}>Максим</Text>
+          <Image source={require('../../assets/avatar/male_base.png')} style={[styles.avatarThumb, hasCustomAssistantName && styles.avatarThumbWithoutLabel]} />
+          {!hasCustomAssistantName && <Text style={styles.hint}>Максим</Text>}
         </Pressable>
       </View>
       {avatarSwitchError && <Text style={styles.error}>{avatarSwitchError}</Text>}
@@ -463,6 +470,9 @@ const styles = StyleSheet.create({
     height: 72,
     borderRadius: 36,
     marginBottom: 8,
+  },
+  avatarThumbWithoutLabel: {
+    marginBottom: 0,
   },
   voiceGroupLabel: {
     fontSize: 14,

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -22,6 +22,7 @@ export function LoginScreen() {
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const passwordInputRef = useRef<TextInput>(null);
 
   if (approvalPendingEmail !== null) {
     return <RegistrationPendingScreen email={approvalPendingEmail} onBack={dismissApprovalPending} />;
@@ -74,22 +75,45 @@ export function LoginScreen() {
         </>
       ) : (
         <>
-          <TextInput
-            style={styles.input}
-            placeholder="Email"
-            autoCapitalize="none"
-            keyboardType="email-address"
-            value={email}
-            onChangeText={setEmail}
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Пароль"
-            secureTextEntry
-            autoCapitalize="none"
-            value={password}
-            onChangeText={setPassword}
-          />
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>E-mail</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="example@example.com"
+              placeholderTextColor="#6b7280"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="email"
+              textContentType="username"
+              importantForAutofill="yes"
+              keyboardType="email-address"
+              returnKeyType="next"
+              accessibilityLabel="E-mail"
+              value={email}
+              onChangeText={setEmail}
+              onSubmitEditing={() => passwordInputRef.current?.focus()}
+            />
+          </View>
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>Пароль</Text>
+            <TextInput
+              ref={passwordInputRef}
+              style={styles.input}
+              placeholder="Введите пароль"
+              placeholderTextColor="#6b7280"
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+              textContentType={mode === 'register' ? 'newPassword' : 'password'}
+              importantForAutofill="yes"
+              returnKeyType="go"
+              accessibilityLabel="Пароль"
+              value={password}
+              onChangeText={setPassword}
+              onSubmitEditing={() => void handleSubmit()}
+            />
+          </View>
         </>
       )}
 
@@ -162,7 +186,15 @@ const styles = StyleSheet.create({
     padding: 14,
     fontSize: 16,
     color: '#111827',
-    marginBottom: 12,
+  },
+  fieldGroup: {
+    marginBottom: 16,
+  },
+  fieldLabel: {
+    color: '#111827',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 8,
   },
   codeInput: {
     fontSize: 28,
