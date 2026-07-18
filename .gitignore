@@ -29,5 +29,9 @@ Thumbs.db
 mobile-builds/
 *.apk
 
+## Android beta binaries are uploaded to the VPS release directory after CI.
+releases/*.apk
+releases/*.sha256
+
 ## Brainstorming visual companion (local scratch, never committed)
 .superpowers/

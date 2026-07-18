@@ -114,23 +114,14 @@ public class ChatController : ControllerBase
         return true;
     }
 
-    // The feature may be enabled globally after its private rollout. Until
-    // then, the optional allowlist keeps a new primary-model audio path
-    // observable on a known account without changing every user's turn.
-    private bool IsAudioCoreAgentEnabledFor(string? email)
-    {
-        if (!_config.GetValue("Features:AudioCoreAgentEnabled", false)) return false;
+    // AudioCore is the production voice path for every account. The two
+    // global switches remain only as a fast operational rollback if a
+    // provider incident affects all audio turns; there is no per-user gate.
+    private bool IsAudioCoreAgentEnabled() =>
+        _config.GetValue("Features:AudioCoreAgentEnabled", false);
 
-        var allowlist = _config["Features:AudioCoreAgentAllowedEmails"];
-        if (string.IsNullOrWhiteSpace(allowlist)) return true;
-
-        return allowlist
-            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Any(item => string.Equals(item, email, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private bool IsAudioCorePlannerBypassEnabledFor(string? email) =>
-        IsAudioCoreAgentEnabledFor(email) &&
+    private bool IsAudioCorePlannerBypassEnabled() =>
+        IsAudioCoreAgentEnabled() &&
         _config.GetValue("Features:AudioCoreAgentSkipPlannerEnabled", false);
 
     // Kept as a public compatibility seam for existing security tests and
@@ -354,7 +345,7 @@ public class ChatController : ControllerBase
             validatedAudioFileName = req.AudioFileName;
 
             var sw = Stopwatch.StartNew();
-            if (IsAudioCoreAgentEnabledFor(user.Email))
+            if (IsAudioCoreAgentEnabled())
             {
                 audioCoreResult = await _audioCoreTranscription.TranscribeAsync(filePath, geminiKey, HttpContext.RequestAborted);
                 sw.Stop();
@@ -638,7 +629,7 @@ public class ChatController : ControllerBase
                                  audioCoreResult is { RequiresTool: false } &&
                                  visualAsset is null &&
                                  sharedContent is null &&
-                                 IsAudioCorePlannerBypassEnabledFor(user.Email);
+                                 IsAudioCorePlannerBypassEnabled();
         var agentStopwatch = Stopwatch.StartNew();
         AssistantAgentTurnResult agentTurn;
         if (bypassAgentPlanner)

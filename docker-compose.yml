@@ -16,8 +16,13 @@ services:
       - Admin__Email=${ADMIN_EMAIL:-}
       - Features__LongTermMemoryEnabled=${LONG_TERM_MEMORY_ENABLED:-true}
       - Features__AudioCoreAgentEnabled=${AUDIO_CORE_AGENT_ENABLED:-false}
-      - Features__AudioCoreAgentAllowedEmails=${AUDIO_CORE_AGENT_ALLOWED_EMAILS:-}
       - Features__AudioCoreAgentSkipPlannerEnabled=${AUDIO_CORE_AGENT_SKIP_PLANNER_ENABLED:-false}
+      - MobileUpdates__Android__LatestVersion=${MOBILE_UPDATE_ANDROID_LATEST_VERSION:-}
+      - MobileUpdates__Android__LatestVersionCode=${MOBILE_UPDATE_ANDROID_LATEST_VERSION_CODE:-0}
+      - MobileUpdates__Android__MinimumSupportedVersionCode=${MOBILE_UPDATE_ANDROID_MIN_SUPPORTED_VERSION_CODE:-0}
+      - MobileUpdates__Android__DownloadUrl=${MOBILE_UPDATE_ANDROID_DOWNLOAD_URL:-}
+      - MobileUpdates__Android__Sha256=${MOBILE_UPDATE_ANDROID_SHA256:-}
+      - MobileUpdates__Android__ReleaseNotes=${MOBILE_UPDATE_ANDROID_RELEASE_NOTES:-}
       # speaker-id below is opt-in (profiles: ["speaker-id"], not started by
       # `docker compose up` on its own) -- this hostname is only ever dialed
       # if Features__SpeakerIdentificationEnabled is ALSO set to true
@@ -99,6 +104,7 @@ services:
       - "127.0.0.1:4001:80"
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./releases:/var/www/releases:ro
     depends_on:
       api:
         condition: service_healthy

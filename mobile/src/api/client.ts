@@ -40,6 +40,7 @@ export async function setToken(next: string | null): Promise<void> {
 }
 
 const ONBOARDING_DISMISSED_KEY = 'vass_onboarding_dismissed';
+const SKIPPED_ANDROID_UPDATE_VERSION_KEY = 'vass_skipped_android_update_version_code';
 
 // Whether the user has ever gotten through (saved or skipped) the profile
 // setup screen — separate from whether displayName is actually set, since
@@ -65,6 +66,25 @@ export class ApiError extends Error {
   constructor(message: string, public readonly status?: number, public readonly code?: string) {
     super(message);
     this.name = 'ApiError';
+  }
+}
+
+// Optional releases may be dismissed once. The stored value is the target
+// versionCode, so a later release immediately becomes visible again without
+// needing any migration or a "clear skipped updates" setting.
+export async function isAndroidUpdateSkipped(versionCode: number): Promise<boolean> {
+  try {
+    return (await SecureStore.getItemAsync(SKIPPED_ANDROID_UPDATE_VERSION_KEY)) === String(versionCode);
+  } catch {
+    return false;
+  }
+}
+
+export async function skipAndroidUpdate(versionCode: number): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(SKIPPED_ANDROID_UPDATE_VERSION_KEY, String(versionCode));
+  } catch {
+    // no-op on platforms without a working SecureStore (web preview only)
   }
 }
 
@@ -249,6 +269,17 @@ export interface CapabilityHelpItem {
   interfaceHint: string;
 }
 
+export interface AndroidAppUpdate {
+  updateAvailable: boolean;
+  mandatory: boolean;
+  latestVersion: string | null;
+  latestVersionCode: number;
+  minimumSupportedVersionCode: number;
+  downloadUrl: string | null;
+  sha256: string | null;
+  releaseNotes: string | null;
+}
+
 // Not `extends ChatSession` — GET /chat/sessions/{id} (unlike the list
 // endpoint) doesn't return the session's own createdAt, only each
 // message's (see ChatController.cs's GetSession).
@@ -308,6 +339,9 @@ export const api = {
     }),
 
   me: () => request<CurrentUser>('/auth/me'),
+
+  getAndroidAppUpdate: (currentVersionCode: number): Promise<AndroidAppUpdate> =>
+    request<AndroidAppUpdate>(`/app-updates/android?currentVersionCode=${encodeURIComponent(String(currentVersionCode))}`),
 
   getSessions: () => request<ChatSession[]>('/chat/sessions'),
 

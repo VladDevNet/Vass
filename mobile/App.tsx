@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { ActivityIndicator, AppState, StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -12,6 +13,7 @@ import { reconcileLocalReminders } from './src/reminders/localReminders';
 import { log } from './src/logging/remoteLogger';
 import { VassOverlay } from './modules/vass-overlay';
 import { ConversationRuntimeProvider } from './src/context/ConversationRuntimeContext';
+import { AppUpdateGate } from './src/updates/AppUpdateGate';
 
 function Root() {
   const { isLoading, user, displayName } = useAuth();
@@ -84,14 +86,23 @@ function Root() {
     );
   }
 
-  if (!user) return <LoginScreen />;
-  if (!displayName && !onboardingDismissed) {
-    return <ProfileScreen mode="onboarding" onDone={handleOnboardingDone} />;
+  let content: ReactNode;
+  if (!user) {
+    content = <LoginScreen />;
+  } else if (!displayName && !onboardingDismissed) {
+    content = <ProfileScreen mode="onboarding" onDone={handleOnboardingDone} />;
+  } else {
+    content = (
+      <ConversationRuntimeProvider>
+        <HomeScreen />
+      </ConversationRuntimeProvider>
+    );
   }
+
   return (
-    <ConversationRuntimeProvider>
-      <HomeScreen />
-    </ConversationRuntimeProvider>
+    <AppUpdateGate>
+      {content}
+    </AppUpdateGate>
   );
 }
 
