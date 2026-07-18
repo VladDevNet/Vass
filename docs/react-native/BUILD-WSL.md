@@ -104,8 +104,25 @@ unset _JAVA_OPTIONS   # если когда-то будет установлен
 ```bash
 cd ~/vass/mobile
 [ "$(ls node_modules 2>/dev/null | wc -l)" -lt 100 ] && npm install --no-audit --no-fund
+```
+
+### Обязательная генерация native-проекта перед release
+
+`mobile/android` намеренно не хранится в git: Expo генерирует его из
+`app.json` и config plugins. Поэтому перед **каждым** release нужно обновить
+его из текущего commit, иначе APK может получить старые `versionCode` и
+`versionName`, даже если `app.json` уже обновлён.
+
+```bash
+cd ~/vass/mobile
+npx expo prebuild --platform android --clean --no-install
 echo "sdk.dir=$HOME/Android/sdk" > android/local.properties
 ```
+
+Не редактируй `android/app/build.gradle` вручную как источник версии: чистый
+`prebuild` его перезапишет. Единственный источник версии для Android beta —
+`mobile/app.json`, а перед публикацией нужно проверить итоговый APK через
+`aapt dump badging`.
 
 ## 4. Debug vs release — какой APK ставить руками
 
