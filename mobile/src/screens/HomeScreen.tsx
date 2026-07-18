@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Power } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -20,6 +20,7 @@ import { ChatHistoryScreen } from './ChatHistoryScreen';
 import { MemoryScreen } from './MemoryScreen';
 import { RemindersScreen } from './RemindersScreen';
 import { CapabilityHelpScreen } from './CapabilityHelpScreen';
+import { LibraryScreen } from './LibraryScreen';
 import { VisualInputButton } from '../components/VisualInputButton';
 import { VisualSourceSheet } from '../components/VisualSourceSheet';
 import { PendingVisualPreview } from '../components/PendingVisualPreview';
@@ -61,6 +62,8 @@ export function HomeScreen() {
   const [showMemory, setShowMemory] = useState(false);
   const [showReminders, setShowReminders] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
+  const [libraryLaunch, setLibraryLaunch] = useState<{ requestId: number; artifactId: string | null } | null>(null);
   const [showVisualSources, setShowVisualSources] = useState(false);
   const [showEndConversation, setShowEndConversation] = useState(false);
   const [endingConversation, setEndingConversation] = useState(false);
@@ -77,6 +80,8 @@ export function HomeScreen() {
     forceFinalize,
     pauseConversation,
     endConversation,
+    libraryNavigation,
+    clearLibraryNavigation,
     micArmed,
     pendingVisual,
     visualStatus,
@@ -99,6 +104,18 @@ export function HomeScreen() {
   // greeting twice on a fresh install).
   useGreeting(micArmed && state === 'idle' && !!sessionId);
 
+  useEffect(() => {
+    if (!libraryNavigation) return;
+    setShowSettings(false);
+    setShowHistory(false);
+    setShowMemory(false);
+    setShowReminders(false);
+    setShowHelp(false);
+    setLibraryLaunch(libraryNavigation);
+    setShowLibrary(true);
+    clearLibraryNavigation(libraryNavigation.requestId);
+  }, [clearLibraryNavigation, libraryNavigation]);
+
   if (showSettings) {
     return <ProfileScreen
       mode="settings"
@@ -106,6 +123,7 @@ export function HomeScreen() {
       onOpenMemory={() => { setShowSettings(false); setShowMemory(true); }}
       onOpenReminders={() => { setShowSettings(false); setShowReminders(true); }}
       onOpenHelp={() => { setShowSettings(false); setShowHelp(true); }}
+      onOpenLibrary={() => { setShowSettings(false); setLibraryLaunch(null); setShowLibrary(true); }}
     />;
   }
 
@@ -119,6 +137,14 @@ export function HomeScreen() {
 
   if (showHelp) {
     return <CapabilityHelpScreen onDone={() => setShowHelp(false)} />;
+  }
+
+  if (showLibrary) {
+    return <LibraryScreen
+      onDone={() => { setShowLibrary(false); setLibraryLaunch(null); }}
+      initialArtifactId={libraryLaunch?.artifactId}
+      navigationRequestId={libraryLaunch?.requestId}
+    />;
   }
 
   if (showHistory && sessionId) {

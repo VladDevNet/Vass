@@ -60,6 +60,13 @@ public class AssistantToolPlannerServiceTests
         Assert.Contains("thoughtSignature", result.ModelContent!.Value.GetRawText());
         Assert.Contains("functionDeclarations", requestBody!);
         Assert.Contains("periodic_reminder_create", requestBody);
+        Assert.Contains("library_write", requestBody);
+        Assert.Contains("library_open", requestBody);
+
+        var capturedRequest = Assert.IsType<string>(requestBody);
+        using var requestDocument = JsonDocument.Parse(capturedRequest);
+        Assert.Equal(4096, requestDocument.RootElement.GetProperty("generationConfig")
+            .GetProperty("maxOutputTokens").GetInt32());
     }
 
     private static AssistantToolPlannerService CreatePlanner(HttpMessageHandler handler)

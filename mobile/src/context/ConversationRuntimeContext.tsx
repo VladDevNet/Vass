@@ -1,12 +1,20 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { AppState } from 'react-native';
-import { api } from '../api/client';
+import { api, type ExternalActionEvent } from '../api/client';
 import { useVoiceChat, type VoiceState } from '../hooks/useVoiceChat';
 import { useAuth } from './AuthContext';
 import { VassOverlay, type OverlayEvent, type SharedContentResult } from '../../modules/vass-overlay';
 import { log } from '../logging/remoteLogger';
 import { useVisualInput } from '../hooks/useVisualInput';
+import { getLibraryCatalogForAssistant, saveLibraryArtifact } from '../library/libraryStore';
 import type { PendingSharedText, PendingVisualInput, StageVisualAssetInput, VisualInputStatus, VisualSource } from '../visual/types';
+
+type LibraryActionEvent = Extract<ExternalActionEvent, { type: 'library_write' | 'library_open' }>;
+
+export interface LibraryNavigationRequest {
+  requestId: number;
+  artifactId: string | null;
+}
 
 interface ConversationRuntimeValue {
   sessionId: number | null;
@@ -17,10 +25,12 @@ interface ConversationRuntimeValue {
   error: string | null;
   micArmed: boolean;
   conversationEnded: boolean;
+  libraryNavigation: LibraryNavigationRequest | null;
   forceFinalize: () => void;
   pauseConversation: () => Promise<void>;
   resumeConversation: () => Promise<void>;
   endConversation: () => Promise<void>;
+  clearLibraryNavigation: (requestId: number) => void;
   announceSystemNotice: (text: string) => Promise<void>;
   prepareOverlayMode: () => Promise<void>;
   disableOverlayMode: (resumeWhenVisible: boolean) => Promise<void>;
@@ -42,9 +52,11 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [pendingSharedText, setPendingSharedText] = useState<PendingSharedText | null>(null);
+  const [libraryNavigation, setLibraryNavigation] = useState<LibraryNavigationRequest | null>(null);
   const visual = useVisualInput();
   const pendingSharedTextRef = useRef<PendingSharedText | null>(null);
   const screenCaptureConsentPendingRef = useRef(false);
+  const libraryRequestIdRef = useRef(0);
   const stageSharedText = useCallback((pending: PendingSharedText) => {
     pendingSharedTextRef.current = pending;
     setPendingSharedText(pending);
@@ -62,6 +74,36 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
       ? 'screen capture consent is pending'
       : 'screen capture consent finished');
   }, []);
+
+  const requestLibraryNavigation = useCallback((artifactId: string | null) => {
+    const requestId = ++libraryRequestIdRef.current;
+    setLibraryNavigation({ requestId, artifactId });
+    return requestId;
+  }, []);
+
+  const applyLibraryAction = useCallback(async (action: LibraryActionEvent): Promise<{ resultCode: string }> => {
+    if (action.type === 'library_write') {
+      const result = await saveLibraryArtifact(action.libraryArtifact);
+      requestLibraryNavigation(result.artifact.id);
+      await VassOverlay.openApp().catch(() => undefined);
+      log('info', 'library', 'local artifact saved from assistant action', {
+        artifactId: result.artifact.id,
+        revisionCount: result.artifact.revisions.length,
+        created: result.created,
+      });
+      return { resultCode: result.created ? 'library_created' : 'library_revision_saved' };
+    }
+
+    requestLibraryNavigation(action.artifactId);
+    await VassOverlay.openApp().catch(() => undefined);
+    log('info', 'library', 'library navigation requested by assistant', { artifactId: action.artifactId });
+    return { resultCode: action.artifactId ? 'library_artifact_opened' : 'library_catalog_opened' };
+  }, [requestLibraryNavigation]);
+
+  const clearLibraryNavigation = useCallback((requestId: number) => {
+    setLibraryNavigation((current) => current?.requestId === requestId ? null : current);
+  }, []);
+
   const runtime = useVoiceChat(sessionId, user?.id ?? null, {
     getPendingVisual: visual.getPendingVisual,
     consumePendingVisual: visual.consumePendingVisual,
@@ -69,6 +111,8 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
     getPendingSharedText,
     consumePendingSharedText,
     setScreenCaptureConsentPending,
+    getLibraryCatalog: getLibraryCatalogForAssistant,
+    applyLibraryAction,
   });
   const stateRef = useRef(runtime.state);
   const actionsRef = useRef(runtime);
@@ -318,10 +362,12 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
         error: runtime.error,
         micArmed: runtime.micArmed,
         conversationEnded: runtime.conversationEnded,
+        libraryNavigation,
         forceFinalize: runtime.forceFinalize,
         pauseConversation: runtime.pauseConversation,
         resumeConversation: runtime.resumeConversation,
         endConversation,
+        clearLibraryNavigation,
         announceSystemNotice: runtime.announceSystemNotice,
         prepareOverlayMode,
         disableOverlayMode,

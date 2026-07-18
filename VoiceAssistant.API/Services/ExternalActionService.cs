@@ -9,9 +9,27 @@ public static class ExternalActionTypes
     public const string OpenVass = "open_vass";
     public const string YouTubeSearch = "youtube_search";
     public const string YouTubeWatch = "youtube_watch";
+    public const string LibraryWrite = "library_write";
+    public const string LibraryOpen = "library_open";
 }
 
-public record ExternalActionCommand(string Type, string? Query = null, string? VideoId = null);
+// The HTML itself is deliberately carried only in the client action envelope.
+// ActionReceipts persist its type/status for diagnostics, never the document.
+public sealed record LibraryArtifactAction(
+    string? ArtifactId,
+    string Title,
+    string Kind,
+    string Html,
+    string? Summary,
+    IReadOnlyList<string> SourceUrls,
+    string? RevisionNote);
+
+public record ExternalActionCommand(
+    string Type,
+    string? Query = null,
+    string? VideoId = null,
+    LibraryArtifactAction? LibraryArtifact = null,
+    string? ArtifactId = null);
 
 public class ExternalActionService
 {

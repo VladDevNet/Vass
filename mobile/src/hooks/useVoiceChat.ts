@@ -30,6 +30,7 @@ import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
 import { executeExternalAction, ExternalActionExecutionError } from '../actions/externalActions';
 import { VassOverlay } from '../../modules/vass-overlay';
+import type { LibraryCatalogEntry } from '../library/types';
 import type { PendingSharedText, PendingVisualInput, StageVisualAssetInput } from '../visual/types';
 
 export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking' | 'paused';
@@ -41,7 +42,11 @@ interface VisualTurnBridge {
   getPendingSharedText: () => PendingSharedText | null;
   consumePendingSharedText: (requestId: string) => void;
   setScreenCaptureConsentPending: (pending: boolean) => void;
+  getLibraryCatalog?: () => Promise<LibraryCatalogEntry[]>;
+  applyLibraryAction?: (action: LibraryActionEvent) => Promise<{ resultCode: string }>;
 }
+
+type LibraryActionEvent = Extract<ExternalActionEvent, { type: 'library_write' | 'library_open' }>;
 
 class ScreenCaptureCancelledError extends Error {
   constructor() {
@@ -982,7 +987,7 @@ export function useVoiceChat(
           await cancelLocalReminder(reminder.id, ownerId);
         };
         const recordActionStatus = (
-          action: Parameters<typeof executeExternalAction>[0],
+          action: ExternalActionEvent,
           status: 'handler_dispatched' | 'failed' | 'cancelled',
           resultCode: string,
         ) => {
@@ -994,7 +999,7 @@ export function useVoiceChat(
               error: error instanceof Error ? error.message : String(error),
             }));
         };
-        const handleExternalAction = async (action: Parameters<typeof executeExternalAction>[0]) => {
+        const handleExternalAction = async (action: ExternalActionEvent) => {
           if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) {
             recordActionStatus(action, 'cancelled', 'turn_cancelled');
             return;
@@ -1014,6 +1019,17 @@ export function useVoiceChat(
           log('info', 'screen-capture', 'server requested one-shot screen frame');
         };
         const supportsScreenAnalysis = Platform.OS === 'android' && VassOverlay.isAvailable() && !visualAssetId;
+        const supportsLibrary = Boolean(
+          visualBridgeRef.current?.getLibraryCatalog && visualBridgeRef.current?.applyLibraryAction,
+        );
+        const libraryCatalog = supportsLibrary
+          ? await visualBridgeRef.current!.getLibraryCatalog!().catch((libraryError) => {
+              log('warn', 'library', 'could not load local catalog for assistant turn', {
+                error: libraryError instanceof Error ? libraryError.message : String(libraryError),
+              });
+              return [] as LibraryCatalogEntry[];
+            })
+          : undefined;
 
         if (fromShadow) {
           const { transcription } = await api.checkUtteranceComplete(uri, requestAbortController.signal);
@@ -1061,6 +1077,8 @@ export function useVoiceChat(
             clientTurnId,
             supportsExternalActions: true,
             supportsScreenAnalysis,
+            supportsLibrary,
+            libraryCatalog,
             visualAssetId,
             sharedContent,
           }, {
@@ -1092,6 +1110,8 @@ export function useVoiceChat(
               clientTurnId,
               supportsExternalActions: true,
               supportsScreenAnalysis,
+              supportsLibrary,
+              libraryCatalog,
               visualAssetId,
               sharedContent,
             },
@@ -1176,6 +1196,8 @@ export function useVoiceChat(
             clientTurnId,
             supportsExternalActions: true,
             supportsScreenAnalysis: false,
+            supportsLibrary,
+            libraryCatalog,
             visualAssetId,
           }, {
             onPreamble: handlePreamble,
@@ -1265,8 +1287,31 @@ export function useVoiceChat(
             log('info', 'external-action', 'listening suspended for external media', { stopTimedOut });
           }
           try {
-            const receipt = await executeExternalAction(pendingExternalAction);
-            recordActionStatus(pendingExternalAction, receipt.status, receipt.resultCode);
+            if (pendingExternalAction.type === 'library_write' || pendingExternalAction.type === 'library_open') {
+              const bridge = visualBridgeRef.current;
+              if (!bridge?.applyLibraryAction) {
+                throw new ExternalActionExecutionError('Библиотека недоступна в этой версии приложения.', 'library_handler_missing');
+              }
+              try {
+                const receipt = await bridge.applyLibraryAction(pendingExternalAction);
+                recordActionStatus(pendingExternalAction, 'handler_dispatched', receipt.resultCode);
+              } catch (error) {
+                log('error', 'library', 'could not apply library action on device', {
+                  actionType: pendingExternalAction.type,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+                throw new ExternalActionExecutionError(
+                  pendingExternalAction.type === 'library_write'
+                    ? 'Не удалось сохранить книгу в библиотеку.'
+                    : 'Не удалось открыть библиотеку.',
+                  'library_handler_failed',
+                  { cause: error },
+                );
+              }
+            } else {
+              const receipt = await executeExternalAction(pendingExternalAction);
+              recordActionStatus(pendingExternalAction, receipt.status, receipt.resultCode);
+            }
           } catch (err) {
             const resultCode = err instanceof ExternalActionExecutionError ? err.resultCode : 'handler_failed';
             recordActionStatus(pendingExternalAction, 'failed', resultCode);

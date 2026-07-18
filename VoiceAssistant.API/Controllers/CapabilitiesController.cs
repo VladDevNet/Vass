@@ -25,6 +25,7 @@ public class CapabilitiesController : ControllerBase
         [FromQuery] bool supportsPeriodicReminders,
         [FromQuery] bool supportsExternalActions,
         [FromQuery] bool supportsScreenAnalysis,
+        [FromQuery] bool supportsLibrary,
         [FromQuery] string? topic = null)
     {
         var context = new AssistantRuntimeContext(
@@ -32,7 +33,8 @@ public class CapabilitiesController : ControllerBase
             SupportsScreenAnalysis: supportsScreenAnalysis,
             SupportsExternalActions: supportsExternalActions,
             SupportsReminders: supportsReminders,
-            SupportsPeriodicReminders: supportsPeriodicReminders);
+            SupportsPeriodicReminders: supportsPeriodicReminders,
+            SupportsLibrary: supportsLibrary);
         return Ok(_capabilities.GetHelp(context, topic));
     }
 }

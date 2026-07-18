@@ -18,7 +18,7 @@ namespace VoiceAssistant.API.Controllers;
 public class ChatController : ControllerBase
 {
     private static readonly Regex InternalProtocolReplyPattern = new(
-        @"^\s*(?:(?:reminder_create|periodic_reminder_create|reminder_list|reminder_cancel|memory_status|memory_list|memory_search|memory_remember|memory_correct|memory_forget|conversation_search|capability_help|screen_capture_once|open_vass|youtube_search|youtube_watch)\s*[\(\{]|(?:search|function(?:Call|Response)?|tool(?:Call|Response)?)\s*\{)",
+        @"^\s*(?:(?:reminder_create|periodic_reminder_create|reminder_list|reminder_cancel|memory_status|memory_list|memory_search|memory_remember|memory_correct|memory_forget|conversation_search|library_list|library_write|library_open|capability_help|screen_capture_once|open_vass|youtube_search|youtube_watch)\s*[\(\{]|(?:search|function(?:Call|Response)?|tool(?:Call|Response)?)\s*\{)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private readonly AppDbContext _db;
@@ -161,6 +161,8 @@ public class ChatController : ControllerBase
     {
         ExternalActionTypes.OpenVass => "Возвращаюсь в Vass.",
         ExternalActionTypes.YouTubeWatch => "Открываю выбранное видео в YouTube.",
+        ExternalActionTypes.LibraryWrite => "Сохраняю книгу в вашу библиотеку.",
+        ExternalActionTypes.LibraryOpen => "Открываю вашу библиотеку.",
         _ => "Открываю поиск в YouTube."
     };
 
@@ -180,6 +182,50 @@ public class ChatController : ControllerBase
             ? messageText
             : $"{messageText}\n\nПользователь поделился следующим содержимым:\n{sharedContent}";
 
+    // The catalog is owned by the device and may contain model-authored text,
+    // so it is bounded and normalized before being placed in any prompt. The
+    // server stores neither this list nor its documents.
+    private static IReadOnlyList<AssistantLibraryCatalogItem> NormalizeLibraryCatalog(
+        IReadOnlyList<LibraryCatalogRequestItem>? catalog)
+    {
+        if (catalog is null || catalog.Count == 0) return [];
+        var items = new List<AssistantLibraryCatalogItem>();
+        var seen = new HashSet<Guid>();
+        foreach (var item in catalog.Take(20))
+        {
+            if (!Guid.TryParse(item.Id, out var id) || !seen.Add(id)) continue;
+            var title = NormalizeLibraryCatalogText(item.Title, 120);
+            if (string.IsNullOrWhiteSpace(title)) continue;
+            var kindCandidate = item.Kind?.Trim().ToLowerInvariant();
+            var kind = kindCandidate switch
+            {
+                "recipes" or "restaurants" or "entertainment" or "guide" or "other" => kindCandidate,
+                _ => "other"
+            };
+            items.Add(new AssistantLibraryCatalogItem(
+                id.ToString(),
+                title!,
+                kind,
+                NormalizeLibraryCatalogText(item.Summary, 600),
+                Math.Clamp(item.RevisionCount, 1, 50)));
+        }
+        return items;
+    }
+
+    private static string? NormalizeLibraryCatalogText(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var normalized = string.Join(' ', value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
+    }
+
+    public sealed record LibraryCatalogRequestItem(
+        string Id,
+        string Title,
+        string Kind,
+        string? Summary = null,
+        int RevisionCount = 1);
+
     public record SendRequest(
         int SessionId,
         string Message,
@@ -189,6 +235,8 @@ public class ChatController : ControllerBase
         bool SupportsExternalActions = false,
         Guid? VisualAssetId = null,
         bool SupportsScreenAnalysis = false,
+        bool SupportsLibrary = false,
+        IReadOnlyList<LibraryCatalogRequestItem>? LibraryCatalog = null,
         string? SharedContent = null,
         int ReminderProtocolVersion = 1,
         Guid? ClientTurnId = null);
@@ -476,7 +524,9 @@ public class ChatController : ControllerBase
             TimeZoneId: req.TimeZoneId,
             SupportsPeriodicReminders: supportsReminderDevice && req.ReminderProtocolVersion >= 2,
             ClientTurnId: req.ClientTurnId,
-            VisualAssetId: visualAsset?.Id);
+            VisualAssetId: visualAsset?.Id,
+            SupportsLibrary: req.SupportsLibrary,
+            LibraryCatalog: NormalizeLibraryCatalog(req.LibraryCatalog));
         var capabilitySnapshot = _capabilities.GetSnapshot(capabilityContext);
 
         // Save user message
@@ -668,7 +718,9 @@ public class ChatController : ControllerBase
                 externalAction.Type,
                 ActionReceiptService.GetTaxonomy(externalAction.Type) ?? AssistantActionTaxonomies.External,
                 externalAction.Query,
-                externalAction.VideoId);
+                externalAction.VideoId,
+                externalAction.LibraryArtifact,
+                externalAction.ArtifactId);
 
         // A normal stream is only a resilience fallback after a tool turn did
         // not produce a final provider reply. It receives verified receipts,
@@ -710,7 +762,9 @@ public class ChatController : ControllerBase
                     type = actionProposal.Type,
                     taxonomy = actionProposal.Taxonomy,
                     query = actionProposal.Query,
-                    videoId = actionProposal.VideoId
+                    videoId = actionProposal.VideoId,
+                    libraryArtifact = actionProposal.LibraryArtifact,
+                    artifactId = actionProposal.ArtifactId
                 }
             });
             await Response.WriteAsync($"data: {actionData}\n\n");

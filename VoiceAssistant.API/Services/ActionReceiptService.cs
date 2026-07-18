@@ -22,7 +22,14 @@ public static class ActionReceiptStatuses
     public const string Cancelled = "cancelled";
 }
 
-public sealed record ActionProposal(Guid ActionId, string Type, string Taxonomy, string? Query, string? VideoId);
+public sealed record ActionProposal(
+    Guid ActionId,
+    string Type,
+    string Taxonomy,
+    string? Query,
+    string? VideoId,
+    LibraryArtifactAction? LibraryArtifact = null,
+    string? ArtifactId = null);
 public sealed record ActionReceiptResponse(Guid ActionId, string Type, string Taxonomy, string Status, string? ResultCode);
 
 public sealed class ActionReceiptService
@@ -39,6 +46,7 @@ public sealed class ActionReceiptService
     {
         ExternalActionTypes.OpenVass => AssistantActionTaxonomies.Navigation,
         ExternalActionTypes.YouTubeSearch or ExternalActionTypes.YouTubeWatch => AssistantActionTaxonomies.External,
+        ExternalActionTypes.LibraryWrite or ExternalActionTypes.LibraryOpen => AssistantActionTaxonomies.UserControl,
         _ => null
     };
 

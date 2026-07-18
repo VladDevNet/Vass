@@ -43,6 +43,9 @@ public class AudioCoreTranscriptionServiceTests
             Assert.Equal(Convert.ToBase64String(audio), inlineData.GetProperty("data").GetString());
             Assert.Equal("capture_user_utterance", document.RootElement.GetProperty("tools")[0]
                 .GetProperty("functionDeclarations")[0].GetProperty("name").GetString());
+            var instruction = document.RootElement.GetProperty("systemInstruction").GetProperty("parts")[0]
+                .GetProperty("text").GetString();
+            Assert.Contains("локальную библиотеку", instruction);
         }
         finally
         {

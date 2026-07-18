@@ -25,7 +25,7 @@ import {
 } from '../tts/systemSpeech';
 import type { AvatarId } from '../components/LayeredAvatar';
 import { OverlaySettings } from '../components/OverlaySettings';
-import { BellRing, BrainCircuit, CircleHelp } from 'lucide-react-native';
+import { BellRing, BookOpen, BrainCircuit, CircleHelp } from 'lucide-react-native';
 
 interface ProfileScreenProps {
   mode: 'onboarding' | 'settings';
@@ -37,9 +37,10 @@ interface ProfileScreenProps {
   onOpenMemory?: () => void;
   onOpenReminders?: () => void;
   onOpenHelp?: () => void;
+  onOpenLibrary?: () => void;
 }
 
-export function ProfileScreen({ mode, onDone, onOpenMemory, onOpenReminders, onOpenHelp }: ProfileScreenProps) {
+export function ProfileScreen({ mode, onDone, onOpenMemory, onOpenReminders, onOpenHelp, onOpenLibrary }: ProfileScreenProps) {
   const { displayName, assistantName, avatarId, refreshProfile, logout } = useAuth();
   const [name, setName] = useState(displayName ?? '');
   const [assistantNameInput, setAssistantNameInput] = useState(assistantName ?? '');
@@ -294,6 +295,10 @@ export function ProfileScreen({ mode, onDone, onOpenMemory, onOpenReminders, onO
           <Pressable style={[styles.memoryButton, styles.secondaryToolButton]} onPress={onOpenHelp}>
             <CircleHelp size={20} color="#4a6fa5" />
             <Text style={styles.memoryButtonText}>Возможности Vass</Text>
+          </Pressable>
+          <Pressable style={[styles.memoryButton, styles.secondaryToolButton]} onPress={onOpenLibrary}>
+            <BookOpen size={20} color="#4a6fa5" />
+            <Text style={styles.memoryButtonText}>Моя библиотека</Text>
           </Pressable>
         </>
       )}

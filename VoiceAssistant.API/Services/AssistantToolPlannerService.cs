@@ -68,7 +68,7 @@ public sealed class AssistantToolPlannerService
                             инструмент, когда пользователь явно просит выполнить действие
                             или получить данные: сохранить/найти/исправить память, управлять
                             напоминаниями, объяснить возможности, сделать разовый снимок экрана,
-                            развернуть Vass или открыть YouTube.
+                            развернуть Vass, открыть YouTube или создать/открыть книгу в локальной библиотеке.
                             Сам выбирай инструмент по смыслу фразы, а не по отдельным
                             словам. Не вызывай инструмент при обычном разговоре.
                             Если к текущей реплике уже приложено изображение или документ
@@ -84,13 +84,20 @@ public sealed class AssistantToolPlannerService
                             Когда сервер вернёт результат инструмента, используй именно его:
                             можешь вызвать следующий необходимый инструмент либо дай короткий
                             естественный ответ пользователю. Никогда не выдумывай receipt.
+                            Когда пользователь явно просит сделать или обновить подборку, книгу,
+                            меню, список рецептов, ресторанов или развлечений, используй
+                            library_write. В html передай полноценный красивый статический HTML
+                            документа с CSS внутри style: без JavaScript, ссылок, изображений,
+                            iframe, сетевых шрифтов и инструкций для приложения. Не выводи HTML
+                            в ответ пользователю. Для открытия существующей книги сначала получи
+                            её ID через library_list либо используй каталог из system context.
                             """
                     }
                 }
             },
             tools = new object[] { new { functionDeclarations = GetDeclarations() } },
             toolConfig = new { functionCallingConfig = new { mode = "AUTO" } },
-            generationConfig = new { maxOutputTokens = 512, thinkingConfig = new { thinkingBudget = 0 } }
+            generationConfig = new { maxOutputTokens = 4096, thinkingConfig = new { thinkingBudget = 0 } }
         };
 
         var url = $"https://generativelanguage.googleapis.com/v1beta/models/{Model}:generateContent?key={key}";
@@ -184,7 +191,10 @@ public sealed class AssistantToolPlannerService
         new { name = "periodic_reminder_create", description = "Создает одно периодическое локальное напоминание только по явной просьбе и только если manifest показывает reminder.periodic=available. Передавай ближайший точный первый запуск startAtLocal и RRULE без префикса RRULE:. V1 поддерживает только FREQ=DAILY; FREQ=WEEKLY с одним BYDAY; FREQ=MONTHLY для дня 1..28; FREQ=YEARLY кроме 29 февраля; FREQ=HOURLY с INTERVAL 1..168; FREQ=MINUTELY с INTERVAL 15..10080. Для HOURLY/MINUTELY startAtLocal должен быть ровно через один interval от текущего времени. COUNT, UNTIL, несколько BYDAY и INTERVAL>1 для календарных правил не поддерживаются — сначала уточни или честно сообщи ограничение.", parameters = ObjectSchema(new { text = StringProperty("Короткая задача без слов 'напоминай мне'."), startAtLocal = StringProperty("Ближайший первый локальный запуск yyyy-MM-ddTHH:mm:ss; секунды 00."), rrule = StringProperty("Поддерживаемая строка iCalendar RRULE без префикса, например FREQ=WEEKLY;BYDAY=SU или FREQ=HOURLY;INTERVAL=2.") }, ["text", "startAtLocal", "rrule"]) },
         new { name = "reminder_list", description = "Показывает активные напоминания пользователя. Используй, когда он спрашивает, что запланировано, или перед отменой, если конкретное напоминание неясно.", parameters = EmptyObjectSchema() },
         new { name = "reminder_cancel", description = "Отменяет конкретное активное напоминание по ID. Сначала получи ID через reminder_list, если пользователь не назвал его однозначно.", parameters = ObjectSchema(new { reminderId = IntegerProperty("Числовой ID конкретного активного напоминания.") }, ["reminderId"]) },
-        new { name = "capability_help", description = "Возвращает краткие возможности Vass, примеры естественных фраз и подсказку, где это находится в интерфейсе. Используй, когда пользователь спрашивает, что ты умеешь или как выполнить действие.", parameters = ObjectSchema(new { topic = StringProperty("Необязательная тема: память, напоминания, фото, файл, share, экран, YouTube, overlay.") }, []) },
+        new { name = "library_list", description = "Показывает оглавление локальной библиотеки пользователя: названия, ID, типы и количество версий. Используй перед открытием или обновлением, когда нужная книга не однозначна.", parameters = EmptyObjectSchema() },
+        new { name = "library_write", description = "Создает новую локальную HTML-книгу или следующую версию существующей. Вызывай только по явной просьбе создать, оформить, собрать или обновить книгу/подборку. html должен быть полноценным статическим документом без JavaScript, ссылок, внешних ресурсов и iframe.", parameters = ObjectSchema(new { title = StringProperty("Короткое понятное название книги."), kind = StringProperty("Один тип: recipes, restaurants, entertainment, guide, other."), html = StringProperty("Полный статический HTML с CSS в style, без внешних ресурсов."), summary = StringProperty("Короткое описание содержания для оглавления."), sourceUrls = StringArrayProperty("Необязательные HTTPS-источники, не более 12."), artifactId = StringProperty("Необязательный UUID существующей книги, если пользователь попросил новую версию."), revisionNote = StringProperty("Коротко, что изменилось в новой версии.") }, ["title", "kind", "html"]) },
+        new { name = "library_open", description = "Открывает оглавление локальной библиотеки или одну конкретную книгу по ее UUID. Используй при явной просьбе показать библиотеку или открыть книгу.", parameters = ObjectSchema(new { artifactId = StringProperty("Необязательный UUID книги из library_list или каталога. Без него открывается оглавление.") }, []) },
+        new { name = "capability_help", description = "Возвращает краткие возможности Vass, примеры естественных фраз и подсказку, где это находится в интерфейсе. Используй, когда пользователь спрашивает, что ты умеешь или как выполнить действие.", parameters = ObjectSchema(new { topic = StringProperty("Необязательная тема: память, напоминания, фото, файл, share, экран, YouTube, библиотека, overlay.") }, []) },
         new { name = "screen_capture_once", description = "Запрашивает один снимок текущего экрана только когда пользователь явно попросил сделать, посмотреть или объяснить экран. Android покажет системное подтверждение.", parameters = EmptyObjectSchema() },
         new { name = "open_vass", description = "Разворачивает Vass из overlay в обычное полноэкранное приложение.", parameters = EmptyObjectSchema() },
         new { name = "youtube_search", description = "Открывает поиск YouTube по запросу пользователя.", parameters = ObjectSchema(new { query = StringProperty("Что искать на YouTube, без слов открыть или найти.") }, ["query"]) },
@@ -193,6 +203,7 @@ public sealed class AssistantToolPlannerService
 
     private static object EmptyObjectSchema() => new { type = "object", properties = new { } };
     private static object StringProperty(string description) => new { type = "string", description };
+    private static object StringArrayProperty(string description) => new { type = "array", description, items = new { type = "string" } };
     private static object BooleanProperty(string description) => new { type = "boolean", description };
     private static object IntegerProperty(string description) => new { type = "integer", description };
     private static object ObjectSchema(object properties, string[] required) => new { type = "object", properties, required };

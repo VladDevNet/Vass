@@ -82,4 +82,36 @@ public class AssistantCapabilityRegistryTests
         Assert.DoesNotContain(restrictedHelp, item => item.Id == "screen");
         Assert.DoesNotContain(restrictedHelp, item => item.Id == "youtube");
     }
+
+    [Fact]
+    public void LibraryCapability_IsClientBound_AndCatalogIsMarkedUntrusted()
+    {
+        var registry = new AssistantCapabilityRegistry(new ConfigurationBuilder().Build());
+        var context = new AssistantRuntimeContext(
+            HasVisualAttachment: false,
+            SupportsScreenAnalysis: false,
+            SupportsExternalActions: true,
+            SupportsReminders: false,
+            SupportsLibrary: true,
+            LibraryCatalog:
+            [
+                new AssistantLibraryCatalogItem(
+                    "cfb4dfe9-0fae-45b9-a1fa-5a4701cb854b",
+                    "Ужин на неделю",
+                    "recipes",
+                    "Пять простых рецептов",
+                    2)
+            ]);
+
+        var available = registry.GetSnapshot(context);
+        var unavailable = registry.GetSnapshot(context with { SupportsLibrary = false });
+        var manifest = registry.BuildPromptManifest(context);
+        var help = registry.GetHelp(context);
+
+        Assert.Equal("available", available.Capabilities.Single(item => item.Id == "library.write").State);
+        Assert.Equal("unavailable", unavailable.Capabilities.Single(item => item.Id == "library.write").State);
+        Assert.Contains(help, item => item.Id == "library");
+        Assert.Contains("недоверенные метаданные", manifest);
+        Assert.Contains("cfb4dfe9-0fae-45b9-a1fa-5a4701cb854b", manifest);
+    }
 }

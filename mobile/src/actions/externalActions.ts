@@ -5,6 +5,11 @@ import type { ExternalActionEvent } from '../api/client';
 const YOUTUBE_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 const MAX_QUERY_LENGTH = 200;
 
+export type BrowserExternalActionEvent = Extract<
+  ExternalActionEvent,
+  { type: 'open_vass' | 'youtube_search' | 'youtube_watch' }
+>;
+
 export class ExternalActionExecutionError extends Error {
   constructor(public readonly userMessage: string, public readonly resultCode: string, options?: ErrorOptions) {
     super(userMessage, options);
@@ -17,7 +22,7 @@ export interface LocalActionReceipt {
   resultCode: 'navigation_handler_dispatched' | 'external_handler_dispatched';
 }
 
-export function buildExternalActionUrl(action: ExternalActionEvent): string | null {
+export function buildExternalActionUrl(action: BrowserExternalActionEvent): string | null {
   if (action.type === 'youtube_watch') {
     if (!action.videoId || !YOUTUBE_VIDEO_ID.test(action.videoId)) return null;
     return `https://www.youtube.com/watch?v=${action.videoId}`;
@@ -32,7 +37,7 @@ export function buildExternalActionUrl(action: ExternalActionEvent): string | nu
   return null;
 }
 
-export async function executeExternalAction(action: ExternalActionEvent): Promise<LocalActionReceipt> {
+export async function executeExternalAction(action: BrowserExternalActionEvent): Promise<LocalActionReceipt> {
   if (action.type === 'open_vass') {
     if (Platform.OS === 'android' && VassOverlay.isAvailable()) {
       try {

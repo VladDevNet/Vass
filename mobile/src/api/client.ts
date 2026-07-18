@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { fetch as expoFetch } from 'expo/fetch';
+import { isLibraryKind, type LibraryArtifactDraft, type LibraryCatalogEntry } from '../library/types';
 import { File, Paths } from 'expo-file-system';
 import { Blob as ExpoBlob } from 'expo-blob';
 
@@ -446,12 +447,14 @@ export const api = {
     supportsPeriodicReminders: boolean;
     supportsExternalActions: boolean;
     supportsScreenAnalysis: boolean;
+    supportsLibrary: boolean;
   }): Promise<CapabilityHelpItem[]> => {
     const query = new URLSearchParams({
       supportsReminders: String(params.supportsReminders),
       supportsPeriodicReminders: String(params.supportsPeriodicReminders),
       supportsExternalActions: String(params.supportsExternalActions),
       supportsScreenAnalysis: String(params.supportsScreenAnalysis),
+      supportsLibrary: String(params.supportsLibrary),
     });
     return request<CapabilityHelpItem[]>(`/capabilities/help?${query.toString()}`);
   },
@@ -655,6 +658,8 @@ export interface SendMessageParams {
   clientTurnId?: string;
   supportsExternalActions?: boolean;
   supportsScreenAnalysis?: boolean;
+  supportsLibrary?: boolean;
+  libraryCatalog?: LibraryCatalogEntry[];
   visualAssetId?: string;
   sharedContent?: string;
 }
@@ -663,7 +668,7 @@ export interface ScreenCaptureRequest {
   prompt: string;
 }
 
-export type ActionTaxonomy = 'navigation' | 'external';
+export type ActionTaxonomy = 'navigation' | 'external' | 'user_control';
 
 type ExternalActionBase = {
   actionId: string;
@@ -673,7 +678,9 @@ type ExternalActionBase = {
 export type ExternalActionEvent =
   | (ExternalActionBase & { type: 'open_vass'; taxonomy: 'navigation'; query?: null; videoId?: null })
   | (ExternalActionBase & { type: 'youtube_search'; taxonomy: 'external'; query: string; videoId?: null })
-  | (ExternalActionBase & { type: 'youtube_watch'; taxonomy: 'external'; query?: null; videoId: string });
+  | (ExternalActionBase & { type: 'youtube_watch'; taxonomy: 'external'; query?: null; videoId: string })
+  | (ExternalActionBase & { type: 'library_write'; taxonomy: 'user_control'; libraryArtifact: LibraryArtifactDraft })
+  | (ExternalActionBase & { type: 'library_open'; taxonomy: 'user_control'; artifactId: string | null });
 
 export interface ReminderEvent {
   id: number;
@@ -763,6 +770,32 @@ function parseTurnStats(value: unknown): ServerTurnStats | null {
   };
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function parseLibraryArtifact(value: unknown): LibraryArtifactDraft | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  const title = typeof candidate.title === 'string' ? candidate.title.trim() : '';
+  const html = typeof candidate.html === 'string' ? candidate.html.trim() : '';
+  if (!title || title.length > 120 || !html || html.length > 96_000 || !isLibraryKind(candidate.kind)) return null;
+  const artifactId = typeof candidate.artifactId === 'string' ? candidate.artifactId.trim() : null;
+  if (artifactId && !UUID_PATTERN.test(artifactId)) return null;
+  const sourceUrls = Array.isArray(candidate.sourceUrls)
+    ? candidate.sourceUrls.filter((item): item is string => typeof item === 'string' && /^https:\/\/[^\s]{1,2000}$/i.test(item)).slice(0, 12)
+    : [];
+  const summary = typeof candidate.summary === 'string' ? candidate.summary.trim().slice(0, 600) : null;
+  const revisionNote = typeof candidate.revisionNote === 'string' ? candidate.revisionNote.trim().slice(0, 220) : null;
+  return {
+    artifactId,
+    title,
+    kind: candidate.kind,
+    html,
+    summary,
+    sourceUrls,
+    revisionNote,
+  };
+}
+
 function parseExternalAction(value: unknown): ExternalActionEvent | null {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Record<string, unknown>;
@@ -775,6 +808,15 @@ function parseExternalAction(value: unknown): ExternalActionEvent | null {
   }
   if (candidate.type === 'youtube_watch' && candidate.taxonomy === 'external' && typeof candidate.videoId === 'string') {
     return { actionId: candidate.actionId, type: 'youtube_watch', taxonomy: 'external', videoId: candidate.videoId };
+  }
+  if (candidate.type === 'library_write' && candidate.taxonomy === 'user_control') {
+    const libraryArtifact = parseLibraryArtifact(candidate.libraryArtifact);
+    return libraryArtifact ? { actionId: candidate.actionId, type: 'library_write', taxonomy: 'user_control', libraryArtifact } : null;
+  }
+  if (candidate.type === 'library_open' && candidate.taxonomy === 'user_control') {
+    const artifactId = candidate.artifactId;
+    if (artifactId !== null && artifactId !== undefined && (typeof artifactId !== 'string' || !UUID_PATTERN.test(artifactId))) return null;
+    return { actionId: candidate.actionId, type: 'library_open', taxonomy: 'user_control', artifactId: typeof artifactId === 'string' ? artifactId : null };
   }
   return null;
 }

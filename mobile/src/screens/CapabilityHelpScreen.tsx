@@ -24,6 +24,7 @@ export function CapabilityHelpScreen({ onDone }: CapabilityHelpScreenProps) {
         supportsPeriodicReminders: isPhone,
         supportsExternalActions: isPhone,
         supportsScreenAnalysis: Platform.OS === 'android' && VassOverlay.isAvailable(),
+        supportsLibrary: isPhone,
       }));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось загрузить возможности');
