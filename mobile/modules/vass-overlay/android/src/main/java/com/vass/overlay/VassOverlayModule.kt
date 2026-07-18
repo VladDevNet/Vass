@@ -1,5 +1,6 @@
 package com.vass.overlay
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -172,6 +173,32 @@ class VassOverlayModule : Module() {
         .putBoolean(OverlayContract.PREF_ENABLED, false)
         .apply()
       sendServiceCommand(Intent(context, VassOverlayService::class.java).setAction(OverlayContract.ACTION_STOP_FROM_APP))
+    }
+
+    AsyncFunction("finishAppTask") {
+      val context = requireContext()
+      // Be self-contained: JS normally calls stop() first, but ending a
+      // conversation must still remove both foreground services if the task
+      // is closed while React is delayed or suspended.
+      context.getSharedPreferences(OverlayContract.PREFS, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(OverlayContract.PREF_ENABLED, false)
+        .apply()
+      context.stopService(Intent(context, VassMediaProjectionService::class.java))
+      context.stopService(Intent(context, VassOverlayService::class.java))
+
+      val activity = appContext.currentActivity
+      if (activity != null) {
+        activity.runOnUiThread { activity.finishAndRemoveTask() }
+      } else {
+        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        manager.appTasks
+          .firstOrNull { task ->
+            task.taskInfo.baseIntent.component?.packageName == context.packageName
+          }
+          ?.finishAndRemoveTask()
+      }
+      null
     }
   }
 

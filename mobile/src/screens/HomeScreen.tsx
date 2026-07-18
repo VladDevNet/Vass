@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Power } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useAuth } from '../context/AuthContext';
@@ -23,6 +24,7 @@ import { VisualInputButton } from '../components/VisualInputButton';
 import { VisualSourceSheet } from '../components/VisualSourceSheet';
 import { PendingVisualPreview } from '../components/PendingVisualPreview';
 import { PendingSharedTextPreview } from '../components/PendingSharedTextPreview';
+import { EndConversationModal } from '../components/EndConversationModal';
 import type { VisualSource } from '../visual/types';
 
 const SLEEP_AFTER_MS = 90_000;
@@ -60,6 +62,8 @@ export function HomeScreen() {
   const [showReminders, setShowReminders] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showVisualSources, setShowVisualSources] = useState(false);
+  const [showEndConversation, setShowEndConversation] = useState(false);
+  const [endingConversation, setEndingConversation] = useState(false);
   // Ошибка загрузки любого слоя LayeredAvatar — падаем на AvatarFace
   // на остаток сессии, без retry-петли. См. spec, «Обработка ошибок».
   const [assetsFailed, setAssetsFailed] = useState(false);
@@ -72,6 +76,7 @@ export function HomeScreen() {
     error,
     forceFinalize,
     pauseConversation,
+    endConversation,
     micArmed,
     pendingVisual,
     visualStatus,
@@ -154,6 +159,17 @@ export function HomeScreen() {
     void pickVisual(source);
   }
 
+  async function confirmEndConversation() {
+    if (endingConversation) return;
+    setEndingConversation(true);
+    try {
+      await endConversation();
+    } finally {
+      setEndingConversation(false);
+      setShowEndConversation(false);
+    }
+  }
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       <StatusBar style="light" />
@@ -170,13 +186,22 @@ export function HomeScreen() {
               <Text style={styles.identityPresence}>{PRESENCE_LABEL[state]}</Text>
             </View>
           </View>
-          <Pressable
-            style={styles.profileButton}
-            onPress={openSettings}
-            accessibilityLabel="Профиль"
-          >
-            <Text style={styles.profileGlyph}>👤</Text>
-          </Pressable>
+          <View style={styles.identityActions}>
+            <Pressable
+              style={styles.endConversationButton}
+              onPress={() => setShowEndConversation(true)}
+              accessibilityLabel="Завершить разговор"
+            >
+              <Power size={20} color="#FCA5A5" strokeWidth={2.25} />
+            </Pressable>
+            <Pressable
+              style={styles.profileButton}
+              onPress={openSettings}
+              accessibilityLabel="Профиль"
+            >
+              <Text style={styles.profileGlyph}>👤</Text>
+            </Pressable>
+          </View>
         </View>
 
         {!sleeping && (
@@ -236,6 +261,12 @@ export function HomeScreen() {
         visible={showVisualSources}
         onClose={() => setShowVisualSources(false)}
         onSelect={selectVisualSource}
+      />
+      <EndConversationModal
+        visible={showEndConversation}
+        busy={endingConversation}
+        onCancel={() => setShowEndConversation(false)}
+        onConfirm={() => void confirmEndConversation()}
       />
     </SafeAreaView>
   );
@@ -313,6 +344,21 @@ const styles = StyleSheet.create({
     color: '#F87171',
     marginBottom: 12,
     textAlign: 'center',
+  },
+  identityActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  endConversationButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(239,68,68,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(252,165,165,0.34)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   visualArea: {
     gap: 4,

@@ -89,7 +89,8 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, name: st
   }
 }
 
-async function captureOneShotScreenImage(requestId: string): Promise<string> {
+async function captureOneShotScreenImage(requestId: string, abortSignal?: AbortSignal): Promise<string> {
+  if (abortSignal?.aborted) throw new ScreenCaptureCancelledError();
   log('info', 'screen-capture', 'requesting Android screen capture consent', { requestId });
   await withTimeout(
     VassOverlay.requestScreenCapture(requestId),
@@ -103,6 +104,7 @@ async function captureOneShotScreenImage(requestId: string): Promise<string> {
   });
   const deadline = Date.now() + SCREEN_CAPTURE_RESULT_TIMEOUT_MS;
   while (Date.now() < deadline) {
+    if (abortSignal?.aborted) throw new ScreenCaptureCancelledError();
     const result = await VassOverlay.getScreenCaptureResult();
     if (result.requestId === requestId) {
       if (result.status === 'ready' && result.uri) {
@@ -346,6 +348,7 @@ export function useVoiceChat(
   const [transcript, setTranscript] = useState('');
   const [reply, setReply] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [conversationEnded, setConversationEnded] = useState(false);
   const recorder = useAudioRecorder(RECORDING_OPTIONS);
   const shadowRecorder = useAudioRecorder(RECORDING_OPTIONS);
 
@@ -428,6 +431,10 @@ export function useVoiceChat(
   // bargedInRef/firstSegmentInFlightRef already exist to close for their
   // own races. This is the same fix, for pause.
   const pausedRef = useRef(false);
+  // Unlike a normal pause, a completed conversation must never wake itself
+  // up from a delayed VAD tick, a pending SSE response, or an AppState
+  // foreground transition. It is cleared only by a later explicit launch.
+  const conversationEndedRef = useRef(false);
   // A successful YouTube launch deliberately suspends listening until the
   // user taps the paused overlay and Vass returns to the foreground. This
   // prevents phone-speaker audio from becoming a giant user utterance.
@@ -508,6 +515,10 @@ export function useVoiceChat(
   // a stale reply could get spoken over a mic that's already listening for
   // something else entirely. Found by independent review of this PR.
   const turnGenerationRef = useRef(0);
+  // Ending a conversation must interrupt every in-flight upload,
+  // transcription, and streaming response, including overlapping shadow
+  // continuations. A set is needed because there can be more than one.
+  const activeTurnAbortControllersRef = useRef<Set<AbortController>>(new Set());
   // A continuation re-sends the combined text through /chat/send, so the
   // router may legitimately emit the same action more than once within one
   // turn. Keep device side effects exactly-once until armMic starts the next
@@ -526,10 +537,17 @@ export function useVoiceChat(
   // via the normal end-of-turn path) so callers never need to know whether
   // someone else already armed it first.
   const rearmRecorderOnly = useCallback(async () => {
-    if (!mountedRef.current || recorderLiveRef.current) return;
+    if (!mountedRef.current || conversationEndedRef.current || recorderLiveRef.current) return;
     try {
       await recorder.prepareToRecordAsync();
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || conversationEndedRef.current) {
+        try {
+          await recorder.stop();
+        } catch {
+          // The freshly prepared recorder may already be releasing.
+        }
+        return;
+      }
       recorder.record();
       recorderLiveRef.current = true;
     } catch (err) {
@@ -565,6 +583,7 @@ export function useVoiceChat(
   const armShadowRecorder = useCallback(() => enqueueShadowOperation(async () => {
     if (
       !mountedRef.current ||
+      conversationEndedRef.current ||
       shadowRecorderDisabledRef.current ||
       shadowRecorderLiveRef.current ||
       stateRef.current !== 'thinking' ||
@@ -647,7 +666,7 @@ export function useVoiceChat(
   // startUserListening() on every re-entry to IDLE, rather than only
   // starting to capture once speech is already detected.
   const armMic = useCallback(async () => {
-    if (!mountedRef.current) return;
+    if (!mountedRef.current || conversationEndedRef.current) return;
     // Marks every segment still in flight from whatever turn just ended as
     // belonging to a dead turn — see turnGenerationRef's own comment.
     // Bumped unconditionally here, even if the re-arm below ends up
@@ -691,7 +710,7 @@ export function useVoiceChat(
   // is the ONE place allowed to call armMic() directly while paused — that's
   // the whole point of resuming when there's nothing left to resume speaking.
   const armMicUnlessPaused = useCallback(async () => {
-    if (pausedRef.current) return;
+    if (pausedRef.current || conversationEndedRef.current) return;
     await armMic();
   }, [armMic]);
 
@@ -743,12 +762,15 @@ export function useVoiceChat(
   // continuation alone, with no idea what came before it.
   const sendSegment = useCallback(
     async (fromShadow: boolean) => {
+      if (conversationEndedRef.current) return;
       const sid = sessionIdRef.current;
       // Captured up front, before any await — identifies which TURN this
       // segment belongs to (see turnGenerationRef's own comment). Distinct
       // from myGeneration below, which is captured later and identifies
       // this segment's standing WITHIN that turn.
       const myTurn = turnGenerationRef.current;
+      const requestAbortController = new AbortController();
+      activeTurnAbortControllersRef.current.add(requestAbortController);
       // Reset unconditionally, not just on a success path — this call itself
       // can be the turn AFTER a barge-in (the interrupting utterance's own
       // segment), and leaving a stale `true` here would make the finally
@@ -767,6 +789,12 @@ export function useVoiceChat(
         // goes inactive on its own and re-entry becomes structurally
         // impossible anyway.
         firstSegmentInFlightRef.current = false;
+      }
+
+      if (conversationEndedRef.current || myTurn !== turnGenerationRef.current) {
+        activeTurnAbortControllersRef.current.delete(requestAbortController);
+        log('info', 'turn', 'discarding captured segment after conversation ended', { fromShadow });
+        return;
       }
 
       // Re-check AFTER that (possibly slow, native) stop — the same race
@@ -788,11 +816,13 @@ export function useVoiceChat(
       // happens naturally, either via resumeConversation's own armMic()
       // fallback (nothing to resume) or the next real turn's armMic().
       if (pausedRef.current) {
+        activeTurnAbortControllersRef.current.delete(requestAbortController);
         log('info', 'turn', 'discarding captured segment — paused before it could be sent', { fromShadow });
         return;
       }
 
       if (!sid || !uri) {
+        activeTurnAbortControllersRef.current.delete(requestAbortController);
         if (!sid) setError('Сессия ещё не готова');
         await armMicUnlessPaused();
         return;
@@ -986,7 +1016,7 @@ export function useVoiceChat(
         const supportsScreenAnalysis = Platform.OS === 'android' && VassOverlay.isAvailable() && !visualAssetId;
 
         if (fromShadow) {
-          const { transcription } = await api.checkUtteranceComplete(uri);
+          const { transcription } = await api.checkUtteranceComplete(uri, requestAbortController.signal);
           if (myTurn !== turnGenerationRef.current) {
             // The TURN itself is already over (armMic() already ran for
             // a next one) — pendingSegmentsRef now belongs to whatever
@@ -1042,11 +1072,11 @@ export function useVoiceChat(
             onReminderCancelled: handleReminderCancelled,
             onExternalAction: handleExternalAction,
             onScreenCapture: handleScreenCapture,
-          });
+          }, requestAbortController.signal);
         } else {
           const uploadStartedAt = Date.now();
           log('info', 'turn', 'audio upload start');
-          const { fileName, sizeBytes } = await api.uploadAudio(uri);
+          const { fileName, sizeBytes } = await api.uploadAudio(uri, requestAbortController.signal);
           log('info', 'turn', 'audio upload completed', {
             elapsedMs: Date.now() - uploadStartedAt,
             ...(typeof sizeBytes === 'number' ? { sizeBytes } : {}),
@@ -1079,7 +1109,8 @@ export function useVoiceChat(
               onReminderCancelled: handleReminderCancelled,
               onExternalAction: handleExternalAction,
               onScreenCapture: handleScreenCapture,
-            }
+            },
+            requestAbortController.signal,
           );
         }
 
@@ -1104,7 +1135,7 @@ export function useVoiceChat(
           let screenUri: string;
           visualBridgeRef.current?.setScreenCaptureConsentPending(true);
           try {
-            screenUri = await captureOneShotScreenImage(nativeScreenCaptureRequestId);
+            screenUri = await captureOneShotScreenImage(nativeScreenCaptureRequestId, requestAbortController.signal);
           } finally {
             visualBridgeRef.current?.setScreenCaptureConsentPending(false);
           }
@@ -1154,7 +1185,7 @@ export function useVoiceChat(
             onPeriodicReminder: handleReminder,
             onReminderCancelled: handleReminderCancelled,
             onExternalAction: handleExternalAction,
-          });
+          }, requestAbortController.signal);
         }
 
         if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current || bargedInRef.current) {
@@ -1286,6 +1317,7 @@ export function useVoiceChat(
           await speakSystemNotice(message);
         }
       } finally {
+        activeTurnAbortControllersRef.current.delete(requestAbortController);
         if (nativeScreenCaptureRequestId) {
           await VassOverlay.clearScreenCaptureResult(nativeScreenCaptureRequestId).catch(() => undefined);
         }
@@ -1385,7 +1417,7 @@ export function useVoiceChat(
       // (see its comment), but bailing out here too avoids uselessly
       // starting a stopRecorderIfLive() call at all. Defense in depth,
       // same reasoning as handleSpeechStart's own guard below.
-      if (pausedRef.current) return;
+      if (pausedRef.current || conversationEndedRef.current) return;
       if (silenceDurationMs < CHECK_SILENCE_THRESHOLD_MS || firstSegmentInFlightRef.current) return;
       firstSegmentInFlightRef.current = true;
       if (activeSpeechMs < MIN_SPEECH_MS) {
@@ -1435,7 +1467,7 @@ export function useVoiceChat(
     // recheck to hook into, unlike sendSegment/armMic/onBeforeFirstSpeech/
     // resumeConversation — the whole body runs synchronously once
     // invoked, so the ONLY place to guard is the entry point).
-    if (pausedRef.current) return;
+    if (pausedRef.current || conversationEndedRef.current) return;
     if (stateRef.current === 'speaking') {
       bargedInRef.current = true;
       log('info', 'turn', 'barge-in: interrupted assistant');
@@ -1507,7 +1539,7 @@ export function useVoiceChat(
   // stateRef aren't reliably fresh enough for this — independent review
   // found the exact gap this closes.
   const pauseConversation = useCallback(async () => {
-    if (pausedRef.current) return;
+    if (pausedRef.current || conversationEndedRef.current) return;
     pausedRef.current = true;
     log('info', 'turn', 'paused by user', { fromState: state });
     pauseSpeaking();
@@ -1537,7 +1569,7 @@ export function useVoiceChat(
   // and both call rearmRecorderOnly(), which throws on a genuine
   // concurrent double-prepare.
   const resumeConversation = useCallback(async () => {
-    if (!pausedRef.current) return;
+    if (!pausedRef.current || conversationEndedRef.current) return;
     pausedRef.current = false;
     if (externalMediaWaitingRef.current) {
       externalMediaWaitingRef.current = false;
@@ -1599,6 +1631,7 @@ export function useVoiceChat(
   // state machine so no second recorder or turn is created.
   const configureBackgroundRecording = useCallback(
     async (enabled: boolean, resumeAfterConfiguration: boolean) => {
+      if (conversationEndedRef.current) return;
       const previous = backgroundRecordingEnabledRef.current;
       if (previous === enabled) {
         if (!enabled && !resumeAfterConfiguration && !pausedRef.current) {
@@ -1639,6 +1672,84 @@ export function useVoiceChat(
     [pauseConversation, resumeConversation],
   );
 
+  // This is intentionally stronger than pauseConversation: no pending work
+  // owns the runtime after this point. Bump both generations before any
+  // await, abort every network request, stop local speech/recorders, and
+  // leave the audio session without background-recording privileges. The
+  // context then stops the overlay and removes the Android task.
+  const endConversation = useCallback(async () => {
+    if (conversationEndedRef.current) return;
+
+    conversationEndedRef.current = true;
+    pausedRef.current = true;
+    externalMediaWaitingRef.current = false;
+    backgroundRecordingEnabledRef.current = false;
+    bargedInRef.current = true;
+    firstSegmentInFlightRef.current = true;
+    turnGenerationRef.current += 1;
+    segmentGenerationRef.current += 1;
+    pendingSegmentsRef.current.clear();
+    executedExternalActionsRef.current.clear();
+    for (const controller of activeTurnAbortControllersRef.current) controller.abort();
+    activeTurnAbortControllersRef.current.clear();
+
+    stopSpeaking();
+    setMicArmed(false);
+    setConversationEnded(true);
+    setState('paused');
+    log('info', 'turn', 'conversation ended by user');
+
+    const stopRuntime = Promise.allSettled([
+      stopRecorderIfLive(),
+      stopShadowRecorderIfLive(),
+      setAudioModeAsync({
+        playsInSilentMode: true,
+        allowsRecording: false,
+        interruptionMode: 'doNotMix',
+        shouldPlayInBackground: false,
+        allowsBackgroundRecording: false,
+      }),
+    ]);
+    await Promise.race([stopRuntime, waitFor(2_000)]);
+  }, [stopRecorderIfLive, stopShadowRecorderIfLive]);
+
+  // finishAndRemoveTask normally terminates the JS process. Android is free
+  // to keep it alive, though, so a manual launcher tap must still be able to
+  // start a clean new listening cycle in that same process. This function is
+  // called only after an AppState transition back to active, never as an
+  // automatic background resume.
+  const startConversationAfterExplicitLaunch = useCallback(async () => {
+    if (!conversationEndedRef.current || !mountedRef.current) return;
+
+    conversationEndedRef.current = false;
+    pausedRef.current = false;
+    externalMediaWaitingRef.current = false;
+    backgroundRecordingEnabledRef.current = false;
+    shadowRecorderDisabledRef.current = false;
+    bargedInRef.current = false;
+    firstSegmentInFlightRef.current = false;
+    setConversationEnded(false);
+    setError(null);
+
+    try {
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        allowsRecording: true,
+        interruptionMode: 'doNotMix',
+        shouldPlayInBackground: false,
+        allowsBackgroundRecording: false,
+      });
+      await armMic();
+      log('info', 'turn', 'conversation started after explicit app launch');
+    } catch (err) {
+      conversationEndedRef.current = true;
+      pausedRef.current = true;
+      setConversationEnded(true);
+      setState('paused');
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [armMic]);
+
   // Manual override: send whatever's been captured so far immediately,
   // regardless of the 1.2s pause timer — same shape as before, just calling
   // straight into sendSegment now that there's no separate ceiling function.
@@ -1650,6 +1761,7 @@ export function useVoiceChat(
   // long-press, not this short-tap handler, so the two gestures don't fight
   // over the same touch.
   const forceFinalize = useCallback(() => {
+    if (conversationEndedRef.current) return;
     if (state === 'paused') {
       void resumeConversation();
     } else if (state === 'speaking') {
@@ -1689,9 +1801,13 @@ export function useVoiceChat(
     transcript,
     reply,
     error,
+    conversationEnded,
+    isConversationEnded: () => conversationEndedRef.current,
     forceFinalize,
     pauseConversation,
     resumeConversation,
+    endConversation,
+    startConversationAfterExplicitLaunch,
     announceSystemNotice,
     configureBackgroundRecording,
     micArmed,

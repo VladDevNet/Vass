@@ -97,13 +97,28 @@ export function isApprovalRequiredError(error: unknown): boolean {
 // ApiError instead of leaving the caller waiting indefinitely. Checking
 // controller.signal.aborted (rather than the caught error's type/name) works
 // regardless of how a given fetch implementation labels its abort error.
-function timeoutSignal(ms: number): { signal: AbortSignal; cancel: () => void } {
+function timeoutSignal(ms: number): { signal: AbortSignal; cancel: () => void; abort: () => void } {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   return {
     signal: controller.signal,
     cancel: () => clearTimeout(timer),
+    abort: () => controller.abort(),
   };
+}
+
+// expo/fetch accepts one signal. Couple a caller-owned cancellation signal
+// to the request's existing timeout signal without relying on AbortSignal.any
+// (which is not consistently available in every React Native runtime).
+function bindExternalAbort(externalSignal: AbortSignal | undefined, abort: () => void): () => void {
+  if (!externalSignal) return () => undefined;
+  if (externalSignal.aborted) {
+    abort();
+    return () => undefined;
+  }
+  const onAbort = () => abort();
+  externalSignal.addEventListener('abort', onAbort, { once: true });
+  return () => externalSignal.removeEventListener('abort', onAbort);
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -467,7 +482,7 @@ export const api = {
   // RN fetch/XHR) — its convertFormDataAsync only handles strings, real
   // Blobs, or objects with .bytes(). Read the recording into an actual
   // Blob first so it matches what expo/fetch's multipart encoder expects.
-  uploadAudio: async (uri: string): Promise<{ fileName: string; sizeBytes?: number }> => {
+  uploadAudio: async (uri: string, abortSignal?: AbortSignal): Promise<{ fileName: string; sizeBytes?: number }> => {
     const extension = uri.split('.').pop() ?? 'm4a';
     const bytes = await new File(uri).bytes();
     const blob = new ExpoBlob([bytes], { type: `audio/${extension}` });
@@ -492,7 +507,8 @@ export const api = {
     // runtime) only care that it duck-types as a Blob.
     form.append('file', blob as unknown as Blob, `recording.${extension}`);
 
-    const { signal, cancel } = timeoutSignal(UPLOAD_TIMEOUT_MS);
+    const { signal, cancel, abort } = timeoutSignal(UPLOAD_TIMEOUT_MS);
+    const unbindExternalAbort = bindExternalAbort(abortSignal, abort);
     let res: Awaited<ReturnType<typeof expoFetch>>;
     try {
       res = await expoFetch(`${API_URL}/api/v1/chat/upload-audio`, {
@@ -506,6 +522,7 @@ export const api = {
       throw err;
     } finally {
       cancel();
+      unbindExternalAbort();
     }
     if (res.status === 401) {
       await handleUnauthorized();
@@ -592,7 +609,7 @@ export const api = {
   // continuation can't be combined with the FIRST segment's already-known
   // text in one call, so the continuation needs a separate, cheap
   // transcription-only step before the (now combined) text can be resent.
-  checkUtteranceComplete: async (uri: string): Promise<{ transcription: string; complete: boolean }> => {
+  checkUtteranceComplete: async (uri: string, abortSignal?: AbortSignal): Promise<{ transcription: string; complete: boolean }> => {
     const extension = uri.split('.').pop() ?? 'm4a';
     const bytes = await new File(uri).bytes();
     const blob = new ExpoBlob([bytes], { type: `audio/${extension}` });
@@ -601,7 +618,8 @@ export const api = {
     const form = new FormData();
     form.append('audio', blob as unknown as Blob, `snapshot.${extension}`);
 
-    const { signal, cancel } = timeoutSignal(CHECK_UTTERANCE_TIMEOUT_MS);
+    const { signal, cancel, abort } = timeoutSignal(CHECK_UTTERANCE_TIMEOUT_MS);
+    const unbindExternalAbort = bindExternalAbort(abortSignal, abort);
     let res: Awaited<ReturnType<typeof expoFetch>>;
     try {
       res = await expoFetch(`${API_URL}/api/v1/chat/check-utterance`, {
@@ -615,6 +633,7 @@ export const api = {
       throw err;
     } finally {
       cancel();
+      unbindExternalAbort();
     }
     if (res.status === 401) {
       await handleUnauthorized();
@@ -811,11 +830,16 @@ function parseReminderCancelled(value: unknown): ReminderCancelledEvent | null {
 // Needs expo/fetch specifically: it's the fetch implementation Expo documents
 // for real streaming response bodies (see docs.expo.dev/versions/unversioned/sdk/filesystem
 // "Downloading Files with expo/fetch" and the Streams API page).
-export async function sendMessage(params: SendMessageParams, callbacks: SendMessageCallbacks = {}): Promise<string> {
+export async function sendMessage(
+  params: SendMessageParams,
+  callbacks: SendMessageCallbacks = {},
+  abortSignal?: AbortSignal,
+): Promise<string> {
   // One timeout spans the initial connection AND the full read loop below —
   // cancel() only runs once the reply is fully streamed (or the attempt has
   // failed), not right after the fetch call resolves.
-  const { signal, cancel } = timeoutSignal(SEND_MESSAGE_TIMEOUT_MS);
+  const { signal, cancel, abort } = timeoutSignal(SEND_MESSAGE_TIMEOUT_MS);
+  const unbindExternalAbort = bindExternalAbort(abortSignal, abort);
   try {
     let res: Awaited<ReturnType<typeof expoFetch>>;
     try {
@@ -925,5 +949,6 @@ export async function sendMessage(params: SendMessageParams, callbacks: SendMess
     throw new ApiError('Ответ сервера прервался до завершения. Попробуйте еще раз.');
   } finally {
     cancel();
+    unbindExternalAbort();
   }
 }

@@ -16,9 +16,11 @@ interface ConversationRuntimeValue {
   reply: string;
   error: string | null;
   micArmed: boolean;
+  conversationEnded: boolean;
   forceFinalize: () => void;
   pauseConversation: () => Promise<void>;
   resumeConversation: () => Promise<void>;
+  endConversation: () => Promise<void>;
   announceSystemNotice: (text: string) => Promise<void>;
   prepareOverlayMode: () => Promise<void>;
   disableOverlayMode: (resumeWhenVisible: boolean) => Promise<void>;
@@ -77,6 +79,26 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
 
   stateRef.current = runtime.state;
   actionsRef.current = runtime;
+
+  const endConversation = useCallback(async () => {
+    // Clear resume intents before the first await. A foreground transition
+    // can arrive while native audio is still unwinding, and it must never
+    // revive a conversation the person explicitly ended.
+    resumeRequestedRef.current = false;
+    pausedForBackgroundRef.current = false;
+    restoredOverlayAudioRef.current = false;
+    await runtime.endConversation();
+    await VassOverlay.stop().catch((error) => {
+      log('warn', 'overlay', 'could not stop overlay while ending conversation', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    await VassOverlay.finishAppTask().catch((error) => {
+      log('warn', 'app', 'could not remove Android task after ending conversation', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }, [runtime.endConversation]);
 
   useEffect(() => {
     let cancelled = false;
@@ -200,14 +222,14 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
           else requestResume();
           break;
         case 'stopRequested':
-          void actionsRef.current.configureBackgroundRecording(false, false);
+          void endConversation();
           break;
         case 'openApp':
           requestResume();
           break;
       }
     });
-  }, [requestResume]);
+  }, [requestResume, endConversation]);
 
   useEffect(() => {
     VassOverlay.update({
@@ -235,6 +257,7 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'background') {
+        if (actionsRef.current.isConversationEnded()) return;
         // Android's MediaProjection consent is a system activity. It makes
         // React Native report "background", but the active voice turn must
         // remain alive until the user accepts or cancels that dialog.
@@ -258,6 +281,10 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
       }
 
       if (nextState === 'active') {
+        if (actionsRef.current.isConversationEnded()) {
+          void actionsRef.current.startConversationAfterExplicitLaunch();
+          return;
+        }
         if (resumeRequestedRef.current) {
           resumeRequestedRef.current = false;
           void actionsRef.current.resumeConversation();
@@ -290,9 +317,11 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
         reply: runtime.reply,
         error: runtime.error,
         micArmed: runtime.micArmed,
+        conversationEnded: runtime.conversationEnded,
         forceFinalize: runtime.forceFinalize,
         pauseConversation: runtime.pauseConversation,
         resumeConversation: runtime.resumeConversation,
+        endConversation,
         announceSystemNotice: runtime.announceSystemNotice,
         prepareOverlayMode,
         disableOverlayMode,

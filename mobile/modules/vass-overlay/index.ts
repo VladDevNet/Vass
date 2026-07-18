@@ -61,6 +61,7 @@ interface NativeVassOverlayModule {
   setAppVisible(visible: boolean): void;
   suspendForExternalMedia(): Promise<void>;
   stop(): Promise<void>;
+  finishAppTask(): Promise<void>;
   addListener(eventName: 'onOverlayEvent', listener: (event: OverlayEvent) => void): EventSubscription;
 }
 
@@ -153,6 +154,10 @@ export const VassOverlay = {
 
   async stop(): Promise<void> {
     await nativeModule?.stop();
+  },
+
+  async finishAppTask(): Promise<void> {
+    await nativeModule?.finishAppTask();
   },
 
   addListener(listener: (event: OverlayEvent) => void): () => void {
