@@ -17,6 +17,10 @@ namespace VoiceAssistant.API.Controllers;
 [Authorize]
 public class ChatController : ControllerBase
 {
+    private static readonly Regex InternalProtocolReplyPattern = new(
+        @"^\s*(?:(?:reminder_create|periodic_reminder_create|reminder_list|reminder_cancel|memory_status|memory_list|memory_search|memory_remember|memory_correct|memory_forget|conversation_search|capability_help|screen_capture_once|open_vass|youtube_search|youtube_watch)\s*[\(\{]|(?:search|function(?:Call|Response)?|tool(?:Call|Response)?)\s*\{)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
     private readonly AppDbContext _db;
     private readonly IDbContextFactory<AppDbContext> _dbContextFactory;
     private readonly UserManager<User> _userManager;
@@ -658,6 +662,7 @@ public class ChatController : ControllerBase
         var toolExecutions = agentTurn.ToolExecutions;
         var screenCaptureRequested = agentTurn.RequestsScreenCapture;
         var reminderDraft = toolExecutions.Select(result => result.Reminder).FirstOrDefault(reminder => reminder is not null);
+        var reminderDeliveryStatus = ReminderDeliveryStatuses.Pending;
         var reminderCancellation = toolExecutions
             .Select(result => result.ReminderCancellation)
             .FirstOrDefault(cancellation => cancellation is not null);
@@ -805,22 +810,11 @@ public class ChatController : ControllerBase
             await Response.WriteAsync($"data: {reminderData}\n\n");
             await Response.Body.FlushAsync();
 
-            var deliveryStatus = await _reminders.WaitForDeliveryStatusAsync(
+            reminderDeliveryStatus = await _reminders.WaitForDeliveryStatusAsync(
                 reminder.Id,
                 reminder.DeviceId,
                 TimeSpan.FromSeconds(30),
                 HttpContext.RequestAborted);
-            systemPrompt = deliveryStatus switch
-            {
-                ReminderDeliveryStatuses.Scheduled =>
-                    reminder.IsPeriodic
-                        ? $"Телефон зарегистрировал периодическое локальное напоминание «{reminder.Text}»: первый запуск {reminder.DueAtUtc:O}, правило {reminder.RecurrenceRule}. Кратко подтверди расписание и что оно работает локально без интернета; не обещай абсолютную минутную точность.\n\n{systemPrompt}"
-                        : $"Телефон подтвердил локальное напоминание «{reminder.Text}» на {reminder.DueAtUtc:O}. Кратко подтверди пользователю, что оно установлено и сработает без интернета.\n\n{systemPrompt}",
-                ReminderDeliveryStatuses.Failed =>
-                    $"Телефон не смог установить локальное напоминание «{reminder.Text}». Честно сообщи об ошибке и не обещай, что напоминание сработает.\n\n{systemPrompt}",
-                _ =>
-                    $"Напоминание «{reminder.Text}» сохранено на сервере, но телефон ещё не подтвердил локальную установку. Не утверждай, что оно уже установлено; скажи, что требуется проверка уведомлений на телефоне.\n\n{systemPrompt}"
-            };
         }
 
         // Cleanup wav file
@@ -833,11 +827,25 @@ public class ChatController : ControllerBase
         var swLlm = Stopwatch.StartNew();
         long llmFirstTokenMs = 0;
 
-        // A reminder is only confirmed after the phone responds above. Its
-        // first tool-loop reply was generated before that receipt exists, so
-        // use the verified receipt-aware prompt instead of risking an early
-        // "set" confirmation from the model.
-        var useAgentFinalText = !attemptedReminder && reminderDraft is null && !string.IsNullOrWhiteSpace(agentTurn.FinalText);
+        // A reminder is only confirmed after the phone responds above. Keep
+        // that final receipt deterministic: a second free-form model call can
+        // mistakenly print a tool invocation instead of a human reply.
+        var agentFinalText = agentTurn.FinalText?.Trim();
+        var rejectedInternalProtocolText = LooksLikeInternalProtocolReply(agentFinalText);
+        if (rejectedInternalProtocolText)
+        {
+            _logger.LogWarning("Rejected internal protocol text from agent final reply for session {SessionId}", req.SessionId);
+            agentFinalText = null;
+        }
+
+        var responseOverride = reminderDraft is { } receiptReminder
+            ? BuildReminderReceiptReply(receiptReminder, reminderDeliveryStatus)
+            : !attemptedReminder && agentFinalText is not null
+                ? agentFinalText
+                : rejectedInternalProtocolText
+                    ? GetSafeToolFallback(toolExecutions, externalAction)
+                    : null;
+        var useAgentFinalText = responseOverride is not null;
 
         // Kick off a fast, non-grounded "will this need search/deep thought?" check
         // in parallel with the real (possibly slow, search-grounded) response, so we
@@ -852,7 +860,7 @@ public class ChatController : ControllerBase
         // A tool turn already has an evidence-aware final answer from the
         // native function-response loop, so emit it as one durable SSE chunk.
         var stream = useAgentFinalText
-            ? StreamSingleResponseAsync(agentTurn.FinalText!)
+            ? StreamSingleResponseAsync(responseOverride!)
             : _gemini.StreamResponseAsync(systemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey, cancellationToken: HttpContext.RequestAborted);
         var enumerator = stream.GetAsyncEnumerator(HttpContext.RequestAborted);
 
@@ -1021,6 +1029,33 @@ public class ChatController : ControllerBase
     {
         await Task.CompletedTask;
         yield return response;
+    }
+
+    public static bool LooksLikeInternalProtocolReply(string? text) =>
+        !string.IsNullOrWhiteSpace(text) && InternalProtocolReplyPattern.IsMatch(text);
+
+    public static string BuildReminderReceiptReply(ReminderDraft reminder, string deliveryStatus) =>
+        deliveryStatus switch
+        {
+            ReminderDeliveryStatuses.Scheduled when reminder.IsPeriodic =>
+                $"Повторяющееся напоминание «{reminder.Text}» установлено на телефоне. Оно будет работать без интернета.",
+            ReminderDeliveryStatuses.Scheduled =>
+                $"Напоминание «{reminder.Text}» установлено на телефоне. Оно сработает без интернета.",
+            ReminderDeliveryStatuses.Failed =>
+                $"Телефон пока не смог установить напоминание «{reminder.Text}». Проверь уведомления и попробуй ещё раз.",
+            _ =>
+                $"Напоминание «{reminder.Text}» сохранено, но телефон пока не подтвердил установку. Проверь уведомления и попробуй ещё раз."
+        };
+
+    private static string GetSafeToolFallback(IReadOnlyList<AssistantToolExecution> executions, ExternalActionCommand? externalAction)
+    {
+        if (externalAction is not null)
+            return GetExternalActionFallback(externalAction.Type);
+
+        var lastExecution = executions.LastOrDefault();
+        return lastExecution?.Status is "created" or "ok" or "cancelled" or "requested"
+            ? "Готово. Я выполнила этот запрос."
+            : "Не получилось корректно завершить это действие. Давай попробуем ещё раз.";
     }
 
     // Rejects an oversized request body before model binding buffers the

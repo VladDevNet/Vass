@@ -1,4 +1,6 @@
 using VoiceAssistant.API.Controllers;
+using VoiceAssistant.API.Data.Entities;
+using VoiceAssistant.API.Services;
 using Xunit;
 
 namespace VoiceAssistant.API.Tests;
@@ -199,6 +201,35 @@ public class ChatControllerTests
         var resolved = ChatController.ResolvePromptUserName(null, null);
 
         Assert.Null(resolved);
+    }
+
+    [Theory]
+    [InlineData("reminder_create(reason: \\\"Позвонить врачу\\\")")]
+    [InlineData("search{queries:[\\\"Europe/Warsaw\\\"]}")]
+    [InlineData("memory_remember({ text: \\\"Влад любит кофе\\\" })")]
+    public void LooksLikeInternalProtocolReply_ToolSyntax_ReturnsTrue(string text)
+    {
+        Assert.True(ChatController.LooksLikeInternalProtocolReply(text));
+    }
+
+    [Theory]
+    [InlineData("Напоминание установлено на телефоне.")]
+    [InlineData("Я посмотрю, что можно сделать.")]
+    public void LooksLikeInternalProtocolReply_NaturalReply_ReturnsFalse(string text)
+    {
+        Assert.False(ChatController.LooksLikeInternalProtocolReply(text));
+    }
+
+    [Fact]
+    public void BuildReminderReceiptReply_Scheduled_UsesVerifiedHumanReadableConfirmation()
+    {
+        var reminder = new ReminderDraft(1, "Проверить обновление машины", DateTime.UtcNow, "Europe/Warsaw", "device-1");
+
+        var reply = ChatController.BuildReminderReceiptReply(reminder, ReminderDeliveryStatuses.Scheduled);
+
+        Assert.Contains("Проверить обновление машины", reply);
+        Assert.Contains("установлено на телефоне", reply);
+        Assert.DoesNotContain("reminder_create", reply, StringComparison.OrdinalIgnoreCase);
     }
 
 }
