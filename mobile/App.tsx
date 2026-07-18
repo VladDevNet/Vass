@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ActivityIndicator, AppState, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, Platform, StyleSheet, View } from 'react-native';
+import Constants from 'expo-constants';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
@@ -41,6 +42,14 @@ function Root() {
 
   useEffect(() => {
     if (!user) return;
+    // One lightweight marker per authenticated app run makes production
+    // diagnostics unambiguous even when this release is already current and
+    // therefore the update endpoint does not emit a version check event.
+    log('info', 'app', 'client runtime active', {
+      appVersion: Constants.expoConfig?.version ?? null,
+      nativeBuildVersion: Constants.nativeBuildVersion ?? null,
+      platform: Platform.OS,
+    });
     reconcileLocalReminders(user.id).catch((err) => {
       log('warn', 'app', 'reminder reconciliation failed', {
         error: err instanceof Error ? err.message : String(err),

@@ -15,8 +15,6 @@ services:
       - Registration__AutoApprove=${REGISTRATION_AUTO_APPROVE:-true}
       - Admin__Email=${ADMIN_EMAIL:-}
       - Features__LongTermMemoryEnabled=${LONG_TERM_MEMORY_ENABLED:-true}
-      - Features__AudioCoreAgentEnabled=${AUDIO_CORE_AGENT_ENABLED:-false}
-      - Features__AudioCoreAgentSkipPlannerEnabled=${AUDIO_CORE_AGENT_SKIP_PLANNER_ENABLED:-false}
       - MobileUpdates__Android__LatestVersion=${MOBILE_UPDATE_ANDROID_LATEST_VERSION:-}
       - MobileUpdates__Android__LatestVersionCode=${MOBILE_UPDATE_ANDROID_LATEST_VERSION_CODE:-0}
       - MobileUpdates__Android__MinimumSupportedVersionCode=${MOBILE_UPDATE_ANDROID_MIN_SUPPORTED_VERSION_CODE:-0}

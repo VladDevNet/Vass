@@ -114,15 +114,10 @@ public class ChatController : ControllerBase
         return true;
     }
 
-    // AudioCore is the production voice path for every account. The two
-    // global switches remain only as a fast operational rollback if a
-    // provider incident affects all audio turns; there is no per-user gate.
-    private bool IsAudioCoreAgentEnabled() =>
-        _config.GetValue("Features:AudioCoreAgentEnabled", false);
-
-    private bool IsAudioCorePlannerBypassEnabled() =>
-        IsAudioCoreAgentEnabled() &&
-        _config.GetValue("Features:AudioCoreAgentSkipPlannerEnabled", false);
+    // AudioCore is the production voice path for every account. If the
+    // primary-model call itself is unavailable, the existing ASR path below
+    // remains the per-turn compatibility fallback; this is not a rollout
+    // switch and has no user- or environment-level gate.
 
     // Kept as a public compatibility seam for existing security tests and
     // OCR. Visual Capture uses the same byte-level inspector, so MIME rules
@@ -417,24 +412,21 @@ public class ChatController : ControllerBase
             validatedAudioFileName = req.AudioFileName;
 
             var sw = Stopwatch.StartNew();
-            if (IsAudioCoreAgentEnabled())
-            {
-                audioCoreResult = await _audioCoreTranscription.TranscribeAsync(filePath, geminiKey, HttpContext.RequestAborted);
-                sw.Stop();
-                audioCoreMs = sw.ElapsedMilliseconds;
+            audioCoreResult = await _audioCoreTranscription.TranscribeAsync(filePath, geminiKey, HttpContext.RequestAborted);
+            sw.Stop();
+            audioCoreMs = sw.ElapsedMilliseconds;
 
-                if (audioCoreResult.ProviderAvailable)
-                {
-                    transcription = audioCoreResult.Transcription;
-                    audioCoreUsed = true;
-                }
-                else
-                {
-                    // Keep the proven ffmpeg + Gemini 2.5 ASR route as a
-                    // per-turn escape hatch while the direct primary-model
-                    // path is being observed in production.
-                    audioCoreFallback = true;
-                }
+            if (audioCoreResult.ProviderAvailable)
+            {
+                transcription = audioCoreResult.Transcription;
+                audioCoreUsed = true;
+            }
+            else
+            {
+                // Keep the proven ffmpeg + Gemini 2.5 ASR route as a
+                // per-turn compatibility fallback when the direct model
+                // rejects a particular upload or has a provider incident.
+                audioCoreFallback = true;
             }
 
             if (!audioCoreUsed)
@@ -703,8 +695,7 @@ public class ChatController : ControllerBase
         var bypassAgentPlanner = audioCoreUsed &&
                                  audioCoreResult is { RequiresTool: false } &&
                                  visualAsset is null &&
-                                 sharedContent is null &&
-                                 IsAudioCorePlannerBypassEnabled();
+                                 sharedContent is null;
         var agentStopwatch = Stopwatch.StartNew();
         AssistantAgentTurnResult agentTurn;
         if (bypassAgentPlanner)
