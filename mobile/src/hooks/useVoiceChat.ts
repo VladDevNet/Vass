@@ -24,6 +24,7 @@ import {
   stopSpeaking,
   stripMarkdownForSpeechChunk,
   stripMarkupForDisplay,
+  subscribeToTtsPlayback,
 } from '../tts/systemSpeech';
 import type { StreamingSpeech } from '../tts/systemSpeech';
 import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
@@ -354,6 +355,7 @@ export function useVoiceChat(
   const [reply, setReply] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [conversationEnded, setConversationEnded] = useState(false);
+  const [ttsPlaying, setTtsPlaying] = useState(false);
   const recorder = useAudioRecorder(RECORDING_OPTIONS);
   const shadowRecorder = useAudioRecorder(RECORDING_OPTIONS);
 
@@ -361,6 +363,8 @@ export function useVoiceChat(
     const subscription = AppState.addEventListener('change', setAppState);
     return () => subscription.remove();
   }, []);
+
+  useEffect(() => subscribeToTtsPlayback(setTtsPlaying), []);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
   const visualBridgeRef = useRef(visualBridge);
@@ -1849,6 +1853,7 @@ export function useVoiceChat(
     transcript,
     reply,
     error,
+    ttsPlaying,
     conversationEnded,
     isConversationEnded: () => conversationEndedRef.current,
     forceFinalize,

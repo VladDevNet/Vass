@@ -3,13 +3,18 @@ package com.vass.overlay
 import android.app.ActivityManager
 import android.content.Context
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import java.io.File
+import java.io.FileInputStream
+import java.security.MessageDigest
 
 class VassOverlayModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -91,6 +96,53 @@ class VassOverlayModule : Module() {
         context.startActivity(preferredIntent)
       } catch (_: ActivityNotFoundException) {
         context.startActivity(genericIntent)
+      }
+      null
+    }
+
+    AsyncFunction("canRequestPackageInstalls") {
+      val context = requireContext()
+      Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()
+    }
+
+    AsyncFunction("requestPackageInstallPermission") {
+      val context = requireContext()
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+        try {
+          context.startActivity(
+            Intent(
+              Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+              Uri.parse("package:${context.packageName}"),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+          )
+        } catch (error: ActivityNotFoundException) {
+          throw IllegalStateException("Android cannot open the update-install permission settings", error)
+        }
+      }
+      null
+    }
+
+    AsyncFunction("installUpdateApk") { rawUri: String, expectedSha256: String? ->
+      val context = requireContext()
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+        throw SecurityException("Android has not allowed Vass to install updates")
+      }
+
+      val apk = resolveUpdateApk(context, rawUri)
+      if (!apk.isFile || apk.length() == 0L) {
+        throw IllegalArgumentException("Downloaded update APK is missing or empty")
+      }
+      verifySha256(apk, expectedSha256)
+
+      val contentUri = FileProvider.getUriForFile(context, "${context.packageName}.vassupdates", apk)
+      val installIntent = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(contentUri, "application/vnd.android.package-archive")
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      installIntent.clipData = ClipData.newRawUri("vass-update", contentUri)
+      try {
+        context.startActivity(installIntent)
+      } catch (error: ActivityNotFoundException) {
+        throw IllegalStateException("Android package installer is unavailable", error)
       }
       null
     }
@@ -206,9 +258,51 @@ class VassOverlayModule : Module() {
     appContext.reactContext?.applicationContext
       ?: throw IllegalStateException("React context is not available")
 
+  private fun resolveUpdateApk(context: Context, rawUri: String): File {
+    val uri = Uri.parse(rawUri)
+    if (uri.scheme != "file") {
+      throw IllegalArgumentException("Update APK must be a local file URI")
+    }
+    val path = uri.path ?: throw IllegalArgumentException("Update APK URI has no path")
+    val apk = File(path).canonicalFile
+    val updateDirectory = File(context.cacheDir, "vass-updates").canonicalFile
+    if (apk.parentFile?.canonicalFile != updateDirectory) {
+      throw SecurityException("Update APK is outside the approved cache directory")
+    }
+    return apk
+  }
+
+  private fun verifySha256(apk: File, expectedSha256: String?) {
+    if (expectedSha256.isNullOrBlank()) return
+    val expected = expectedSha256.lowercase()
+    if (!SHA256_PATTERN.matches(expected)) {
+      throw IllegalArgumentException("Server supplied an invalid update checksum")
+    }
+
+    val digest = MessageDigest.getInstance("SHA-256")
+    FileInputStream(apk).use { stream ->
+      val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+      while (true) {
+        val read = stream.read(buffer)
+        if (read < 0) break
+        digest.update(buffer, 0, read)
+      }
+    }
+    val actual = digest.digest().joinToString("") { byte ->
+      (byte.toInt() and 0xff).toString(16).padStart(2, '0')
+    }
+    if (actual != expected) {
+      throw SecurityException("Downloaded update checksum does not match the published release")
+    }
+  }
+
   private fun sendServiceCommand(intent: Intent) {
     if (!VassOverlayService.isRunning) return
     requireContext().startService(intent)
+  }
+
+  private companion object {
+    val SHA256_PATTERN = Regex("^[0-9a-f]{64}$")
   }
 
 }

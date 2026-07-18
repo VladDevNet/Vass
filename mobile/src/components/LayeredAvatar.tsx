@@ -37,22 +37,24 @@ const AVATAR_ASSETS: Record<AvatarId, AvatarAssetSet> = {
 interface LayeredAvatarProps {
   avatarId: AvatarId;
   state: VoiceState;
+  talking: boolean;
   sleeping: boolean;
   disabled?: boolean;
   onLoadError?: () => void;
 }
 
-export function LayeredAvatar({ avatarId, state, sleeping, disabled, onLoadError }: LayeredAvatarProps) {
+export function LayeredAvatar({ avatarId, state, talking, sleeping, disabled, onLoadError }: LayeredAvatarProps) {
   const assets = AVATAR_ASSETS[avatarId];
   const mouthSmall = useRef(new Animated.Value(0)).current;
   const mouthBig = useRef(new Animated.Value(0)).current;
   const blink = useRef(new Animated.Value(0)).current; // 0 = открыты, 1 = закрыты
 
-  // Цикл рта во время speaking — то же чередование двух кадров, что
+  // Цикл рта только во время фактического вывода Android TTS — то же
+  // чередование двух кадров, что
   // AvatarFace.tsx уже использует для своего нарисованного рта, только
   // кросс-фейдом между двумя overlay-картинками вместо scaleY фигуры.
   useEffect(() => {
-    if (state === 'speaking') {
+    if (talking) {
       const loop = Animated.loop(
         Animated.sequence([
           Animated.timing(mouthSmall, { toValue: 1, duration: 260, useNativeDriver: true }),
@@ -66,7 +68,7 @@ export function LayeredAvatar({ avatarId, state, sleeping, disabled, onLoadError
     }
     mouthSmall.setValue(0);
     mouthBig.setValue(0);
-  }, [state, mouthSmall, mouthBig]);
+  }, [talking, mouthSmall, mouthBig]);
 
   // Моргание — непрерывно вне зависимости от state, как в AvatarFace.tsx,
   // КРОМЕ sleeping, где closed-eyes overlay держится полностью открытым
@@ -116,7 +118,7 @@ export function LayeredAvatar({ avatarId, state, sleeping, disabled, onLoadError
       ) : (
         <Animated.Image source={assets.eyesClosedOverlay} style={[styles.portrait, { opacity: blink }]} />
       )}
-      {state === 'speaking' && (
+      {talking && (
         <>
           <Animated.Image source={assets.mouthOpenSmallOverlay} style={[styles.portrait, { opacity: mouthSmall }]} />
           <Animated.Image source={assets.mouthOpenBigOverlay} style={[styles.portrait, { opacity: mouthBig }]} />

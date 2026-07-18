@@ -6,6 +6,7 @@ const SERVICE_NAME = 'com.vass.overlay.VassOverlayService';
 const SCREEN_CAPTURE_SERVICE = 'com.vass.overlay.VassMediaProjectionService';
 const SCREEN_CAPTURE_ACTIVITY = 'com.vass.overlay.ScreenCapturePermissionActivity';
 const SHARE_RECEIVER_ACTIVITY = 'com.vass.overlay.ShareReceiverActivity';
+const UPDATE_FILE_PROVIDER = 'com.vass.overlay.VassUpdateFileProvider';
 const SPECIAL_USE_PROPERTY = 'android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE';
 
 function addPermission(manifest, name) {
@@ -23,9 +24,31 @@ function withOverlayManifest(config) {
     addPermission(manifest, 'android.permission.FOREGROUND_SERVICE');
     addPermission(manifest, 'android.permission.FOREGROUND_SERVICE_SPECIAL_USE');
     addPermission(manifest, 'android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION');
+    addPermission(manifest, 'android.permission.REQUEST_INSTALL_PACKAGES');
 
     const application = manifest.application?.[0];
     if (!application) throw new Error('AndroidManifest is missing the application element');
+
+    // The updater writes only to cache/vass-updates. The provider exposes
+    // that one directory to Android's Package Installer for the duration of
+    // the install request; no broad cache or external-storage path is shared.
+    application.provider = application.provider ?? [];
+    const existingUpdateProvider = application.provider.find((item) => item.$?.['android:name'] === UPDATE_FILE_PROVIDER);
+    const updateProvider = existingUpdateProvider ?? { $: {} };
+    updateProvider.$ = {
+      ...updateProvider.$,
+      'android:name': UPDATE_FILE_PROVIDER,
+      'android:authorities': '${applicationId}.vassupdates',
+      'android:exported': 'false',
+      'android:grantUriPermissions': 'true',
+    };
+    updateProvider['meta-data'] = [{
+      $: {
+        'android:name': 'android.support.FILE_PROVIDER_PATHS',
+        'android:resource': '@xml/vass_update_paths',
+      },
+    }];
+    if (!existingUpdateProvider) application.provider.push(updateProvider);
 
     application.service = application.service ?? [];
     const existing = application.service.find((item) => item.$?.['android:name'] === SERVICE_NAME);
@@ -119,6 +142,12 @@ function withOverlayAvatarAssets(config) {
         const destination = path.join(drawableDir, `vass_overlay_${avatar}.png`);
         fs.copyFileSync(source, destination);
       }
+      const xmlDir = path.join(mod.modRequest.platformProjectRoot, 'app', 'src', 'main', 'res', 'xml');
+      fs.mkdirSync(xmlDir, { recursive: true });
+      fs.copyFileSync(
+        path.join(__dirname, 'android', 'src', 'main', 'res', 'xml', 'vass_update_paths.xml'),
+        path.join(xmlDir, 'vass_update_paths.xml'),
+      );
       return mod;
     },
   ]);

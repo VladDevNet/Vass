@@ -10,6 +10,7 @@ import type { VoiceState } from '../hooks/useVoiceChat';
 // screenshots. Revisit Rive later if a hand-authored asset becomes available.
 interface Props {
   state: VoiceState;
+  talking: boolean;
 }
 
 const HEAD_COLOR: Record<VoiceState, string> = {
@@ -20,7 +21,7 @@ const HEAD_COLOR: Record<VoiceState, string> = {
   paused: '#E0E0E4',
 };
 
-export function AvatarFace({ state }: Props) {
+export function AvatarFace({ state, talking }: Props) {
   const blink = useRef(new Animated.Value(1)).current; // 1 = open, 0 = closed
   const mouthOpen = useRef(new Animated.Value(0)).current; // 0 = closed .. 1 = open
   const dot1 = useRef(new Animated.Value(0.3)).current;
@@ -51,9 +52,10 @@ export function AvatarFace({ state }: Props) {
     };
   }, [blink]);
 
-  // Mouth: talks while speaking, otherwise settles to a neutral closed shape.
+  // Mouth follows Android TTS's actual start/stop callbacks, rather than the
+  // broader state that also covers reply placeholders and recorder arming.
   useEffect(() => {
-    if (state === 'speaking') {
+    if (talking) {
       const loop = Animated.loop(
         Animated.sequence([
           Animated.timing(mouthOpen, { toValue: 1, duration: 130, useNativeDriver: true }),
@@ -64,7 +66,7 @@ export function AvatarFace({ state }: Props) {
       return () => loop.stop();
     }
     Animated.timing(mouthOpen, { toValue: 0, duration: 150, useNativeDriver: true }).start();
-  }, [state, mouthOpen]);
+  }, [talking, mouthOpen]);
 
   // Thinking dots: a small sequential pulse, the universal "..." pattern.
   useEffect(() => {

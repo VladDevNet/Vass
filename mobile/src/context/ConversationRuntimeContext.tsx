@@ -23,6 +23,7 @@ interface ConversationRuntimeValue {
   transcript: string;
   reply: string;
   error: string | null;
+  ttsPlaying: boolean;
   micArmed: boolean;
   conversationEnded: boolean;
   libraryNavigation: LibraryNavigationRequest | null;
@@ -360,6 +361,7 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
         transcript: runtime.transcript,
         reply: runtime.reply,
         error: runtime.error,
+        ttsPlaying: runtime.ttsPlaying,
         micArmed: runtime.micArmed,
         conversationEnded: runtime.conversationEnded,
         libraryNavigation,

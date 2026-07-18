@@ -1,18 +1,38 @@
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Download, RefreshCw } from 'lucide-react-native';
 import type { AndroidAppUpdate } from '../api/client';
 import { amoled } from '../theme/amoled';
 
 interface AppUpdateModalProps {
   update: AndroidAppUpdate | null;
-  isLaunching: boolean;
+  installPhase: 'idle' | 'downloading' | 'permission' | 'installing';
+  downloadProgress: number | null;
   error: string | null;
   onInstall: () => void;
   onSkip: () => void;
 }
 
-export function AppUpdateModal({ update, isLaunching, error, onInstall, onSkip }: AppUpdateModalProps) {
+export function AppUpdateModal({
+  update,
+  installPhase,
+  downloadProgress,
+  error,
+  onInstall,
+  onSkip,
+}: AppUpdateModalProps) {
   const mandatory = update?.mandatory ?? false;
+  const busy = installPhase === 'downloading' || installPhase === 'installing';
+  const progressPercent = downloadProgress === null ? null : Math.round(downloadProgress * 100);
+  const primaryLabel = installPhase === 'downloading'
+    ? progressPercent === null ? 'Скачивание обновления…' : `Скачивание: ${progressPercent}%`
+    : installPhase === 'permission'
+      ? 'Разрешить установку'
+      : installPhase === 'installing'
+        ? 'Открываем установщик Android…'
+        : 'Скачать и установить';
+  const systemNote = installPhase === 'permission'
+    ? 'Android откроет настройку, где нужно разрешить Vass устанавливать обновления.'
+    : 'После загрузки Android покажет системное окно установки.';
 
   return (
     <Modal
@@ -41,34 +61,43 @@ export function AppUpdateModal({ update, isLaunching, error, onInstall, onSkip }
           <Text style={styles.title}>{mandatory ? 'Нужно обновить Vass' : 'Доступно обновление Vass'}</Text>
           <Text style={styles.version}>Версия {update?.latestVersion}</Text>
           <Text style={styles.description}>
-            {mandatory
+            {installPhase === 'permission'
+              ? 'Нужно разрешение Android для установки обновления.'
+              : mandatory
               ? 'Эта версия приложения больше не поддерживается. Обновите Vass, чтобы продолжить.'
               : 'Можно обновиться сейчас или продолжить с текущей версией.'}
           </Text>
           {update?.releaseNotes ? <Text style={styles.notes}>{update.releaseNotes}</Text> : null}
+          {installPhase === 'downloading' && (
+            <View style={styles.progressTrack} accessibilityLabel="Загрузка обновления">
+              <View style={[styles.progressFill, { width: `${progressPercent ?? 8}%` }]} />
+            </View>
+          )}
           {error ? <Text style={styles.error}>{error}</Text> : null}
           <Pressable
-            style={[styles.primaryButton, isLaunching && styles.primaryButtonDisabled]}
+            style={[styles.primaryButton, busy && styles.primaryButtonDisabled]}
             onPress={onInstall}
-            disabled={isLaunching}
+            disabled={busy}
             accessibilityRole="button"
             accessibilityLabel="Скачать и установить обновление"
           >
-            <Download size={19} color="#07111F" strokeWidth={2.5} />
-            <Text style={styles.primaryButtonText}>{isLaunching ? 'Открываем обновление...' : 'Скачать и установить'}</Text>
+            {busy
+              ? <ActivityIndicator size="small" color="#07111F" />
+              : <Download size={19} color="#07111F" strokeWidth={2.5} />}
+            <Text style={styles.primaryButtonText}>{primaryLabel}</Text>
           </Pressable>
           {!mandatory && (
             <Pressable
               style={styles.skipButton}
               onPress={onSkip}
-              disabled={isLaunching}
+              disabled={busy}
               accessibilityRole="button"
               accessibilityLabel="Отложить обновление"
             >
               <Text style={styles.skipButtonText}>Позже</Text>
             </Pressable>
           )}
-          <Text style={styles.systemNote}>Android попросит подтвердить установку.</Text>
+          <Text style={styles.systemNote}>{systemNote}</Text>
         </View>
       </View>
     </Modal>
@@ -128,6 +157,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     marginTop: 14,
+  },
+  progressTrack: {
+    height: 7,
+    overflow: 'hidden',
+    borderRadius: 4,
+    backgroundColor: '#233047',
+    marginTop: 18,
+  },
+  progressFill: {
+    height: '100%',
+    minWidth: 8,
+    backgroundColor: '#93C5FD',
   },
   primaryButton: {
     minHeight: 52,

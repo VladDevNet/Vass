@@ -43,6 +43,34 @@ interface RecoverableSpeechModule {
 
 let recoverableSpeechModule: RecoverableSpeechModule | null | undefined;
 
+// The visible reply often arrives before Android's TextToSpeech actually
+// begins. Avatar lip movement must follow the native playback callback, not
+// the conversation's broader `speaking` state used for VAD/barge-in.
+const playbackListeners = new Set<(playing: boolean) => void>();
+let activePlaybackCount = 0;
+
+function notifyPlaybackState(): void {
+  const playing = activePlaybackCount > 0;
+  for (const listener of playbackListeners) listener(playing);
+}
+
+function markPlaybackStarted(): void {
+  activePlaybackCount += 1;
+  if (activePlaybackCount === 1) notifyPlaybackState();
+}
+
+function markPlaybackEnded(): void {
+  if (activePlaybackCount === 0) return;
+  activePlaybackCount -= 1;
+  if (activePlaybackCount === 0) notifyPlaybackState();
+}
+
+export function subscribeToTtsPlayback(listener: (playing: boolean) => void): () => void {
+  playbackListeners.add(listener);
+  listener(activePlaybackCount > 0);
+  return () => playbackListeners.delete(listener);
+}
+
 function getRecoverableSpeechModule(): RecoverableSpeechModule | null {
   if (recoverableSpeechModule !== undefined) return recoverableSpeechModule;
   if (Platform.OS !== 'android') {
@@ -340,6 +368,12 @@ let expectedStop = false;
 
 function markExpectedStop(): void {
   expectedStop = true;
+  // Android normally follows Speech.stop() with onStopped. Do not leave the
+  // avatar talking if a broken TTS engine suppresses that callback too.
+  if (activePlaybackCount > 0) {
+    activePlaybackCount = 0;
+    notifyPlaybackState();
+  }
 }
 
 // Read-and-clear so a later, genuinely unexpected onStopped isn't
@@ -385,6 +419,12 @@ function speakChunk(
   onPlaybackStart: () => void
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    let playbackStarted = false;
+    const finishPlayback = () => {
+      if (!playbackStarted) return;
+      playbackStarted = false;
+      markPlaybackEnded();
+    };
     Speech.speak(text, {
       language: 'ru-RU',
       voice,
@@ -396,11 +436,19 @@ function speakChunk(
       // existing 'speaking reply' log (fired BEFORE Speech.speak() is even
       // called) can't distinguish from native TTS engine startup latency.
       onStart: () => {
+        if (!playbackStarted) {
+          playbackStarted = true;
+          markPlaybackStarted();
+        }
         onPlaybackStart();
         log('debug', 'tts', 'chunk playback started', { chunkIndex, totalChunks });
       },
-      onDone: () => resolve(),
+      onDone: () => {
+        finishPlayback();
+        resolve();
+      },
       onStopped: () => {
+        finishPlayback();
         if (consumeExpectedStop()) {
           resolve();
         } else {
@@ -412,6 +460,7 @@ function speakChunk(
         }
       },
       onError: (err) => {
+        finishPlayback();
         log('error', 'tts', 'chunk error', {
           chunkIndex,
           totalChunks,
@@ -785,16 +834,35 @@ const GREETING_PHRASES = [
 // review.
 function speakBackchannelPhrase(text: string, voice: string): Promise<void> {
   return new Promise((resolve) => {
+    let playbackStarted = false;
+    const finishPlayback = () => {
+      if (!playbackStarted) return;
+      playbackStarted = false;
+      markPlaybackEnded();
+    };
     Speech.speak(text, {
       language: 'ru-RU',
       voice,
       // Same diagnostic as speakChunk's onStart — the filler's whole point
       // is filling dead air IMMEDIATELY, so if native TTS startup latency
       // is real, it undermines this path just as much as the real reply.
-      onStart: () => log('debug', 'tts', 'backchannel playback started'),
-      onDone: () => resolve(),
-      onStopped: () => resolve(),
+      onStart: () => {
+        if (!playbackStarted) {
+          playbackStarted = true;
+          markPlaybackStarted();
+        }
+        log('debug', 'tts', 'backchannel playback started');
+      },
+      onDone: () => {
+        finishPlayback();
+        resolve();
+      },
+      onStopped: () => {
+        finishPlayback();
+        resolve();
+      },
       onError: (err) => {
+        finishPlayback();
         log('debug', 'tts', 'backchannel chunk error (non-critical)', {
           error: err instanceof Error ? err.message : String(err),
         });

@@ -51,6 +51,9 @@ interface NativeVassOverlayModule {
   openAppDetails(): Promise<void>;
   openApp(): Promise<void>;
   openExternalUrl(url: string): Promise<void>;
+  canRequestPackageInstalls(): Promise<boolean>;
+  requestPackageInstallPermission(): Promise<void>;
+  installUpdateApk(uri: string, expectedSha256: string | null): Promise<void>;
   requestScreenCapture(requestId: string): Promise<void>;
   getScreenCaptureResult(): Promise<ScreenCaptureResult>;
   clearScreenCaptureResult(requestId: string): Promise<void>;
@@ -106,6 +109,25 @@ export const VassOverlay = {
   async openExternalUrl(url: string): Promise<void> {
     if (!nativeModule) throw new Error('Android external actions are unavailable in this build');
     await nativeModule.openExternalUrl(url);
+  },
+
+  async canRequestPackageInstalls(): Promise<boolean> {
+    if (!nativeModule || typeof nativeModule.canRequestPackageInstalls !== 'function') return false;
+    return nativeModule.canRequestPackageInstalls();
+  },
+
+  async requestPackageInstallPermission(): Promise<void> {
+    if (!nativeModule || typeof nativeModule.requestPackageInstallPermission !== 'function') {
+      throw new Error('В этой версии Vass ещё нет встроенной установки обновлений.');
+    }
+    await nativeModule.requestPackageInstallPermission();
+  },
+
+  async installUpdateApk(uri: string, expectedSha256: string | null): Promise<void> {
+    if (!nativeModule || typeof nativeModule.installUpdateApk !== 'function') {
+      throw new Error('В этой версии Vass ещё нет встроенной установки обновлений.');
+    }
+    await nativeModule.installUpdateApk(uri, expectedSha256);
   },
 
   async requestScreenCapture(requestId: string): Promise<void> {

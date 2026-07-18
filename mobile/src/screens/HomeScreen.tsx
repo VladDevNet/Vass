@@ -77,6 +77,7 @@ export function HomeScreen() {
     transcript,
     reply,
     error,
+    ttsPlaying,
     forceFinalize,
     pauseConversation,
     endConversation,
@@ -240,11 +241,12 @@ export function HomeScreen() {
         <View style={styles.avatarStage}>
           <Pressable onPress={forceFinalize} onLongPress={() => void pauseConversation()} disabled={disabled}>
             {assetsFailed ? (
-              <AvatarFace state={state} />
+              <AvatarFace state={state} talking={ttsPlaying} />
             ) : (
               <LayeredAvatar
                 avatarId={displayAvatarId}
                 state={state}
+                talking={ttsPlaying}
                 sleeping={sleeping}
                 disabled={disabled}
                 onLoadError={() => setAssetsFailed(true)}
