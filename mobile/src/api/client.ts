@@ -433,7 +433,7 @@ export const api = {
   // RN fetch/XHR) — its convertFormDataAsync only handles strings, real
   // Blobs, or objects with .bytes(). Read the recording into an actual
   // Blob first so it matches what expo/fetch's multipart encoder expects.
-  uploadAudio: async (uri: string): Promise<{ fileName: string }> => {
+  uploadAudio: async (uri: string): Promise<{ fileName: string; sizeBytes?: number }> => {
     const extension = uri.split('.').pop() ?? 'm4a';
     const bytes = await new File(uri).bytes();
     const blob = new ExpoBlob([bytes], { type: `audio/${extension}` });
@@ -660,11 +660,45 @@ export interface ReminderSyncItem {
 export interface SendMessageCallbacks {
   onTranscription?: (text: string) => void;
   onChunk?: (text: string) => void;
+  onStats?: (stats: ServerTurnStats) => void;
   onReminder?: (reminder: ReminderEvent) => Promise<void>;
   onPeriodicReminder?: (reminder: PeriodicReminderEvent) => Promise<void>;
   onReminderCancelled?: (reminder: ReminderCancelledEvent) => Promise<void>;
   onExternalAction?: (action: ExternalActionEvent) => Promise<void>;
   onScreenCapture?: (request: ScreenCaptureRequest) => void;
+}
+
+export interface ServerTurnStats {
+  audioCoreMs?: number;
+  audioCoreUsed?: boolean;
+  audioCoreFallback?: boolean;
+  convertMs?: number;
+  transcribeMs?: number;
+  speakerIdMs?: number;
+  llmFirstTokenMs?: number;
+  llmTotalMs?: number;
+  translationMs?: number;
+}
+
+function parseTurnStats(value: unknown): ServerTurnStats | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  const numberValue = (name: keyof ServerTurnStats) =>
+    typeof candidate[name] === 'number' && Number.isFinite(candidate[name])
+      ? candidate[name] as number
+      : undefined;
+
+  return {
+    audioCoreMs: numberValue('audioCoreMs'),
+    audioCoreUsed: typeof candidate.audioCoreUsed === 'boolean' ? candidate.audioCoreUsed : undefined,
+    audioCoreFallback: typeof candidate.audioCoreFallback === 'boolean' ? candidate.audioCoreFallback : undefined,
+    convertMs: numberValue('convertMs'),
+    transcribeMs: numberValue('transcribeMs'),
+    speakerIdMs: numberValue('speakerIdMs'),
+    llmFirstTokenMs: numberValue('llmFirstTokenMs'),
+    llmTotalMs: numberValue('llmTotalMs'),
+    translationMs: numberValue('translationMs'),
+  };
 }
 
 function parseExternalAction(value: unknown): ExternalActionEvent | null {
@@ -836,8 +870,11 @@ export async function sendMessage(params: SendMessageParams, callbacks: SendMess
         } else if (parsed.screenCapture && callbacks.onScreenCapture) {
           const request = parseScreenCapture(parsed.screenCapture);
           if (request) callbacks.onScreenCapture(request);
+        } else if (parsed.stats && callbacks.onStats) {
+          const stats = parseTurnStats(parsed.stats);
+          if (stats) callbacks.onStats(stats);
         }
-        // parsed.preamble / parsed.stats are not consumed yet.
+        // parsed.preamble remains intentionally unused by the mobile client.
       }
     }
 

@@ -7,7 +7,7 @@ import {
   setAudioModeAsync,
   useAudioRecorder,
 } from 'expo-audio';
-import { api, sendMessage, type ExternalActionEvent, type ScreenCaptureRequest } from '../api/client';
+import { api, sendMessage, type ExternalActionEvent, type ScreenCaptureRequest, type ServerTurnStats } from '../api/client';
 import {
   cancelLocalReminder,
   getReminderDeviceContext,
@@ -143,6 +143,12 @@ async function captureOneShotScreenImage(requestId: string): Promise<string> {
 // hearing Olga's own TTS output as if it were the user interrupting.
 const RECORDING_OPTIONS = {
   ...RecordingPresets.HIGH_QUALITY,
+  // Speech does not need the old 44.1 kHz stereo music profile. Android may
+  // still negotiate a nearby supported rate, but this asks for the compact
+  // 16 kHz mono / 32 kbit AAC profile used by the server-side experiment.
+  sampleRate: 16_000,
+  numberOfChannels: 1,
+  bitRate: 32_000,
   isMeteringEnabled: true,
   android: { ...RecordingPresets.HIGH_QUALITY.android, audioSource: 'voice_communication' as const },
 };
@@ -824,6 +830,7 @@ export function useVoiceChat(
 
       const turnStartedAt = Date.now();
       log('info', 'turn', 'segment send start', { fromShadow });
+      let firstReplyChunkAt: number | null = null;
 
       // Sentences are spoken as the reply streams in, not after the whole
       // thing arrives — see createStreamingSpeech's own comment. Scoped to
@@ -862,6 +869,10 @@ export function useVoiceChat(
           // every remaining chunk reaches here for the rest of the stream.
           streamingHolder.current?.abort();
           return;
+        }
+        if (firstReplyChunkAt === null) {
+          firstReplyChunkAt = Date.now();
+          log('info', 'turn', 'reply first text chunk', { elapsedMs: firstReplyChunkAt - turnStartedAt });
         }
         visibleReplyBuffer += chunk;
         setReply(stripMarkupForDisplay(visibleReplyBuffer));
@@ -910,6 +921,10 @@ export function useVoiceChat(
         const { sentences, rest } = extractCompleteSentences(sentenceBuffer);
         sentenceBuffer = rest;
         for (const sentence of sentences) streamingHolder.current.push(sentence);
+      };
+
+      const handleStats = (stats: ServerTurnStats) => {
+        log('info', 'turn', 'server turn stats', { ...stats, elapsedMs: Date.now() - turnStartedAt });
       };
 
       try {
@@ -1013,6 +1028,7 @@ export function useVoiceChat(
             sharedContent,
           }, {
             onChunk: handleChunk,
+            onStats: handleStats,
             onReminder: handleReminder,
             onPeriodicReminder: handleReminder,
             onReminderCancelled: handleReminderCancelled,
@@ -1020,7 +1036,13 @@ export function useVoiceChat(
             onScreenCapture: handleScreenCapture,
           });
         } else {
-          const { fileName } = await api.uploadAudio(uri);
+          const uploadStartedAt = Date.now();
+          log('info', 'turn', 'audio upload start');
+          const { fileName, sizeBytes } = await api.uploadAudio(uri);
+          log('info', 'turn', 'audio upload completed', {
+            elapsedMs: Date.now() - uploadStartedAt,
+            ...(typeof sizeBytes === 'number' ? { sizeBytes } : {}),
+          });
           fullReply = await sendMessage(
             {
               sessionId: sid,
@@ -1042,6 +1064,7 @@ export function useVoiceChat(
                 if (myGeneration === segmentGenerationRef.current) setTranscript(pendingText());
               },
               onChunk: handleChunk,
+              onStats: handleStats,
               onReminder: handleReminder,
               onPeriodicReminder: handleReminder,
               onReminderCancelled: handleReminderCancelled,
@@ -1116,6 +1139,7 @@ export function useVoiceChat(
             visualAssetId,
           }, {
             onChunk: handleChunk,
+            onStats: handleStats,
             onReminder: handleReminder,
             onPeriodicReminder: handleReminder,
             onReminderCancelled: handleReminderCancelled,

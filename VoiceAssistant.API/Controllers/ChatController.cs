@@ -23,6 +23,7 @@ public class ChatController : ControllerBase
     private readonly GeminiService _gemini;
     private readonly CompanionPromptService _tutor;
     private readonly AudioAnalysisService _audioAnalysis;
+    private readonly AudioCoreTranscriptionService _audioCoreTranscription;
     private readonly SpeakerRegistryService _speakerRegistry;
     private readonly ConversationMemoryService _conversationMemory;
     private readonly LongTermMemoryService _longTermMemory;
@@ -37,7 +38,8 @@ public class ChatController : ControllerBase
 
     public ChatController(AppDbContext db, IDbContextFactory<AppDbContext> dbContextFactory, UserManager<User> userManager,
         GeminiService gemini, CompanionPromptService tutor,
-        AudioAnalysisService audioAnalysis, SpeakerRegistryService speakerRegistry, ConversationMemoryService conversationMemory,
+        AudioAnalysisService audioAnalysis, AudioCoreTranscriptionService audioCoreTranscription,
+        SpeakerRegistryService speakerRegistry, ConversationMemoryService conversationMemory,
         LongTermMemoryService longTermMemory,
         ReminderService reminders,
         VisualAssetService visualAssets,
@@ -52,6 +54,7 @@ public class ChatController : ControllerBase
         _gemini = gemini;
         _tutor = tutor;
         _audioAnalysis = audioAnalysis;
+        _audioCoreTranscription = audioCoreTranscription;
         _speakerRegistry = speakerRegistry;
         _conversationMemory = conversationMemory;
         _longTermMemory = longTermMemory;
@@ -105,6 +108,21 @@ public class ChatController : ControllerBase
 
         filePath = candidate;
         return true;
+    }
+
+    // The feature may be enabled globally after its private rollout. Until
+    // then, the optional allowlist keeps a new primary-model audio path
+    // observable on a known account without changing every user's turn.
+    private bool IsAudioCoreAgentEnabledFor(string? email)
+    {
+        if (!_config.GetValue("Features:AudioCoreAgentEnabled", false)) return false;
+
+        var allowlist = _config["Features:AudioCoreAgentAllowedEmails"];
+        if (string.IsNullOrWhiteSpace(allowlist)) return true;
+
+        return allowlist
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(item => string.Equals(item, email, StringComparison.OrdinalIgnoreCase));
     }
 
     // Kept as a public compatibility seam for existing security tests and
@@ -293,18 +311,16 @@ public class ChatController : ControllerBase
         string? wavPath = null;
         long convertMs = 0;
         long transcribeMs = 0;
+        long audioCoreMs = 0;
+        var audioCoreUsed = false;
+        var audioCoreFallback = false;
         long speakerIdMs = 0;
         SpeakerIdResult? speakerResult = null;
-        // Tracks "did we enter the audio-transcription branch at all" —
-        // deliberately NOT the same as "transcription != null" (see the
-        // no_speech gate below). TranscribeAsync (AudioAnalysisService.cs)
-        // returns null for EVERY failure mode along this path — missing API
-        // key, a non-2xx Gemini response, a thrown exception, AND the
-        // prompt-leak guard — not just for the one case (Gemini literally
-        // complying with "return an empty string for silence") that yields
-        // "". A gate on transcription != null would silently miss the
-        // prompt-leak case specifically, which is the exact scenario a real
-        // production 400 was traced back to.
+        // Tracks "did we enter an audio transcription route at all" — this
+        // must stay independent from the resulting text. Both the direct
+        // AudioCore function call and the legacy ASR can deliberately return
+        // an empty transcript for silence, while the legacy route also uses
+        // null for provider failures and its anti-hallucination guards.
         var attemptedTranscription = false;
         // Only ever set from a value that has already passed
         // TryResolveSafeAudioPath below — req.AudioFileName itself must never
@@ -325,24 +341,49 @@ public class ChatController : ControllerBase
             }
             validatedAudioFileName = req.AudioFileName;
 
-            // Convert webm → wav (Gemini doesn't support webm)
             var sw = Stopwatch.StartNew();
-            wavPath = await ConvertToWavAsync(filePath);
-            sw.Stop();
-            convertMs = sw.ElapsedMilliseconds;
-
-            if (wavPath == null)
+            if (IsAudioCoreAgentEnabledFor(user.Email))
             {
-                _logger.LogWarning("ffmpeg conversion failed for {File}", filePath);
-                Response.StatusCode = 400;
-                await Response.WriteAsJsonAsync(new { error = "no_speech" });
-                return;
+                var audioCoreResult = await _audioCoreTranscription.TranscribeAsync(filePath, geminiKey, HttpContext.RequestAborted);
+                sw.Stop();
+                audioCoreMs = sw.ElapsedMilliseconds;
+
+                if (audioCoreResult.ProviderAvailable)
+                {
+                    transcription = audioCoreResult.Transcription;
+                    audioCoreUsed = true;
+                }
+                else
+                {
+                    // Keep the proven ffmpeg + Gemini 2.5 ASR route as a
+                    // per-turn escape hatch while the direct primary-model
+                    // path is being observed in production.
+                    audioCoreFallback = true;
+                }
             }
 
-            sw.Restart();
-            transcription = await _audioAnalysis.TranscribeAsync(wavPath, geminiKey);
-            sw.Stop();
-            transcribeMs = sw.ElapsedMilliseconds;
+            if (!audioCoreUsed)
+            {
+                // The legacy processor is also the compatibility path for
+                // older uploads whose container the direct model rejects.
+                sw.Restart();
+                wavPath = await ConvertToWavAsync(filePath);
+                sw.Stop();
+                convertMs = sw.ElapsedMilliseconds;
+
+                if (wavPath == null)
+                {
+                    _logger.LogWarning("ffmpeg conversion failed for {File}", filePath);
+                    Response.StatusCode = 400;
+                    await Response.WriteAsJsonAsync(new { error = "no_speech" });
+                    return;
+                }
+
+                sw.Restart();
+                transcription = await _audioAnalysis.TranscribeAsync(wavPath, geminiKey);
+                sw.Stop();
+                transcribeMs = sw.ElapsedMilliseconds;
+            }
 
             messageText = transcription;
 
@@ -354,7 +395,7 @@ public class ChatController : ControllerBase
             // scored too close to noise-floor similarity in testing (~0.18-0.28,
             // near the ~0.16 seen between different synthetic voices) to trust, at
             // 400ms-2s cost per turn for an unproven payoff.
-            if (!string.IsNullOrWhiteSpace(transcription))
+            if (wavPath is not null && !string.IsNullOrWhiteSpace(transcription))
             {
                 sw.Restart();
                 speakerResult = await _speakerRegistry.IdentifyAsync(wavPath, transcription, geminiKey);
@@ -876,13 +917,16 @@ public class ChatController : ControllerBase
         await _db.SaveChangesAsync();
 
         // Log stats to server logs
-        _logger.LogInformation("VoiceAssistant Performance Stats - User: {UserEmail}, Session: {SessionId}, Convert: {ConvertMs}ms, Transcribe: {TranscribeMs}ms, SpeakerId: {SpeakerIdMs}ms, LLM (First Token): {LlmFirstMs}ms, LLM (Total): {LlmTotalMs}ms",
-            user.Email, req.SessionId, convertMs, transcribeMs, speakerIdMs, llmFirstTokenMs, llmTotalMs);
+        _logger.LogInformation("VoiceAssistant Performance Stats - User: {UserEmail}, Session: {SessionId}, AudioCore: {AudioCoreMs}ms (Used: {AudioCoreUsed}, Fallback: {AudioCoreFallback}), Convert: {ConvertMs}ms, Transcribe: {TranscribeMs}ms, SpeakerId: {SpeakerIdMs}ms, LLM (First Token): {LlmFirstMs}ms, LLM (Total): {LlmTotalMs}ms",
+            user.Email, req.SessionId, audioCoreMs, audioCoreUsed, audioCoreFallback, convertMs, transcribeMs, speakerIdMs, llmFirstTokenMs, llmTotalMs);
 
         // Send stats event to client, then [DONE] last -- both only after the
         // save above has actually completed.
         var stats = new
         {
+            AudioCoreMs = audioCoreMs,
+            AudioCoreUsed = audioCoreUsed,
+            AudioCoreFallback = audioCoreFallback,
             ConvertMs = convertMs,
             TranscribeMs = transcribeMs,
             SpeakerIdMs = speakerIdMs,
@@ -949,7 +993,7 @@ public class ChatController : ControllerBase
         await using var stream = new FileStream(filePath, FileMode.Create);
         await file.CopyToAsync(stream);
 
-        return Ok(new { fileName });
+        return Ok(new { fileName, sizeBytes = file.Length });
     }
 
     // Checks a not-yet-finalized recording snapshot: transcribes it and judges whether

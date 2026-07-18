@@ -126,6 +126,7 @@ builder.Services.AddSingleton<GeminiService>();
 builder.Services.AddSingleton<VisualAssetService>();
 builder.Services.AddSingleton<CompanionPromptService>();
 builder.Services.AddSingleton<AudioAnalysisService>();
+builder.Services.AddSingleton<AudioCoreTranscriptionService>();
 builder.Services.AddSingleton<SpeakerIdService>();
 builder.Services.AddSingleton<SpeakerPendingStore>();
 builder.Services.AddScoped<SpeakerRegistryService>();

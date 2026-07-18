@@ -15,6 +15,8 @@ services:
       - Registration__AutoApprove=${REGISTRATION_AUTO_APPROVE:-true}
       - Admin__Email=${ADMIN_EMAIL:-}
       - Features__LongTermMemoryEnabled=${LONG_TERM_MEMORY_ENABLED:-true}
+      - Features__AudioCoreAgentEnabled=${AUDIO_CORE_AGENT_ENABLED:-false}
+      - Features__AudioCoreAgentAllowedEmails=${AUDIO_CORE_AGENT_ALLOWED_EMAILS:-}
       # speaker-id below is opt-in (profiles: ["speaker-id"], not started by
       # `docker compose up` on its own) -- this hostname is only ever dialed
       # if Features__SpeakerIdentificationEnabled is ALSO set to true
