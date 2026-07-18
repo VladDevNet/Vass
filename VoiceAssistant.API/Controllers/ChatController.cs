@@ -885,6 +885,8 @@ public class ChatController : ControllerBase
 
         var responseOverride = reminderDraft is { } receiptReminder
             ? BuildReminderReceiptReply(receiptReminder, reminderDeliveryStatus)
+            : externalAction is not null
+                ? GetExternalActionFallback(externalAction.Type)
             : !attemptedReminder && agentFinalText is not null
                 ? agentFinalText
                 : rejectedInternalProtocolText

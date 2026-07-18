@@ -1,3 +1,4 @@
+using System.Text.Json;
 using VoiceAssistant.API.Controllers;
 using VoiceAssistant.API.Data.Entities;
 using VoiceAssistant.API.Services;
@@ -8,6 +9,28 @@ namespace VoiceAssistant.API.Tests;
 public class ChatControllerTests
 {
     private const string AudioRoot = "/app/audio";
+
+    [Fact]
+    public void LibraryArtifactAction_JsonUsesTheMobileCamelCaseContract()
+    {
+        var action = new LibraryArtifactAction(
+            "cfb4dfe9-0fae-45b9-a1fa-5a4701cb854b",
+            "Ужины на неделю",
+            "recipes",
+            "<article><p>Тест</p></article>",
+            "Пять рецептов",
+            ["https://example.com/source"],
+            "Добавлены быстрые ужины");
+
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(new { libraryArtifact = action }));
+        var artifact = document.RootElement.GetProperty("libraryArtifact");
+
+        Assert.Equal("Ужины на неделю", artifact.GetProperty("title").GetString());
+        Assert.Equal("recipes", artifact.GetProperty("kind").GetString());
+        Assert.Equal("<article><p>Тест</p></article>", artifact.GetProperty("html").GetString());
+        Assert.False(artifact.TryGetProperty("Title", out _));
+        Assert.False(artifact.TryGetProperty("Html", out _));
+    }
 
     [Fact]
     public void TryResolveSafeAudioPath_ValidGuidWebm_ReturnsTrueWithCombinedPath()

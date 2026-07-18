@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace VoiceAssistant.API.Services;
@@ -16,13 +17,13 @@ public static class ExternalActionTypes
 // The HTML itself is deliberately carried only in the client action envelope.
 // ActionReceipts persist its type/status for diagnostics, never the document.
 public sealed record LibraryArtifactAction(
-    string? ArtifactId,
-    string Title,
-    string Kind,
-    string Html,
-    string? Summary,
-    IReadOnlyList<string> SourceUrls,
-    string? RevisionNote);
+    [property: JsonPropertyName("artifactId")] string? ArtifactId,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("html")] string Html,
+    [property: JsonPropertyName("summary")] string? Summary,
+    [property: JsonPropertyName("sourceUrls")] IReadOnlyList<string> SourceUrls,
+    [property: JsonPropertyName("revisionNote")] string? RevisionNote);
 
 public record ExternalActionCommand(
     string Type,
