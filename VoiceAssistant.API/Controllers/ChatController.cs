@@ -125,6 +125,10 @@ public class ChatController : ControllerBase
             .Any(item => string.Equals(item, email, StringComparison.OrdinalIgnoreCase));
     }
 
+    private bool IsAudioCorePlannerBypassEnabledFor(string? email) =>
+        IsAudioCoreAgentEnabledFor(email) &&
+        _config.GetValue("Features:AudioCoreAgentSkipPlannerEnabled", false);
+
     // Kept as a public compatibility seam for existing security tests and
     // OCR. Visual Capture uses the same byte-level inspector, so MIME rules
     // cannot silently diverge between the two image paths.
@@ -314,6 +318,10 @@ public class ChatController : ControllerBase
         long audioCoreMs = 0;
         var audioCoreUsed = false;
         var audioCoreFallback = false;
+        AudioCoreTranscriptionResult? audioCoreResult = null;
+        long memoryRecallMs = 0;
+        long agentMs = 0;
+        var agentSkipped = false;
         long speakerIdMs = 0;
         SpeakerIdResult? speakerResult = null;
         // Tracks "did we enter an audio transcription route at all" — this
@@ -344,7 +352,7 @@ public class ChatController : ControllerBase
             var sw = Stopwatch.StartNew();
             if (IsAudioCoreAgentEnabledFor(user.Email))
             {
-                var audioCoreResult = await _audioCoreTranscription.TranscribeAsync(filePath, geminiKey, HttpContext.RequestAborted);
+                audioCoreResult = await _audioCoreTranscription.TranscribeAsync(filePath, geminiKey, HttpContext.RequestAborted);
                 sw.Stop();
                 audioCoreMs = sw.ElapsedMilliseconds;
 
@@ -495,6 +503,30 @@ public class ChatController : ControllerBase
         session.Messages.Add(userMessage);
         await _db.SaveChangesAsync();
 
+        // For an AudioCore voice turn the primary model has already supplied
+        // a short, safe phrase in the native function call. Emit it before
+        // memory recall and tool planning so the user hears a real response
+        // while the detailed agent path is still working.
+        Response.ContentType = "text/event-stream";
+        Response.Headers.CacheControl = "no-cache";
+        Response.Headers.Connection = "keep-alive";
+        var preambleSent = false;
+        var transcriptionSent = false;
+        if (audioCoreUsed && !string.IsNullOrWhiteSpace(audioCoreResult?.Preamble))
+        {
+            var earlyPreambleData = JsonSerializer.Serialize(new { preamble = audioCoreResult.Preamble });
+            await Response.WriteAsync($"data: {earlyPreambleData}\n\n");
+            await Response.Body.FlushAsync();
+            preambleSent = true;
+        }
+        if (transcription is not null)
+        {
+            var earlyTranscriptionData = JsonSerializer.Serialize(new { transcription });
+            await Response.WriteAsync($"data: {earlyTranscriptionData}\n\n");
+            await Response.Body.FlushAsync();
+            transcriptionSent = true;
+        }
+
         // Check (in parallel, doesn't block the response) whether the user asked the
         // assistant to remember a persistent behavior preference ("говори медленнее",
         // "давай на ты", etc.) so future turns' system prompts reflect it. Awaited at
@@ -507,7 +539,10 @@ public class ChatController : ControllerBase
 
         // Semantic recall is the only long-term-memory operation on the critical
         // path. Explicit agent memory calls below suppress passive extraction.
+        var recallStopwatch = Stopwatch.StartNew();
         var recalledFacts = await _longTermMemory.RecallAsync(userId, messageText, geminiKey, HttpContext.RequestAborted);
+        recallStopwatch.Stop();
+        memoryRecallMs = recallStopwatch.ElapsedMilliseconds;
 
         // Build conversation history: this session is persistent and never rotates
         // (single ongoing session per user), so resending every message ever exchanged
@@ -590,14 +625,36 @@ public class ChatController : ControllerBase
             systemPrompt = $"Ты слышишь новый, ранее не знакомый тебе голос несколько реплик подряд. Ненавязчиво, как естественную часть своего ответа по теме разговора, поинтересуйся как зовут собеседника — не делай это отдельным резким вопросом или объявлением о распознавании голоса.\n\n{systemPrompt}";
         }
 
-        var agentTurn = await _agentTurn.RunAsync(
-            systemPrompt,
-            messages,
-            geminiKey,
-            userId,
-            userMessage.Id,
-            capabilityContext,
-            HttpContext.RequestAborted);
+        // The AudioCore model is deliberately conservative: it permits this
+        // bypass only for ordinary conversation and labels uncertainty as
+        // requiring a tool. Attachments always retain the full planner so
+        // screenshots, shares, reminders and memory actions cannot be
+        // silently downgraded into plain text replies.
+        var bypassAgentPlanner = audioCoreUsed &&
+                                 audioCoreResult is { RequiresTool: false } &&
+                                 visualAsset is null &&
+                                 sharedContent is null &&
+                                 IsAudioCorePlannerBypassEnabledFor(user.Email);
+        var agentStopwatch = Stopwatch.StartNew();
+        AssistantAgentTurnResult agentTurn;
+        if (bypassAgentPlanner)
+        {
+            agentSkipped = true;
+            agentTurn = new AssistantAgentTurnResult(false, [], null, false, false, false);
+        }
+        else
+        {
+            agentTurn = await _agentTurn.RunAsync(
+                systemPrompt,
+                messages,
+                geminiKey,
+                userId,
+                userMessage.Id,
+                capabilityContext,
+                HttpContext.RequestAborted);
+        }
+        agentStopwatch.Stop();
+        agentMs = agentStopwatch.ElapsedMilliseconds;
         var toolExecutions = agentTurn.ToolExecutions;
         var screenCaptureRequested = agentTurn.RequestsScreenCapture;
         var reminderDraft = toolExecutions.Select(result => result.Reminder).FirstOrDefault(reminder => reminder is not null);
@@ -636,17 +693,15 @@ public class ChatController : ControllerBase
                            systemPrompt;
         }
 
-        // SSE streaming response
-        Response.ContentType = "text/event-stream";
-        Response.Headers.CacheControl = "no-cache";
-        Response.Headers.Connection = "keep-alive";
-
-        // Send transcription event if audio was transcribed
-        if (transcription != null)
+        // Response headers and the direct voice preamble are deliberately
+        // sent above, before recall/planning. Keep this late transcription
+        // branch for non-AudioCore requests only.
+        if (transcription != null && !transcriptionSent)
         {
             var trData = JsonSerializer.Serialize(new { transcription });
             await Response.WriteAsync($"data: {trData}\n\n");
             await Response.Body.FlushAsync();
+            transcriptionSent = true;
         }
 
         if (actionProposal is not null)
@@ -789,7 +844,7 @@ public class ChatController : ControllerBase
         // can speak a natural "hold on" phrase while the real answer is still cooking
         // instead of leaving the user in silence for several seconds. A reminder has
         // already waited for the device receipt, so a preamble would arrive too late.
-        var preambleTask = !useAgentFinalText && actionProposal is null && reminderDraft is null
+        var preambleTask = !preambleSent && !useAgentFinalText && actionProposal is null && reminderDraft is null
             ? GetPreambleIfNeededAsync(messageText, geminiKey, HttpContext.RequestAborted)
             : Task.FromResult<string?>(null);
 
@@ -811,6 +866,7 @@ public class ChatController : ControllerBase
                 var preData = JsonSerializer.Serialize(new { preamble = preambleTask.Result });
                 await Response.WriteAsync($"data: {preData}\n\n");
                 await Response.Body.FlushAsync();
+                preambleSent = true;
             }
 
             var hasMore = await moveNextTask;
@@ -917,8 +973,8 @@ public class ChatController : ControllerBase
         await _db.SaveChangesAsync();
 
         // Log stats to server logs
-        _logger.LogInformation("VoiceAssistant Performance Stats - User: {UserEmail}, Session: {SessionId}, AudioCore: {AudioCoreMs}ms (Used: {AudioCoreUsed}, Fallback: {AudioCoreFallback}), Convert: {ConvertMs}ms, Transcribe: {TranscribeMs}ms, SpeakerId: {SpeakerIdMs}ms, LLM (First Token): {LlmFirstMs}ms, LLM (Total): {LlmTotalMs}ms",
-            user.Email, req.SessionId, audioCoreMs, audioCoreUsed, audioCoreFallback, convertMs, transcribeMs, speakerIdMs, llmFirstTokenMs, llmTotalMs);
+        _logger.LogInformation("VoiceAssistant Performance Stats - User: {UserEmail}, Session: {SessionId}, AudioCore: {AudioCoreMs}ms (Used: {AudioCoreUsed}, Fallback: {AudioCoreFallback}), MemoryRecall: {MemoryRecallMs}ms, Agent: {AgentMs}ms (Skipped: {AgentSkipped}), Preamble: {PreambleSent}, Convert: {ConvertMs}ms, Transcribe: {TranscribeMs}ms, SpeakerId: {SpeakerIdMs}ms, LLM (First Token): {LlmFirstMs}ms, LLM (Total): {LlmTotalMs}ms",
+            user.Email, req.SessionId, audioCoreMs, audioCoreUsed, audioCoreFallback, memoryRecallMs, agentMs, agentSkipped, preambleSent, convertMs, transcribeMs, speakerIdMs, llmFirstTokenMs, llmTotalMs);
 
         // Send stats event to client, then [DONE] last -- both only after the
         // save above has actually completed.
@@ -927,6 +983,10 @@ public class ChatController : ControllerBase
             AudioCoreMs = audioCoreMs,
             AudioCoreUsed = audioCoreUsed,
             AudioCoreFallback = audioCoreFallback,
+            MemoryRecallMs = memoryRecallMs,
+            AgentMs = agentMs,
+            AgentSkipped = agentSkipped,
+            PreambleSent = preambleSent,
             ConvertMs = convertMs,
             TranscribeMs = transcribeMs,
             SpeakerIdMs = speakerIdMs,

@@ -848,6 +848,44 @@ export function useVoiceChat(
       const screenCaptureHolder: { current: ScreenCaptureRequest | null } = { current: null };
       let nativeScreenCaptureRequestId: string | null = null;
 
+      const ensureStreamingSpeech = (): StreamingSpeech => {
+        if (!streamingHolder.current) {
+          streamingHolder.current = createStreamingSpeech(async () => {
+            // Arm BEFORE speaking, not after — barge-in needs VAD watching
+            // for the entire playback, including an early voice preamble.
+            await rearmRecorderOnly();
+            // Re-check pause AFTER that (possibly slow, native) rearm —
+            // pauseConversation's own stopRecorderIfLive() call can run
+            // BEFORE this rearm has actually made the recorder live (both
+            // race in the background from the same 'thinking'->'speaking'
+            // transition), missing it entirely. Left unchecked, the
+            // recorder would end up live — and the UI would read
+            // 'speaking' — during what the user believes is a silent
+            // pause. Checked via pausedRef, not stateRef: independent
+            // review found stateRef isn't reliably fresh enough here, since
+            // it only updates once a render actually runs, not
+            // synchronously at the moment pauseConversation ran.
+            if (pausedRef.current) {
+              await stopRecorderIfLive();
+              return;
+            }
+            if (myGeneration === segmentGenerationRef.current) setState('speaking');
+          }, pausedRef.current);
+          // A preamble or a reply's first chunk can arrive while the user
+          // already paused during 'thinking'. Create the pipeline anyway;
+          // resumeConversation later releases it without losing the phrase.
+        }
+        return streamingHolder.current;
+      };
+
+      const handlePreamble = (preamble: string) => {
+        if (myGeneration !== segmentGenerationRef.current || bargedInRef.current) return;
+        const speech = stripMarkdownForSpeechChunk(preamble).trim();
+        if (!speech) return;
+        log('info', 'turn', 'voice preamble received', { elapsedMs: Date.now() - turnStartedAt, length: speech.length });
+        ensureStreamingSpeech().push(speech);
+      };
+
       const handleChunk = (chunk: string) => {
         if (myGeneration !== segmentGenerationRef.current || bargedInRef.current) {
           // Two distinct reasons to stop here, same response to both:
@@ -877,38 +915,7 @@ export function useVoiceChat(
         visibleReplyBuffer += chunk;
         setReply(stripMarkupForDisplay(visibleReplyBuffer));
 
-        if (!streamingHolder.current) {
-          streamingHolder.current = createStreamingSpeech(async () => {
-            // Arm BEFORE speaking, not after — barge-in needs VAD watching
-            // for the entire playback, not just once it's done. Awaited
-            // here (not fired-and-forgotten from handleChunk, which can't
-            // itself be async — SendMessageCallbacks.onChunk isn't) so the
-            // FIRST utterance never starts before the mic is actually live
-            // to catch an interruption.
-            await rearmRecorderOnly();
-            // Re-check pause AFTER that (possibly slow, native) rearm —
-            // pauseConversation's own stopRecorderIfLive() call can run
-            // BEFORE this rearm has actually made the recorder live (both
-            // race in the background from the same 'thinking'->'speaking'
-            // transition), missing it entirely. Left unchecked, the
-            // recorder would end up live — and the UI would read
-            // 'speaking' — during what the user believes is a silent
-            // pause. Checked via pausedRef, not stateRef: independent
-            // review found stateRef isn't reliably fresh enough here, since
-            // it only updates once a render actually runs, not
-            // synchronously at the moment pauseConversation ran.
-            if (pausedRef.current) {
-              await stopRecorderIfLive();
-              return;
-            }
-            if (myGeneration === segmentGenerationRef.current) setState('speaking');
-          }, pausedRef.current);
-          // ^ startPaused: a reply's first chunk can arrive while the user
-          // already paused during 'thinking' (before there was anything to
-          // pause yet) — see pauseConversation/resumeConversation below.
-          // Created (and queued into) regardless, just held silent until
-          // resumeConversation calls resumeSpeaking().
-        }
+        const streamingSpeech = ensureStreamingSpeech();
 
         // The CHUNK (non-trimming) variant specifically — see its own
         // comment in systemSpeech.ts for why: this buffer can legitimately
@@ -920,7 +927,7 @@ export function useVoiceChat(
         sentenceBuffer = stripMarkdownForSpeechChunk(sentenceBuffer + chunk);
         const { sentences, rest } = extractCompleteSentences(sentenceBuffer);
         sentenceBuffer = rest;
-        for (const sentence of sentences) streamingHolder.current.push(sentence);
+        for (const sentence of sentences) streamingSpeech.push(sentence);
       };
 
       const handleStats = (stats: ServerTurnStats) => {
@@ -1027,6 +1034,7 @@ export function useVoiceChat(
             visualAssetId,
             sharedContent,
           }, {
+            onPreamble: handlePreamble,
             onChunk: handleChunk,
             onStats: handleStats,
             onReminder: handleReminder,
@@ -1063,6 +1071,7 @@ export function useVoiceChat(
                 pendingSegmentsRef.current.set(myGeneration, text.trim());
                 if (myGeneration === segmentGenerationRef.current) setTranscript(pendingText());
               },
+              onPreamble: handlePreamble,
               onChunk: handleChunk,
               onStats: handleStats,
               onReminder: handleReminder,
@@ -1138,6 +1147,7 @@ export function useVoiceChat(
             supportsScreenAnalysis: false,
             visualAssetId,
           }, {
+            onPreamble: handlePreamble,
             onChunk: handleChunk,
             onStats: handleStats,
             onReminder: handleReminder,

@@ -659,6 +659,7 @@ export interface ReminderSyncItem {
 
 export interface SendMessageCallbacks {
   onTranscription?: (text: string) => void;
+  onPreamble?: (text: string) => void;
   onChunk?: (text: string) => void;
   onStats?: (stats: ServerTurnStats) => void;
   onReminder?: (reminder: ReminderEvent) => Promise<void>;
@@ -672,6 +673,10 @@ export interface ServerTurnStats {
   audioCoreMs?: number;
   audioCoreUsed?: boolean;
   audioCoreFallback?: boolean;
+  memoryRecallMs?: number;
+  agentMs?: number;
+  agentSkipped?: boolean;
+  preambleSent?: boolean;
   convertMs?: number;
   transcribeMs?: number;
   speakerIdMs?: number;
@@ -692,6 +697,10 @@ function parseTurnStats(value: unknown): ServerTurnStats | null {
     audioCoreMs: numberValue('audioCoreMs'),
     audioCoreUsed: typeof candidate.audioCoreUsed === 'boolean' ? candidate.audioCoreUsed : undefined,
     audioCoreFallback: typeof candidate.audioCoreFallback === 'boolean' ? candidate.audioCoreFallback : undefined,
+    memoryRecallMs: numberValue('memoryRecallMs'),
+    agentMs: numberValue('agentMs'),
+    agentSkipped: typeof candidate.agentSkipped === 'boolean' ? candidate.agentSkipped : undefined,
+    preambleSent: typeof candidate.preambleSent === 'boolean' ? candidate.preambleSent : undefined,
     convertMs: numberValue('convertMs'),
     transcribeMs: numberValue('transcribeMs'),
     speakerIdMs: numberValue('speakerIdMs'),
@@ -853,6 +862,8 @@ export async function sendMessage(params: SendMessageParams, callbacks: SendMess
           throw new ApiError(parsed.error);
         } else if (typeof parsed.transcription === 'string') {
           callbacks.onTranscription?.(parsed.transcription);
+        } else if (typeof parsed.preamble === 'string') {
+          callbacks.onPreamble?.(parsed.preamble);
         } else if (typeof parsed.text === 'string') {
           fullText += parsed.text;
           callbacks.onChunk?.(parsed.text);
@@ -874,7 +885,6 @@ export async function sendMessage(params: SendMessageParams, callbacks: SendMess
           const stats = parseTurnStats(parsed.stats);
           if (stats) callbacks.onStats(stats);
         }
-        // parsed.preamble remains intentionally unused by the mobile client.
       }
     }
 

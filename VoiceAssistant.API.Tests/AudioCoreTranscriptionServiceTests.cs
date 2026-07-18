@@ -19,7 +19,7 @@ public class AudioCoreTranscriptionServiceTests
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent("""
-                    {"candidates":[{"content":{"parts":[{"functionCall":{"name":"capture_user_utterance","args":{"transcript":"Поставь напоминание на завтра"}}}]}}]}
+                    {"candidates":[{"content":{"parts":[{"functionCall":{"name":"capture_user_utterance","args":{"transcript":"Поставь напоминание на завтра","preamble":"Сейчас проверю, как лучше это запланировать.","requiresTool":true}}}]}}]}
                     """, Encoding.UTF8, "application/json")
             };
         });
@@ -34,6 +34,8 @@ public class AudioCoreTranscriptionServiceTests
 
             Assert.True(result.ProviderAvailable);
             Assert.Equal("Поставь напоминание на завтра", result.Transcription);
+            Assert.Equal("Сейчас проверю, как лучше это запланировать.", result.Preamble);
+            Assert.True(result.RequiresTool);
 
             using var document = JsonDocument.Parse(requestBody!);
             var inlineData = document.RootElement.GetProperty("contents")[0].GetProperty("parts")[0].GetProperty("inline_data");
@@ -65,6 +67,18 @@ public class AudioCoreTranscriptionServiceTests
         var mimeType = AudioCoreTranscriptionService.DetectAudioMimeType([0x1A, 0x45, 0xDF, 0xA3]);
 
         Assert.Equal("audio/webm", mimeType);
+    }
+
+    [Fact]
+    public void ParseResponse_OrdinaryConversation_AllowsConservativePlannerBypass()
+    {
+        var result = AudioCoreTranscriptionService.ParseResponse("""
+            {"candidates":[{"content":{"parts":[{"functionCall":{"name":"capture_user_utterance","args":{"transcript":"Мне сегодня немного грустно","preamble":"Понимаю тебя, давай спокойно об этом поговорим.","requiresTool":false}}}]}}]}
+            """);
+
+        Assert.True(result.ProviderAvailable);
+        Assert.False(result.RequiresTool);
+        Assert.Equal("Понимаю тебя, давай спокойно об этом поговорим.", result.Preamble);
     }
 
     private static AudioCoreTranscriptionService CreateService(HttpMessageHandler handler)
