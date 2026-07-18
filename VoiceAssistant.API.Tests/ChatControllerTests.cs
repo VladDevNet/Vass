@@ -18,6 +18,7 @@ public class ChatControllerTests
             "Ужины на неделю",
             "recipes",
             "<article><p>Тест</p></article>",
+            "Кулинария",
             "Пять рецептов",
             ["https://example.com/source"],
             "Добавлены быстрые ужины");
@@ -28,8 +29,10 @@ public class ChatControllerTests
         Assert.Equal("Ужины на неделю", artifact.GetProperty("title").GetString());
         Assert.Equal("recipes", artifact.GetProperty("kind").GetString());
         Assert.Equal("<article><p>Тест</p></article>", artifact.GetProperty("html").GetString());
+        Assert.Equal("Кулинария", artifact.GetProperty("sectionTitle").GetString());
         Assert.False(artifact.TryGetProperty("Title", out _));
         Assert.False(artifact.TryGetProperty("Html", out _));
+        Assert.False(artifact.TryGetProperty("SectionTitle", out _));
     }
 
     [Fact]

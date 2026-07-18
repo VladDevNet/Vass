@@ -207,7 +207,25 @@ public class ChatController : ControllerBase
                 title!,
                 kind,
                 NormalizeLibraryCatalogText(item.Summary, 600),
-                Math.Clamp(item.RevisionCount, 1, 50)));
+                Math.Clamp(item.RevisionCount, 1, 50),
+                NormalizeLibraryCatalogText(item.SectionTitle, 60)));
+        }
+        return items;
+    }
+
+    private static IReadOnlyList<AssistantLibrarySectionItem> NormalizeLibrarySections(
+        IReadOnlyList<LibrarySectionRequestItem>? sections)
+    {
+        if (sections is null || sections.Count == 0) return [];
+        var items = new List<AssistantLibrarySectionItem>();
+        var seenIds = new HashSet<Guid>();
+        var seenTitles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var section in sections.Take(30))
+        {
+            if (!Guid.TryParse(section.Id, out var id) || !seenIds.Add(id)) continue;
+            var title = NormalizeLibraryCatalogText(section.Title, 60);
+            if (string.IsNullOrWhiteSpace(title) || !seenTitles.Add(title)) continue;
+            items.Add(new AssistantLibrarySectionItem(id.ToString(), title));
         }
         return items;
     }
@@ -224,7 +242,12 @@ public class ChatController : ControllerBase
         string Title,
         string Kind,
         string? Summary = null,
-        int RevisionCount = 1);
+        int RevisionCount = 1,
+        string? SectionTitle = null);
+
+    public sealed record LibrarySectionRequestItem(
+        string Id,
+        string Title);
 
     public record SendRequest(
         int SessionId,
@@ -237,6 +260,7 @@ public class ChatController : ControllerBase
         bool SupportsScreenAnalysis = false,
         bool SupportsLibrary = false,
         IReadOnlyList<LibraryCatalogRequestItem>? LibraryCatalog = null,
+        IReadOnlyList<LibrarySectionRequestItem>? LibrarySections = null,
         string? SharedContent = null,
         int ReminderProtocolVersion = 1,
         Guid? ClientTurnId = null);
@@ -526,7 +550,8 @@ public class ChatController : ControllerBase
             ClientTurnId: req.ClientTurnId,
             VisualAssetId: visualAsset?.Id,
             SupportsLibrary: req.SupportsLibrary,
-            LibraryCatalog: NormalizeLibraryCatalog(req.LibraryCatalog));
+            LibraryCatalog: NormalizeLibraryCatalog(req.LibraryCatalog),
+            LibrarySections: NormalizeLibrarySections(req.LibrarySections));
         var capabilitySnapshot = _capabilities.GetSnapshot(capabilityContext);
 
         // Save user message

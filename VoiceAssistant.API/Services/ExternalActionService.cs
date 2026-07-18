@@ -21,6 +21,7 @@ public sealed record LibraryArtifactAction(
     [property: JsonPropertyName("title")] string Title,
     [property: JsonPropertyName("kind")] string Kind,
     [property: JsonPropertyName("html")] string Html,
+    [property: JsonPropertyName("sectionTitle")] string? SectionTitle,
     [property: JsonPropertyName("summary")] string? Summary,
     [property: JsonPropertyName("sourceUrls")] IReadOnlyList<string> SourceUrls,
     [property: JsonPropertyName("revisionNote")] string? RevisionNote);

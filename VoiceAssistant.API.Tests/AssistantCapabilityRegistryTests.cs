@@ -100,7 +100,14 @@ public class AssistantCapabilityRegistryTests
                     "Ужин на неделю",
                     "recipes",
                     "Пять простых рецептов",
-                    2)
+                    2,
+                    "Кулинария")
+            ],
+            LibrarySections:
+            [
+                new AssistantLibrarySectionItem(
+                    "a0a1950c-02f1-4fc9-8e95-f97c6bf3e8ee",
+                    "Кулинария")
             ]);
 
         var available = registry.GetSnapshot(context);
@@ -113,5 +120,7 @@ public class AssistantCapabilityRegistryTests
         Assert.Contains(help, item => item.Id == "library");
         Assert.Contains("недоверенные метаданные", manifest);
         Assert.Contains("cfb4dfe9-0fae-45b9-a1fa-5a4701cb854b", manifest);
+        Assert.Contains("sectionTitle", manifest);
+        Assert.Contains("sections", manifest);
     }
 }

@@ -2,11 +2,24 @@ export const LIBRARY_KINDS = ['recipes', 'restaurants', 'entertainment', 'guide'
 
 export type LibraryKind = typeof LIBRARY_KINDS[number];
 
+export interface LibrarySection {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LibraryCatalogSection {
+  id: string;
+  title: string;
+}
+
 export interface LibraryCatalogEntry {
   id: string;
   title: string;
   kind: LibraryKind;
   summary: string;
+  sectionTitle: string;
   updatedAt: string;
   revisionCount: number;
 }
@@ -19,6 +32,7 @@ export interface LibraryRevision {
 }
 
 export interface LibraryArtifact extends LibraryCatalogEntry {
+  sectionId: string;
   createdAt: string;
   currentRevisionId: string;
   sourceUrls: string[];
@@ -26,8 +40,14 @@ export interface LibraryArtifact extends LibraryCatalogEntry {
 }
 
 export interface LibraryIndex {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  sections: LibrarySection[];
   artifacts: LibraryArtifact[];
+}
+
+export interface LibraryAssistantCatalog {
+  sections: LibraryCatalogSection[];
+  artifacts: LibraryCatalogEntry[];
 }
 
 export interface LibraryArtifactDraft {
@@ -35,6 +55,7 @@ export interface LibraryArtifactDraft {
   title: string;
   kind: LibraryKind;
   html: string;
+  sectionTitle?: string | null;
   summary?: string | null;
   sourceUrls?: string[] | null;
   revisionNote?: string | null;

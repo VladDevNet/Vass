@@ -30,7 +30,7 @@ import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
 import { executeExternalAction, ExternalActionExecutionError } from '../actions/externalActions';
 import { VassOverlay } from '../../modules/vass-overlay';
-import type { LibraryCatalogEntry } from '../library/types';
+import type { LibraryAssistantCatalog } from '../library/types';
 import type { PendingSharedText, PendingVisualInput, StageVisualAssetInput } from '../visual/types';
 
 export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking' | 'paused';
@@ -42,7 +42,7 @@ interface VisualTurnBridge {
   getPendingSharedText: () => PendingSharedText | null;
   consumePendingSharedText: (requestId: string) => void;
   setScreenCaptureConsentPending: (pending: boolean) => void;
-  getLibraryCatalog?: () => Promise<LibraryCatalogEntry[]>;
+  getLibraryCatalog?: () => Promise<LibraryAssistantCatalog>;
   applyLibraryAction?: (action: LibraryActionEvent) => Promise<{ resultCode: string }>;
 }
 
@@ -1027,7 +1027,7 @@ export function useVoiceChat(
               log('warn', 'library', 'could not load local catalog for assistant turn', {
                 error: libraryError instanceof Error ? libraryError.message : String(libraryError),
               });
-              return [] as LibraryCatalogEntry[];
+              return { sections: [], artifacts: [] } as LibraryAssistantCatalog;
             })
           : undefined;
 
@@ -1078,7 +1078,8 @@ export function useVoiceChat(
             supportsExternalActions: true,
             supportsScreenAnalysis,
             supportsLibrary,
-            libraryCatalog,
+            libraryCatalog: libraryCatalog?.artifacts,
+            librarySections: libraryCatalog?.sections,
             visualAssetId,
             sharedContent,
           }, {
@@ -1111,7 +1112,8 @@ export function useVoiceChat(
               supportsExternalActions: true,
               supportsScreenAnalysis,
               supportsLibrary,
-              libraryCatalog,
+              libraryCatalog: libraryCatalog?.artifacts,
+              librarySections: libraryCatalog?.sections,
               visualAssetId,
               sharedContent,
             },
@@ -1197,7 +1199,8 @@ export function useVoiceChat(
             supportsExternalActions: true,
             supportsScreenAnalysis: false,
             supportsLibrary,
-            libraryCatalog,
+            libraryCatalog: libraryCatalog?.artifacts,
+            librarySections: libraryCatalog?.sections,
             visualAssetId,
           }, {
             onPreamble: handlePreamble,

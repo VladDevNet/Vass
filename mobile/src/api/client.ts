@@ -1,6 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { fetch as expoFetch } from 'expo/fetch';
-import { isLibraryKind, type LibraryArtifactDraft, type LibraryCatalogEntry } from '../library/types';
+import { isLibraryKind, type LibraryArtifactDraft, type LibraryCatalogEntry, type LibraryCatalogSection } from '../library/types';
 import { File, Paths } from 'expo-file-system';
 import { Blob as ExpoBlob } from 'expo-blob';
 
@@ -660,6 +660,7 @@ export interface SendMessageParams {
   supportsScreenAnalysis?: boolean;
   supportsLibrary?: boolean;
   libraryCatalog?: LibraryCatalogEntry[];
+  librarySections?: LibraryCatalogSection[];
   visualAssetId?: string;
   sharedContent?: string;
 }
@@ -785,11 +786,13 @@ function parseLibraryArtifact(value: unknown): LibraryArtifactDraft | null {
     : [];
   const summary = typeof candidate.summary === 'string' ? candidate.summary.trim().slice(0, 600) : null;
   const revisionNote = typeof candidate.revisionNote === 'string' ? candidate.revisionNote.trim().slice(0, 220) : null;
+  const sectionTitle = typeof candidate.sectionTitle === 'string' ? candidate.sectionTitle.trim().slice(0, 60) : null;
   return {
     artifactId,
     title,
     kind: candidate.kind,
     html,
+    sectionTitle,
     summary,
     sourceUrls,
     revisionNote,

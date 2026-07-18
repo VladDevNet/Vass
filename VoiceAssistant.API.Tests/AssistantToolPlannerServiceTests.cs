@@ -62,6 +62,7 @@ public class AssistantToolPlannerServiceTests
         Assert.Contains("periodic_reminder_create", requestBody);
         Assert.Contains("library_write", requestBody);
         Assert.Contains("library_open", requestBody);
+        Assert.Contains("sectionTitle", requestBody);
 
         var capturedRequest = Assert.IsType<string>(requestBody);
         using var requestDocument = JsonDocument.Parse(capturedRequest);

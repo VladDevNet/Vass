@@ -170,6 +170,7 @@ public sealed class AssistantToolBroker
                 GetString(call.Arguments, "title"),
                 GetString(call.Arguments, "kind"),
                 GetString(call.Arguments, "html"),
+                GetString(call.Arguments, "sectionTitle"),
                 GetString(call.Arguments, "summary"),
                 GetStringArray(call.Arguments, "sourceUrls"),
                 GetString(call.Arguments, "artifactId"),
@@ -484,20 +485,24 @@ public sealed class AssistantToolBroker
                 Data: ToData(new { status = "unavailable", code = "library_client_required" }));
 
         var items = (context.LibraryCatalog ?? []).Take(20).ToArray();
+        var sections = (context.LibrarySections ?? []).Take(30).ToArray();
         return new("library_list", "ok",
-            items.Length == 0
-                ? "В локальной библиотеке пока нет книг."
-                : string.Join("\n", items.Select(item => $"[{item.Id}; {item.Kind}; версий: {item.RevisionCount}] {item.Title}")),
+            items.Length == 0 && sections.Length == 0
+                ? "В локальной библиотеке пока нет разделов и книг."
+                : string.Join("\n", sections.Select(section => $"[раздел: {section.Id}] {section.Title}")
+                    .Concat(items.Select(item => $"[{item.Id}; раздел: {item.SectionTitle ?? "Без раздела"}; {item.Kind}; версий: {item.RevisionCount}] {item.Title}"))),
             Data: ToData(new
             {
                 status = "ok",
+                sections = sections.Select(section => new { id = section.Id, title = section.Title }),
                 items = items.Select(item => new
                 {
                     id = item.Id,
                     title = item.Title,
                     kind = item.Kind,
                     summary = item.Summary,
-                    revisionCount = item.RevisionCount
+                    revisionCount = item.RevisionCount,
+                    sectionTitle = item.SectionTitle
                 })
             }));
     }
@@ -507,6 +512,7 @@ public sealed class AssistantToolBroker
         string? title,
         string? kind,
         string? html,
+        string? sectionTitle,
         string? summary,
         IReadOnlyList<string> sourceUrls,
         string? artifactId,
@@ -520,7 +526,7 @@ public sealed class AssistantToolBroker
             return new(name, "unavailable", "Локальная библиотека недоступна на этом клиенте.",
                 Data: ToData(new { status = "unavailable", code = "library_client_required" }));
 
-        if (!TryCreateLibraryArtifact(title, kind, html, summary, sourceUrls, artifactId, revisionNote, out var artifact))
+        if (!TryCreateLibraryArtifact(title, kind, html, sectionTitle, summary, sourceUrls, artifactId, revisionNote, out var artifact))
             return new(name, "invalid", "Для книги нужны корректные название, тип и статический HTML без внешнего кода.",
                 Data: ToData(new { status = "invalid", code = "invalid_library_document" }));
 
@@ -690,6 +696,7 @@ public sealed class AssistantToolBroker
         string? title,
         string? kind,
         string? html,
+        string? sectionTitle,
         string? summary,
         IReadOnlyList<string> sourceUrls,
         string? artifactId,
@@ -724,6 +731,7 @@ public sealed class AssistantToolBroker
             normalizedTitle!,
             normalizedKind,
             normalizedHtml,
+            NormalizeLibraryText(sectionTitle, 60),
             NormalizeLibraryText(summary, 600),
             safeUrls,
             NormalizeLibraryText(revisionNote, 220));
