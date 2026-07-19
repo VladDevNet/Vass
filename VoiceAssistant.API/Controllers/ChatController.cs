@@ -357,6 +357,15 @@ public class ChatController : ControllerBase
     [HttpPost("send")]
     public async Task Send([FromBody] SendRequest req)
     {
+        var turnTimeline = Stopwatch.StartNew();
+        long? audioCoreReadyAtMs = null;
+        long? preambleSentAtMs = null;
+        long? transcriptionSentAtMs = null;
+        long? memoryRecallReadyAtMs = null;
+        long? agentReadyAtMs = null;
+        long? llmStartedAtMs = null;
+        long? firstTextSentAtMs = null;
+        long? responsePersistedAtMs = null;
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
         var user = await _userManager.FindByIdAsync(userId);
         if (user == null) { Response.StatusCode = 401; return; }
@@ -415,6 +424,10 @@ public class ChatController : ControllerBase
             audioCoreResult = await _audioCoreTranscription.TranscribeAsync(filePath, geminiKey, HttpContext.RequestAborted);
             sw.Stop();
             audioCoreMs = sw.ElapsedMilliseconds;
+            audioCoreReadyAtMs = turnTimeline.ElapsedMilliseconds;
+            _logger.LogInformation(
+                "Voice turn timeline audio core ready: Turn {ClientTurnId}, At {ElapsedMs}ms, Duration {AudioCoreMs}ms, ProviderAvailable {ProviderAvailable}",
+                req.ClientTurnId, audioCoreReadyAtMs, audioCoreMs, audioCoreResult.ProviderAvailable);
 
             if (audioCoreResult.ProviderAvailable)
             {
@@ -580,6 +593,8 @@ public class ChatController : ControllerBase
             await Response.WriteAsync($"data: {earlyPreambleData}\n\n");
             await Response.Body.FlushAsync();
             preambleSent = true;
+            preambleSentAtMs = turnTimeline.ElapsedMilliseconds;
+            _logger.LogInformation("Voice turn timeline preamble sent: Turn {ClientTurnId}, At {ElapsedMs}ms", req.ClientTurnId, preambleSentAtMs);
         }
         if (transcription is not null)
         {
@@ -587,6 +602,8 @@ public class ChatController : ControllerBase
             await Response.WriteAsync($"data: {earlyTranscriptionData}\n\n");
             await Response.Body.FlushAsync();
             transcriptionSent = true;
+            transcriptionSentAtMs = turnTimeline.ElapsedMilliseconds;
+            _logger.LogInformation("Voice turn timeline transcription sent: Turn {ClientTurnId}, At {ElapsedMs}ms", req.ClientTurnId, transcriptionSentAtMs);
         }
 
         // Check (in parallel, doesn't block the response) whether the user asked the
@@ -605,6 +622,7 @@ public class ChatController : ControllerBase
         var recalledFacts = await _longTermMemory.RecallAsync(userId, messageText, geminiKey, HttpContext.RequestAborted);
         recallStopwatch.Stop();
         memoryRecallMs = recallStopwatch.ElapsedMilliseconds;
+        memoryRecallReadyAtMs = turnTimeline.ElapsedMilliseconds;
 
         // Build conversation history: this session is persistent and never rotates
         // (single ongoing session per user), so resending every message ever exchanged
@@ -716,6 +734,7 @@ public class ChatController : ControllerBase
         }
         agentStopwatch.Stop();
         agentMs = agentStopwatch.ElapsedMilliseconds;
+        agentReadyAtMs = turnTimeline.ElapsedMilliseconds;
         var toolExecutions = agentTurn.ToolExecutions;
         var screenCaptureRequested = agentTurn.RequestsScreenCapture;
         var reminderDraft = toolExecutions.Select(result => result.Reminder).FirstOrDefault(reminder => reminder is not null);
@@ -766,6 +785,8 @@ public class ChatController : ControllerBase
             await Response.WriteAsync($"data: {trData}\n\n");
             await Response.Body.FlushAsync();
             transcriptionSent = true;
+            transcriptionSentAtMs = turnTimeline.ElapsedMilliseconds;
+            _logger.LogInformation("Voice turn timeline transcription sent: Turn {ClientTurnId}, At {ElapsedMs}ms", req.ClientTurnId, transcriptionSentAtMs);
         }
 
         if (actionProposal is not null)
@@ -887,6 +908,7 @@ public class ChatController : ControllerBase
         var fullResponse = new System.Text.StringBuilder();
         var swLlm = Stopwatch.StartNew();
         long llmFirstTokenMs = 0;
+        llmStartedAtMs = turnTimeline.ElapsedMilliseconds;
 
         // A reminder is only confirmed after the phone responds above. Keep
         // that final receipt deterministic: a second free-form model call can
@@ -938,6 +960,8 @@ public class ChatController : ControllerBase
                 await Response.WriteAsync($"data: {preData}\n\n");
                 await Response.Body.FlushAsync();
                 preambleSent = true;
+                preambleSentAtMs = turnTimeline.ElapsedMilliseconds;
+                _logger.LogInformation("Voice turn timeline preamble sent: Turn {ClientTurnId}, At {ElapsedMs}ms", req.ClientTurnId, preambleSentAtMs);
             }
 
             var hasMore = await moveNextTask;
@@ -952,6 +976,7 @@ public class ChatController : ControllerBase
                 var data = JsonSerializer.Serialize(new { text = chunk });
                 await Response.WriteAsync($"data: {data}\n\n");
                 await Response.Body.FlushAsync();
+                firstTextSentAtMs ??= turnTimeline.ElapsedMilliseconds;
                 hasMore = await enumerator.MoveNextAsync();
             }
         }
@@ -991,6 +1016,7 @@ public class ChatController : ControllerBase
             var fallbackData = JsonSerializer.Serialize(new { text = fallback });
             await Response.WriteAsync($"data: {fallbackData}\n\n");
             await Response.Body.FlushAsync();
+            firstTextSentAtMs ??= turnTimeline.ElapsedMilliseconds;
         }
 
         if (fullResponse.Length == 0)
@@ -1007,6 +1033,7 @@ public class ChatController : ControllerBase
                     var data = JsonSerializer.Serialize(new { text = chunk });
                     await Response.WriteAsync($"data: {data}\n\n");
                     await Response.Body.FlushAsync();
+                    firstTextSentAtMs ??= turnTimeline.ElapsedMilliseconds;
                 }
             }
             catch (GeminiApiException ex)
@@ -1042,10 +1069,11 @@ public class ChatController : ControllerBase
         session.Messages.Add(new Message { Role = "assistant", Content = fullResponse.ToString() });
         user.LastActiveAt = DateTime.UtcNow;
         await _db.SaveChangesAsync();
+        responsePersistedAtMs = turnTimeline.ElapsedMilliseconds;
 
         // Log stats to server logs
-        _logger.LogInformation("VoiceAssistant Performance Stats - User: {UserEmail}, Session: {SessionId}, AudioCore: {AudioCoreMs}ms (Used: {AudioCoreUsed}, Fallback: {AudioCoreFallback}), MemoryRecall: {MemoryRecallMs}ms, Agent: {AgentMs}ms (Skipped: {AgentSkipped}), Preamble: {PreambleSent}, Convert: {ConvertMs}ms, Transcribe: {TranscribeMs}ms, SpeakerId: {SpeakerIdMs}ms, LLM (First Token): {LlmFirstMs}ms, LLM (Total): {LlmTotalMs}ms",
-            user.Email, req.SessionId, audioCoreMs, audioCoreUsed, audioCoreFallback, memoryRecallMs, agentMs, agentSkipped, preambleSent, convertMs, transcribeMs, speakerIdMs, llmFirstTokenMs, llmTotalMs);
+        _logger.LogInformation("VoiceAssistant Performance Stats - Turn: {ClientTurnId}, User: {UserEmail}, Session: {SessionId}, AudioCore: {AudioCoreMs}ms (Used: {AudioCoreUsed}, Fallback: {AudioCoreFallback}), MemoryRecall: {MemoryRecallMs}ms, Agent: {AgentMs}ms (Skipped: {AgentSkipped}), Preamble: {PreambleSent}, Convert: {ConvertMs}ms, Transcribe: {TranscribeMs}ms, SpeakerId: {SpeakerIdMs}ms, LLM (First Token): {LlmFirstMs}ms, LLM (Total): {LlmTotalMs}ms, Total: {TotalMs}ms",
+            req.ClientTurnId, user.Email, req.SessionId, audioCoreMs, audioCoreUsed, audioCoreFallback, memoryRecallMs, agentMs, agentSkipped, preambleSent, convertMs, transcribeMs, speakerIdMs, llmFirstTokenMs, llmTotalMs, turnTimeline.ElapsedMilliseconds);
 
         // Send stats event to client, then [DONE] last -- both only after the
         // save above has actually completed.
@@ -1063,6 +1091,15 @@ public class ChatController : ControllerBase
             SpeakerIdMs = speakerIdMs,
             LlmFirstTokenMs = llmFirstTokenMs,
             LlmTotalMs = llmTotalMs,
+            AudioCoreReadyAtMs = audioCoreReadyAtMs,
+            PreambleSentAtMs = preambleSentAtMs,
+            TranscriptionSentAtMs = transcriptionSentAtMs,
+            MemoryRecallReadyAtMs = memoryRecallReadyAtMs,
+            AgentReadyAtMs = agentReadyAtMs,
+            LlmStartedAtMs = llmStartedAtMs,
+            FirstTextSentAtMs = firstTextSentAtMs,
+            ResponsePersistedAtMs = responsePersistedAtMs,
+            ServerCompletedAtMs = turnTimeline.ElapsedMilliseconds,
             TranslationMs = 0L
         };
         var statsData = JsonSerializer.Serialize(new { stats }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
@@ -1319,7 +1356,7 @@ public class ChatController : ControllerBase
         var prompt = $$"""
             Сообщение пользователя: "{{userMessage}}"
             Чтобы дать на него хороший ответ, ассистенту понадобится (а) искать актуальную информацию в интернете или (б) тщательно обдумывать сложную, многогранную задачу?
-            Если да — выведи короткую, естественную, каждый раз разную по формулировке русскую фразу-предупреждение о паузе (например "Секунду, поищу это..." или "Дай мне подумать над этим..."), без кавычек.
+            Если да — выведи одну нейтральную реплику ожидания на 2-7 слов, без кавычек. Это не начало ответа и не план: она может лишь мягко отразить тему сообщения (например "Про это — секунду." или "Понял, минутку."), но не должна отвечать по существу, обещать действие или результат. Не используй "сделаю", "найду", "открою", "запишу", "проверю" и другие формулировки, предвосхищающие дальнейший ответ.
             Если это обычный разговорный вопрос, не требующий поиска или долгих раздумий — выведи ровно NONE.
             Ничего кроме фразы или NONE не пиши.
             """;
@@ -1349,7 +1386,7 @@ public class ChatController : ControllerBase
         {
             return null;
         }
-        return result;
+        return AudioCoreTranscriptionService.NormalizePreamble(result);
     }
 
     private async Task AwaitTurnSideEffectsAsync(params Task[] tasks)

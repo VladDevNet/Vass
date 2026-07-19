@@ -71,6 +71,30 @@ export function subscribeToTtsPlayback(listener: (playing: boolean) => void): ()
   return () => playbackListeners.delete(listener);
 }
 
+export type VoiceSpeechSource = 'local_acknowledgement' | 'preamble' | 'reply';
+
+export interface VoiceTurnTelemetry {
+  clientTurnId: string;
+  turnStartedAt: number;
+}
+
+interface SpeechPlaybackTrace {
+  source: VoiceSpeechSource;
+  telemetry?: VoiceTurnTelemetry;
+  sequence?: number;
+}
+
+function logVoiceTimeline(message: string, trace: SpeechPlaybackTrace | undefined, data: Record<string, unknown> = {}): void {
+  if (!trace?.telemetry) return;
+  log('info', 'voice-timeline', message, {
+    clientTurnId: trace.telemetry.clientTurnId,
+    source: trace.source,
+    sequence: trace.sequence,
+    elapsedMs: Math.max(0, Date.now() - trace.telemetry.turnStartedAt),
+    ...data,
+  });
+}
+
 function getRecoverableSpeechModule(): RecoverableSpeechModule | null {
   if (recoverableSpeechModule !== undefined) return recoverableSpeechModule;
   if (Platform.OS !== 'android') {
@@ -416,7 +440,8 @@ function speakChunk(
   voice: string,
   chunkIndex: number,
   totalChunks: number,
-  onPlaybackStart: () => void
+  onPlaybackStart: () => void,
+  trace?: SpeechPlaybackTrace,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let playbackStarted = false;
@@ -441,15 +466,24 @@ function speakChunk(
           markPlaybackStarted();
         }
         onPlaybackStart();
+        logVoiceTimeline('native TTS playback started', trace, { textLength: text.length, chunkIndex, totalChunks });
         log('debug', 'tts', 'chunk playback started', { chunkIndex, totalChunks });
       },
       onDone: () => {
         finishPlayback();
+        logVoiceTimeline('native TTS playback completed', trace, { textLength: text.length, chunkIndex, totalChunks, outcome: 'done' });
         resolve();
       },
       onStopped: () => {
         finishPlayback();
-        if (consumeExpectedStop()) {
+        const expected = consumeExpectedStop();
+        logVoiceTimeline('native TTS playback stopped', trace, {
+          textLength: text.length,
+          chunkIndex,
+          totalChunks,
+          outcome: expected ? 'expected_stop' : 'unexpected_stop',
+        });
+        if (expected) {
           resolve();
         } else {
           log('warn', 'tts', 'onStopped without an expected stop — likely lost audio focus', {
@@ -461,6 +495,12 @@ function speakChunk(
       },
       onError: (err) => {
         finishPlayback();
+        logVoiceTimeline('native TTS playback failed', trace, {
+          textLength: text.length,
+          chunkIndex,
+          totalChunks,
+          error: err instanceof Error ? err.message : String(err),
+        });
         log('error', 'tts', 'chunk error', {
           chunkIndex,
           totalChunks,
@@ -479,12 +519,14 @@ async function speakChunkSafely(
   text: string,
   voice: string,
   chunkIndex: number,
-  totalChunks: number
+  totalChunks: number,
+  trace?: SpeechPlaybackTrace,
 ): Promise<void> {
   const timeoutMs = Math.max(MIN_CHUNK_SPEECH_MS, text.length * MAX_CHUNK_SPEECH_MS_PER_CHAR);
   let startTimeoutId: ReturnType<typeof setTimeout> | undefined;
   let finishTimeoutId: ReturnType<typeof setTimeout> | undefined;
   const stopForTimeout = (message: string, deadlineMs: number, reject: (reason: Error) => void) => {
+    logVoiceTimeline('native TTS playback timeout', trace, { textLength: text.length, chunkIndex, totalChunks, deadlineMs });
     log('warn', 'tts', message, { chunkIndex, totalChunks, timeoutMs: deadlineMs });
     markExpectedStop();
     Speech.stop();
@@ -505,7 +547,7 @@ async function speakChunkSafely(
   });
   const playback = speakChunk(text, voice, chunkIndex, totalChunks, () => {
     if (startTimeoutId) clearTimeout(startTimeoutId);
-  });
+  }, trace);
   try {
     await Promise.race([playback, startDeadline, finishDeadline]);
   } catch (err) {
@@ -522,7 +564,7 @@ export interface StreamingSpeech {
   // repeatedly while a previous sentence is still playing — that's the
   // whole point: an SSE onChunk callback firing faster than speech can keep
   // up just grows the queue, it doesn't block.
-  push(text: string): void;
+  push(text: string, source?: 'preamble' | 'reply'): void;
   // Signals no more sentences are coming. Resolves once the queue fully
   // drains and everything's been spoken. Rejects only on a genuine,
   // unrecovered TTS engine failure (see speakChunk's onError/unexpected-
@@ -579,7 +621,8 @@ let activeStreaming: StreamingSpeech | null = null;
 // instance on the FIRST chunk regardless of pause state, passing this).
 export function createStreamingSpeech(
   onBeforeFirstSpeech?: () => Promise<void>,
-  startPaused = false
+  startPaused = false,
+  telemetry?: VoiceTurnTelemetry,
 ): StreamingSpeech {
   if (activeStreaming) {
     log('warn', 'tts', 'replacing a still-active streaming speech pipeline');
@@ -588,7 +631,7 @@ export function createStreamingSpeech(
     Speech.stop();
     activeStreaming = null;
   }
-  const queue: string[] = [];
+  const queue: Array<{ text: string; source: 'preamble' | 'reply'; sequence: number }> = [];
   let finished = false;
   let aborted = false;
   let paused = startPaused;
@@ -598,10 +641,11 @@ export function createStreamingSpeech(
   // the queue (not just queue[0]) so pause() can hand it back to the pump
   // loop on the very next resume without disturbing whatever's still
   // queued behind it.
-  let currentSentence: string | null = null;
+  let currentSentence: { text: string; source: 'preamble' | 'reply'; sequence: number } | null = null;
   let armed = false;
   let voice: string | null = null;
   let spokenCount = 0;
+  let queuedSequence = 0;
 
   const notify = () => {
     const w = wake;
@@ -657,7 +701,7 @@ export function createStreamingSpeech(
         currentSentence = queue.shift()!;
       }
 
-      const clean = stripMarkdownForSpeech(currentSentence);
+      const clean = stripMarkdownForSpeech(currentSentence.text);
       // Neither this strip nor splitIntoChunks below treats bare
       // punctuation as empty — a "sentence" that's nothing but leftover
       // terminators/whitespace (e.g. a stray "." — see
@@ -675,11 +719,14 @@ export function createStreamingSpeech(
       }
 
       let interrupted = false;
+      const trace: SpeechPlaybackTrace | undefined = telemetry
+        ? { source: currentSentence.source, telemetry, sequence: currentSentence.sequence }
+        : undefined;
       for (const chunk of splitIntoChunks(clean, MAX_CHUNK_LENGTH)) {
         if (aborted) return;
         // -1: no fixed total in streaming mode, unlike the array-based loop
         // this replaces — more sentences can always still be coming.
-        await speakChunkSafely(chunk, voice!, spokenCount++, -1);
+        await speakChunkSafely(chunk, voice!, spokenCount++, -1, trace);
         if (paused) {
           interrupted = true;
           break;
@@ -705,8 +752,13 @@ export function createStreamingSpeech(
   pumpPromise.catch(() => {});
 
   const handle: StreamingSpeech = {
-    push(text: string) {
-      queue.push(text);
+    push(text: string, source: 'preamble' | 'reply' = 'reply') {
+      const queued = { text, source, sequence: ++queuedSequence };
+      queue.push(queued);
+      logVoiceTimeline('TTS utterance queued', telemetry ? { source, telemetry, sequence: queued.sequence } : undefined, {
+        textLength: text.length,
+        queueDepth: queue.length,
+      });
       notify();
     },
     async finish(): Promise<void> {
@@ -832,7 +884,7 @@ const GREETING_PHRASES = [
 // of just stopping. A filler is a non-critical nicety, so it
 // simply never participates in expectedStop tracking. Found by independent
 // review.
-function speakBackchannelPhrase(text: string, voice: string): Promise<void> {
+function speakBackchannelPhrase(text: string, voice: string, trace?: SpeechPlaybackTrace): Promise<void> {
   return new Promise((resolve) => {
     let playbackStarted = false;
     const finishPlayback = () => {
@@ -851,18 +903,25 @@ function speakBackchannelPhrase(text: string, voice: string): Promise<void> {
           playbackStarted = true;
           markPlaybackStarted();
         }
+        logVoiceTimeline('native TTS playback started', trace, { textLength: text.length });
         log('debug', 'tts', 'backchannel playback started');
       },
       onDone: () => {
         finishPlayback();
+        logVoiceTimeline('native TTS playback completed', trace, { textLength: text.length, outcome: 'done' });
         resolve();
       },
       onStopped: () => {
         finishPlayback();
+        logVoiceTimeline('native TTS playback stopped', trace, { textLength: text.length, outcome: 'stopped' });
         resolve();
       },
       onError: (err) => {
         finishPlayback();
+        logVoiceTimeline('native TTS playback failed', trace, {
+          textLength: text.length,
+          error: err instanceof Error ? err.message : String(err),
+        });
         log('debug', 'tts', 'backchannel chunk error (non-critical)', {
           error: err instanceof Error ? err.message : String(err),
         });
@@ -879,14 +938,25 @@ function speakBackchannelPhrase(text: string, voice: string): Promise<void> {
 // as-is from the web client) that didn't match whichever voice the user
 // actually has selected, an inconsistency real-device feedback described as
 // sounding "like some kind of horror movie."
-export function speakBackchannel(): void {
+export function speakBackchannel(telemetry?: VoiceTurnTelemetry): void {
   void (async () => {
+    const trace: SpeechPlaybackTrace | undefined = telemetry
+      ? { source: 'local_acknowledgement', telemetry }
+      : undefined;
+    logVoiceTimeline('local acknowledgement requested', trace);
     try {
       const voice = await getRussianVoice();
-      if (!voice) return; // no Russian voice on this device — silently skip, same as the WAV version's implicit behavior
+      if (!voice) {
+        logVoiceTimeline('local acknowledgement skipped', trace, { reason: 'no_russian_voice' });
+        return;
+      }
       const phrase = BACKCHANNEL_PHRASES[Math.floor(Math.random() * BACKCHANNEL_PHRASES.length)];
-      await speakBackchannelPhrase(phrase, voice);
+      logVoiceTimeline('local acknowledgement queued', trace, { phrase });
+      await speakBackchannelPhrase(phrase, voice, trace);
     } catch (err) {
+      logVoiceTimeline('local acknowledgement failed', trace, {
+        error: err instanceof Error ? err.message : String(err),
+      });
       log('debug', 'tts', 'backchannel filler failed (non-critical)', {
         error: err instanceof Error ? err.message : String(err),
       });

@@ -19,7 +19,7 @@ public class AudioCoreTranscriptionServiceTests
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent("""
-                    {"candidates":[{"content":{"parts":[{"functionCall":{"name":"capture_user_utterance","args":{"transcript":"Поставь напоминание на завтра","preamble":"Сейчас проверю, как лучше это запланировать.","requiresTool":true}}}]}}]}
+                    {"candidates":[{"content":{"parts":[{"functionCall":{"name":"capture_user_utterance","args":{"transcript":"Поставь напоминание на завтра","preamble":"Про напоминание, секунду.","requiresTool":true}}}]}}]}
                     """, Encoding.UTF8, "application/json")
             };
         });
@@ -34,7 +34,7 @@ public class AudioCoreTranscriptionServiceTests
 
             Assert.True(result.ProviderAvailable);
             Assert.Equal("Поставь напоминание на завтра", result.Transcription);
-            Assert.Equal("Сейчас проверю, как лучше это запланировать.", result.Preamble);
+            Assert.Equal("Про напоминание, секунду.", result.Preamble);
             Assert.True(result.RequiresTool);
 
             using var document = JsonDocument.Parse(requestBody!);
@@ -46,6 +46,7 @@ public class AudioCoreTranscriptionServiceTests
             var instruction = document.RootElement.GetProperty("systemInstruction").GetProperty("parts")[0]
                 .GetProperty("text").GetString();
             Assert.Contains("локальную библиотеку", instruction);
+            Assert.Contains("не план действий", instruction);
         }
         finally
         {
@@ -76,12 +77,21 @@ public class AudioCoreTranscriptionServiceTests
     public void ParseResponse_OrdinaryConversation_AllowsConservativePlannerBypass()
     {
         var result = AudioCoreTranscriptionService.ParseResponse("""
-            {"candidates":[{"content":{"parts":[{"functionCall":{"name":"capture_user_utterance","args":{"transcript":"Мне сегодня немного грустно","preamble":"Понимаю тебя, давай спокойно об этом поговорим.","requiresTool":false}}}]}}]}
+            {"candidates":[{"content":{"parts":[{"functionCall":{"name":"capture_user_utterance","args":{"transcript":"Мне сегодня немного грустно","preamble":"Понял, минутку.","requiresTool":false}}}]}}]}
             """);
 
         Assert.True(result.ProviderAvailable);
         Assert.False(result.RequiresTool);
-        Assert.Equal("Понимаю тебя, давай спокойно об этом поговорим.", result.Preamble);
+        Assert.Equal("Понял, минутку.", result.Preamble);
+    }
+
+    [Theory]
+    [InlineData("Понял, минутку.", "Понял, минутку.")]
+    [InlineData("Одно", null)]
+    [InlineData("Раз два три четыре пять шесть семь восемь.", null)]
+    public void NormalizePreamble_OnlyAllowsBriefNeutralBridgeLength(string value, string? expected)
+    {
+        Assert.Equal(expected, AudioCoreTranscriptionService.NormalizePreamble(value));
     }
 
     private static AudioCoreTranscriptionService CreateService(HttpMessageHandler handler)

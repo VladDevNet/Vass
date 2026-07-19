@@ -26,7 +26,7 @@ import {
   stripMarkupForDisplay,
   subscribeToTtsPlayback,
 } from '../tts/systemSpeech';
-import type { StreamingSpeech } from '../tts/systemSpeech';
+import type { StreamingSpeech, VoiceTurnTelemetry } from '../tts/systemSpeech';
 import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
 import { executeExternalAction, ExternalActionExecutionError } from '../actions/externalActions';
@@ -840,6 +840,9 @@ export function useVoiceChat(
       // Bumped once per attempt, whether this turns out to be the ONLY
       // attempt or gets superseded down the line — see the field comment.
       const myGeneration = ++segmentGenerationRef.current;
+      const turnStartedAt = Date.now();
+      const clientTurnId = createClientTurnId();
+      const voiceTelemetry: VoiceTurnTelemetry = { clientTurnId, turnStartedAt };
       // Capture the asset for this attempt. A new image selected while Vass
       // speaks belongs to the following turn and must not be consumed here.
       let visualAssetId = visualBridgeRef.current?.getPendingVisual()?.assetId;
@@ -857,7 +860,7 @@ export function useVoiceChat(
         // the bargedInRef gap below: a barge-in used to be able to
         // surface one via this exact path.
         setError(null);
-        speakBackchannel();
+        speakBackchannel(voiceTelemetry);
       } else {
         // The 'thinking'-entry effect above only fires on a state
         // TRANSITION into 'thinking', which already happened for the first
@@ -867,8 +870,7 @@ export function useVoiceChat(
         void armShadowRecorder();
       }
 
-      const turnStartedAt = Date.now();
-      log('info', 'turn', 'segment send start', { fromShadow });
+      log('info', 'voice-timeline', 'voice turn send started', { clientTurnId, fromShadow, elapsedMs: 0 });
       let firstReplyChunkAt: number | null = null;
 
       // Sentences are spoken as the reply streams in, not after the whole
@@ -909,7 +911,7 @@ export function useVoiceChat(
               return;
             }
             if (myGeneration === segmentGenerationRef.current) setState('speaking');
-          }, pausedRef.current);
+          }, pausedRef.current, voiceTelemetry);
           // A preamble or a reply's first chunk can arrive while the user
           // already paused during 'thinking'. Create the pipeline anyway;
           // resumeConversation later releases it without losing the phrase.
@@ -921,8 +923,12 @@ export function useVoiceChat(
         if (myGeneration !== segmentGenerationRef.current || bargedInRef.current) return;
         const speech = stripMarkdownForSpeechChunk(preamble).trim();
         if (!speech) return;
-        log('info', 'turn', 'voice preamble received', { elapsedMs: Date.now() - turnStartedAt, length: speech.length });
-        ensureStreamingSpeech().push(speech);
+        log('info', 'voice-timeline', 'voice preamble received', {
+          clientTurnId,
+          elapsedMs: Date.now() - turnStartedAt,
+          length: speech.length,
+        });
+        ensureStreamingSpeech().push(speech, 'preamble');
       };
 
       const handleChunk = (chunk: string) => {
@@ -949,7 +955,10 @@ export function useVoiceChat(
         }
         if (firstReplyChunkAt === null) {
           firstReplyChunkAt = Date.now();
-          log('info', 'turn', 'reply first text chunk', { elapsedMs: firstReplyChunkAt - turnStartedAt });
+          log('info', 'voice-timeline', 'reply first text chunk received', {
+            clientTurnId,
+            elapsedMs: firstReplyChunkAt - turnStartedAt,
+          });
         }
         visibleReplyBuffer += chunk;
         setReply(stripMarkupForDisplay(visibleReplyBuffer));
@@ -966,18 +975,28 @@ export function useVoiceChat(
         sentenceBuffer = stripMarkdownForSpeechChunk(sentenceBuffer + chunk);
         const { sentences, rest } = extractCompleteSentences(sentenceBuffer);
         sentenceBuffer = rest;
-        for (const sentence of sentences) streamingSpeech.push(sentence);
+        for (const sentence of sentences) streamingSpeech.push(sentence, 'reply');
       };
 
       const handleStats = (stats: ServerTurnStats) => {
-        log('info', 'turn', 'server turn stats', { ...stats, elapsedMs: Date.now() - turnStartedAt });
+        log('info', 'voice-timeline', 'server turn stats received', {
+          clientTurnId,
+          ...stats,
+          elapsedMs: Date.now() - turnStartedAt,
+        });
       };
 
       try {
         let fullReply: string;
         const reminderDevice = await getReminderDeviceContext();
         const supportsLocalReminders = Platform.OS === 'android' || Platform.OS === 'ios';
-        const clientTurnId = createClientTurnId();
+        const logChatRequestStart = (requestKind: 'audio' | 'continuation_text' | 'screen_capture_retry') => {
+          log('info', 'voice-timeline', 'chat request started', {
+            clientTurnId,
+            requestKind,
+            elapsedMs: Date.now() - turnStartedAt,
+          });
+        };
         const handleReminder = async (reminder: Parameters<typeof scheduleAndAcknowledgeReminder>[0]) => {
           const result = mountedRef.current && ownerId
             ? await scheduleAndAcknowledgeReminder(reminder, reminderDevice.deviceId, ownerId)
@@ -1072,6 +1091,7 @@ export function useVoiceChat(
             await armMicUnlessPaused();
             return;
           }
+          logChatRequestStart('continuation_text');
           fullReply = await sendMessage({
             sessionId: sid,
             message: combinedText,
@@ -1098,12 +1118,18 @@ export function useVoiceChat(
           }, requestAbortController.signal);
         } else {
           const uploadStartedAt = Date.now();
-          log('info', 'turn', 'audio upload start');
+          log('info', 'voice-timeline', 'audio upload started', {
+            clientTurnId,
+            elapsedMs: uploadStartedAt - turnStartedAt,
+          });
           const { fileName, sizeBytes } = await api.uploadAudio(uri, requestAbortController.signal);
-          log('info', 'turn', 'audio upload completed', {
-            elapsedMs: Date.now() - uploadStartedAt,
+          log('info', 'voice-timeline', 'audio upload completed', {
+            clientTurnId,
+            elapsedMs: Date.now() - turnStartedAt,
+            uploadMs: Date.now() - uploadStartedAt,
             ...(typeof sizeBytes === 'number' ? { sizeBytes } : {}),
           });
+          logChatRequestStart('audio');
           fullReply = await sendMessage(
             {
               sessionId: sid,
@@ -1123,6 +1149,11 @@ export function useVoiceChat(
             },
             {
               onTranscription: (text) => {
+                log('info', 'voice-timeline', 'audio transcription received', {
+                  clientTurnId,
+                  elapsedMs: Date.now() - turnStartedAt,
+                  length: text.length,
+                });
                 if (!text.trim() || myTurn !== turnGenerationRef.current) return;
                 pendingSegmentsRef.current.set(myGeneration, text.trim());
                 if (myGeneration === segmentGenerationRef.current) setTranscript(pendingText());
@@ -1193,6 +1224,7 @@ export function useVoiceChat(
             sizeBytes: staged.sizeBytes,
           });
 
+          logChatRequestStart('screen_capture_retry');
           fullReply = await sendMessage({
             sessionId: sid,
             message: capturePrompt,
@@ -1245,7 +1277,11 @@ export function useVoiceChat(
           return;
         }
 
-        log('info', 'turn', 'reply received', { sendMs: Date.now() - turnStartedAt, replyLength: fullReply.length });
+        log('info', 'voice-timeline', 'reply stream completed', {
+          clientTurnId,
+          elapsedMs: Date.now() - turnStartedAt,
+          replyLength: fullReply.length,
+        });
         pendingSegmentsRef.current.clear();
         if (visualAssetId) visualBridgeRef.current?.consumePendingVisual(visualAssetId);
         if (pendingSharedText) visualBridgeRef.current?.consumePendingSharedText(pendingSharedText.requestId);
@@ -1254,9 +1290,13 @@ export function useVoiceChat(
           // Flush whatever's left in the buffer even if it never reached
           // terminating punctuation — nothing more is coming now, so this
           // IS the final piece regardless of how it ends.
-          if (sentenceBuffer.trim()) streamingHolder.current.push(sentenceBuffer);
+          if (sentenceBuffer.trim()) streamingHolder.current.push(sentenceBuffer, 'reply');
           try {
             await streamingHolder.current.finish();
+            log('info', 'voice-timeline', 'TTS queue drained', {
+              clientTurnId,
+              elapsedMs: Date.now() - turnStartedAt,
+            });
           } catch (err) {
             // Local speech is the only runtime TTS path. The former Piper
             // fallback could add 10-80 seconds of silence after a local
@@ -1334,7 +1374,7 @@ export function useVoiceChat(
             taxonomy: pendingExternalAction.taxonomy,
           });
         }
-        log('info', 'turn', 'finalize done', { totalMs: Date.now() - turnStartedAt });
+        log('info', 'voice-timeline', 'voice turn finalized', { clientTurnId, elapsedMs: Date.now() - turnStartedAt });
       } catch (err) {
         // Unconditional, even for a superseded/stale-turn segment below —
         // a stray chunk that already made it into handleChunk before the
@@ -1361,7 +1401,11 @@ export function useVoiceChat(
           ? err.userMessage
           : err instanceof Error ? err.message : String(err);
         setError(message);
-        log('error', 'turn', 'segment send failed', { error: message, elapsedMs: Date.now() - turnStartedAt });
+        log('error', 'voice-timeline', 'voice turn failed', {
+          clientTurnId,
+          error: message,
+          elapsedMs: Date.now() - turnStartedAt,
+        });
         pendingSegmentsRef.current.clear();
         if (err instanceof ExternalActionExecutionError) {
           await stopRecorderIfLive();

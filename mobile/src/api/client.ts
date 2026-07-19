@@ -743,6 +743,15 @@ export interface ServerTurnStats {
   speakerIdMs?: number;
   llmFirstTokenMs?: number;
   llmTotalMs?: number;
+  audioCoreReadyAtMs?: number;
+  preambleSentAtMs?: number;
+  transcriptionSentAtMs?: number;
+  memoryRecallReadyAtMs?: number;
+  agentReadyAtMs?: number;
+  llmStartedAtMs?: number;
+  firstTextSentAtMs?: number;
+  responsePersistedAtMs?: number;
+  serverCompletedAtMs?: number;
   translationMs?: number;
 }
 
@@ -767,6 +776,15 @@ function parseTurnStats(value: unknown): ServerTurnStats | null {
     speakerIdMs: numberValue('speakerIdMs'),
     llmFirstTokenMs: numberValue('llmFirstTokenMs'),
     llmTotalMs: numberValue('llmTotalMs'),
+    audioCoreReadyAtMs: numberValue('audioCoreReadyAtMs'),
+    preambleSentAtMs: numberValue('preambleSentAtMs'),
+    transcriptionSentAtMs: numberValue('transcriptionSentAtMs'),
+    memoryRecallReadyAtMs: numberValue('memoryRecallReadyAtMs'),
+    agentReadyAtMs: numberValue('agentReadyAtMs'),
+    llmStartedAtMs: numberValue('llmStartedAtMs'),
+    firstTextSentAtMs: numberValue('firstTextSentAtMs'),
+    responsePersistedAtMs: numberValue('responsePersistedAtMs'),
+    serverCompletedAtMs: numberValue('serverCompletedAtMs'),
     translationMs: numberValue('translationMs'),
   };
 }

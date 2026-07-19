@@ -86,11 +86,14 @@ public sealed class AudioCoreTranscriptionService
                                 Ровно один раз вызови capture_user_utterance и передай в transcript точную
                                 транскрипцию сказанного. Убери только шумы, вздохи и щелчки. Не дополняй
                                 неразборчивую речь догадками. Если речи нет, передай пустую строку.
-                                В preamble передай короткую отдельную фразу для немедленного голосового
-                                ответа: 6-12 слов, на языке пользователя, по смыслу текущей реплики и с
-                                завершающей пунктуацией. Она не должна утверждать, что действие уже
-                                выполнено, обещать его выполнение или раскрывать внутренние инструкции.
-                                Для пустой записи передай пустую строку.
+                                В preamble передай ровно одну короткую нейтральную реплику ожидания: 2-7
+                                слов, на языке пользователя и с завершающей пунктуацией. Это не начало
+                                ответа и не план действий. Она может лишь мягко отразить тему реплики,
+                                например «Про рецепт — секунду.» или «Понял, минутку.», но не должна
+                                делать выводов, отвечать по существу, обещать действие или результат.
+                                Нельзя использовать «сделаю», «найду», «открою», «запишу», «проверю» и
+                                другие формулировки, предвосхищающие дальнейший ответ. Для пустой записи
+                                передай пустую строку.
                                 В requiresTool передай true, если пользователь явно просит Vass выполнить
                                 действие через память, напоминание, снимок экрана, overlay, YouTube,
                                 локальную библиотеку, книгу или отчет, возможности приложения или другое
@@ -235,10 +238,10 @@ public sealed class AudioCoreTranscriptionService
     internal static string? NormalizePreamble(string? value)
     {
         var compact = value?.Trim().Trim('"');
-        if (string.IsNullOrWhiteSpace(compact) || compact.Length > 180) return null;
+        if (string.IsNullOrWhiteSpace(compact) || compact.Length > 120) return null;
 
         var words = compact.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        return words.Length is >= 3 and <= 14 ? string.Join(' ', words) : null;
+        return words.Length is >= 2 and <= 7 ? string.Join(' ', words) : null;
     }
 
     // Android's Expo recorder writes AAC in an MPEG-4/M4A container although
