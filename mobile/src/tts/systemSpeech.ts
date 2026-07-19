@@ -793,7 +793,7 @@ export function hasSpeechToResume(): boolean {
 // скорости ответа" — avoided anything that could read as rushing/curt on
 // flat TTS intonation, e.g. a repeated "Да, да." or an interrogative-
 // sounding "Так-так.").
-const BACKCHANNEL_PHRASES = ['Хорошо.', 'Минутку.', 'Понятно.', 'Секунду.', 'Дайте подумать.'];
+const BACKCHANNEL_PHRASES = ['Минутку.', 'Секунду.', 'Дайте подумать.', 'Сейчас.'];
 
 // Warm opening phrases for useGreeting.ts — spoken once when the app first
 // becomes ready to listen, and again on returning to the foreground after
