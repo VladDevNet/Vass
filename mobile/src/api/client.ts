@@ -721,6 +721,9 @@ export interface ReminderSyncItem {
 export interface SendMessageCallbacks {
   onTranscription?: (text: string) => void;
   onPreamble?: (text: string) => void;
+  // A hidden, Russian-phonetic representation of the assistant reply. It
+  // arrives before normal text and must never be rendered in chat.
+  onSpeechText?: (text: string) => void;
   onChunk?: (text: string) => void;
   onStats?: (stats: ServerTurnStats) => void;
   onReminder?: (reminder: ReminderEvent) => Promise<void>;
@@ -749,6 +752,7 @@ export interface ServerTurnStats {
   memoryRecallReadyAtMs?: number;
   agentReadyAtMs?: number;
   llmStartedAtMs?: number;
+  firstSpeechTextSentAtMs?: number;
   firstTextSentAtMs?: number;
   responsePersistedAtMs?: number;
   serverCompletedAtMs?: number;
@@ -782,6 +786,7 @@ function parseTurnStats(value: unknown): ServerTurnStats | null {
     memoryRecallReadyAtMs: numberValue('memoryRecallReadyAtMs'),
     agentReadyAtMs: numberValue('agentReadyAtMs'),
     llmStartedAtMs: numberValue('llmStartedAtMs'),
+    firstSpeechTextSentAtMs: numberValue('firstSpeechTextSentAtMs'),
     firstTextSentAtMs: numberValue('firstTextSentAtMs'),
     responsePersistedAtMs: numberValue('responsePersistedAtMs'),
     serverCompletedAtMs: numberValue('serverCompletedAtMs'),
@@ -985,6 +990,8 @@ export async function sendMessage(
           callbacks.onTranscription?.(parsed.transcription);
         } else if (typeof parsed.preamble === 'string') {
           callbacks.onPreamble?.(parsed.preamble);
+        } else if (typeof parsed.speechText === 'string') {
+          callbacks.onSpeechText?.(parsed.speechText);
         } else if (typeof parsed.text === 'string') {
           fullText += parsed.text;
           callbacks.onChunk?.(parsed.text);

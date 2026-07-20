@@ -54,7 +54,12 @@ public sealed class AssistantAgentTurnService
         {
             for (var step = 0; step < MaxModelSteps; step++)
             {
-                var proposal = await _planner.GenerateAsync(systemPrompt, contents, apiKey, turnCancellationToken);
+                var proposal = await _planner.GenerateAsync(
+                    systemPrompt,
+                    contents,
+                    apiKey,
+                    turnCancellationToken,
+                    emitSpeechFirstResponse: usedTools);
                 if (!proposal.ProviderAvailable || !proposal.HasModelContent)
                 {
                     return new(usedTools, executions, null, false, false, ProviderFailed: usedTools);

@@ -1005,6 +1005,8 @@ export function useVoiceChat(
       const streamingHolder: { current: StreamingSpeech | null } = { current: null };
       let sentenceBuffer = '';
       let visibleReplyBuffer = '';
+      let speechTextReceived = false;
+      let firstSpeechTextChunkAt: number | null = null;
       const pendingExternalActionHolder: { current: ExternalActionEvent | null } = { current: null };
       const screenCaptureHolder: { current: ScreenCaptureRequest | null } = { current: null };
       let nativeScreenCaptureRequestId: string | null = null;
@@ -1051,6 +1053,43 @@ export function useVoiceChat(
         ensureStreamingSpeech().push(speech, 'preamble');
       };
 
+      // Normal replies now have two hidden representations: a Russian
+      // phonetic speech stream first, followed by the normal text stream for
+      // chat. Keep legacy servers working by using visible text for speech
+      // until the first speechText event proves this reply has the new form.
+      const enqueueSpeechChunk = (chunk: string) => {
+        const streamingSpeech = ensureStreamingSpeech();
+
+        // The CHUNK (non-trimming) variant specifically — see its own
+        // comment in systemSpeech.ts for why: this buffer can legitimately
+        // end in one meaningful trailing space mid-stream (a chunk boundary
+        // landing right after a word, with the next word still to come),
+        // and the trimming stripMarkdownForSpeech would eat that space,
+        // gluing the next chunk's word onto this one with no space between
+        // them.
+        sentenceBuffer = stripMarkdownForSpeechChunk(sentenceBuffer + chunk);
+        const { sentences, rest } = extractCompleteSentences(sentenceBuffer);
+        sentenceBuffer = rest;
+        for (const sentence of sentences) streamingSpeech.push(sentence, 'reply');
+      };
+
+      const handleSpeechText = (speechText: string) => {
+        if (myGeneration !== segmentGenerationRef.current || bargedInRef.current) {
+          streamingHolder.current?.abort();
+          return;
+        }
+        if (!speechText.trim()) return;
+        speechTextReceived = true;
+        if (firstSpeechTextChunkAt === null) {
+          firstSpeechTextChunkAt = Date.now();
+          log('info', 'voice-timeline', 'reply first speech text chunk received', {
+            clientTurnId,
+            elapsedMs: firstSpeechTextChunkAt - turnStartedAt,
+          });
+        }
+        enqueueSpeechChunk(speechText);
+      };
+
       const handleChunk = (chunk: string) => {
         if (myGeneration !== segmentGenerationRef.current || bargedInRef.current) {
           // Two distinct reasons to stop here, same response to both:
@@ -1082,20 +1121,7 @@ export function useVoiceChat(
         }
         visibleReplyBuffer += chunk;
         setReply(stripMarkupForDisplay(visibleReplyBuffer));
-
-        const streamingSpeech = ensureStreamingSpeech();
-
-        // The CHUNK (non-trimming) variant specifically — see its own
-        // comment in systemSpeech.ts for why: this buffer can legitimately
-        // end in one meaningful trailing space mid-stream (a chunk boundary
-        // landing right after a word, with the next word still to come),
-        // and the trimming stripMarkdownForSpeech would eat that space,
-        // gluing the next chunk's word onto this one with no space between
-        // them.
-        sentenceBuffer = stripMarkdownForSpeechChunk(sentenceBuffer + chunk);
-        const { sentences, rest } = extractCompleteSentences(sentenceBuffer);
-        sentenceBuffer = rest;
-        for (const sentence of sentences) streamingSpeech.push(sentence, 'reply');
+        if (!speechTextReceived) enqueueSpeechChunk(chunk);
       };
 
       const handleStats = (stats: ServerTurnStats) => {
@@ -1228,6 +1254,7 @@ export function useVoiceChat(
             sharedContent,
           }, {
             onPreamble: handlePreamble,
+            onSpeechText: handleSpeechText,
             onChunk: handleChunk,
             onStats: handleStats,
             onReminder: handleReminder,
@@ -1279,6 +1306,7 @@ export function useVoiceChat(
                 if (myGeneration === segmentGenerationRef.current) setTranscript(pendingText());
               },
               onPreamble: handlePreamble,
+              onSpeechText: handleSpeechText,
               onChunk: handleChunk,
               onStats: handleStats,
               onReminder: handleReminder,
@@ -1360,6 +1388,7 @@ export function useVoiceChat(
             visualAssetId,
           }, {
             onPreamble: handlePreamble,
+            onSpeechText: handleSpeechText,
             onChunk: handleChunk,
             onStats: handleStats,
             onReminder: handleReminder,

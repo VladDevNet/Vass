@@ -364,6 +364,7 @@ public class ChatController : ControllerBase
         long? memoryRecallReadyAtMs = null;
         long? agentReadyAtMs = null;
         long? llmStartedAtMs = null;
+        long? firstSpeechTextSentAtMs = null;
         long? firstTextSentAtMs = null;
         long? responsePersistedAtMs = null;
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier)!;
@@ -908,6 +909,7 @@ public class ChatController : ControllerBase
         var fullResponse = new System.Text.StringBuilder();
         var swLlm = Stopwatch.StartNew();
         long llmFirstTokenMs = 0;
+        var llmFirstChunkReceived = false;
         llmStartedAtMs = turnTimeline.ElapsedMilliseconds;
 
         // A reminder is only confirmed after the phone responds above. Keep
@@ -931,6 +933,7 @@ public class ChatController : ControllerBase
                     ? GetSafeToolFallback(toolExecutions, externalAction)
                     : null;
         var useAgentFinalText = responseOverride is not null;
+        var speechFirstSystemPrompt = SpeechFirstResponseParser.AddInstructions(systemPrompt);
 
         // Kick off a fast, non-grounded "will this need search/deep thought?" check
         // in parallel with the real (possibly slow, search-grounded) response, so we
@@ -946,8 +949,30 @@ public class ChatController : ControllerBase
         // native function-response loop, so emit it as one durable SSE chunk.
         var stream = useAgentFinalText
             ? StreamSingleResponseAsync(responseOverride!)
-            : _gemini.StreamResponseAsync(systemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey, cancellationToken: HttpContext.RequestAborted);
+            : _gemini.StreamResponseAsync(speechFirstSystemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey, cancellationToken: HttpContext.RequestAborted);
         var enumerator = stream.GetAsyncEnumerator(HttpContext.RequestAborted);
+        var speechFirstParser = new SpeechFirstResponseParser();
+
+        async Task EmitResponsePartsAsync(IEnumerable<SpeechFirstResponseChunk> parts)
+        {
+            foreach (var part in parts)
+            {
+                if (part.Part == SpeechFirstResponsePart.Speech)
+                {
+                    var speechData = JsonSerializer.Serialize(new { speechText = part.Text });
+                    await Response.WriteAsync($"data: {speechData}\n\n");
+                    await Response.Body.FlushAsync();
+                    firstSpeechTextSentAtMs ??= turnTimeline.ElapsedMilliseconds;
+                    continue;
+                }
+
+                fullResponse.Append(part.Text);
+                var textData = JsonSerializer.Serialize(new { text = part.Text });
+                await Response.WriteAsync($"data: {textData}\n\n");
+                await Response.Body.FlushAsync();
+                firstTextSentAtMs ??= turnTimeline.ElapsedMilliseconds;
+            }
+        }
 
         try
         {
@@ -968,15 +993,12 @@ public class ChatController : ControllerBase
             while (hasMore)
             {
                 var chunk = enumerator.Current;
-                if (fullResponse.Length == 0)
+                if (!llmFirstChunkReceived)
                 {
                     llmFirstTokenMs = swLlm.ElapsedMilliseconds;
+                    llmFirstChunkReceived = true;
                 }
-                fullResponse.Append(chunk);
-                var data = JsonSerializer.Serialize(new { text = chunk });
-                await Response.WriteAsync($"data: {data}\n\n");
-                await Response.Body.FlushAsync();
-                firstTextSentAtMs ??= turnTimeline.ElapsedMilliseconds;
+                await EmitResponsePartsAsync(speechFirstParser.Append(chunk));
                 hasMore = await enumerator.MoveNextAsync();
             }
         }
@@ -1009,14 +1031,11 @@ public class ChatController : ControllerBase
         {
             await enumerator.DisposeAsync();
         }
+        await EmitResponsePartsAsync(speechFirstParser.Finish());
         if (fullResponse.Length == 0 && externalAction is not null)
         {
             var fallback = GetExternalActionFallback(externalAction.Type);
-            fullResponse.Append(fallback);
-            var fallbackData = JsonSerializer.Serialize(new { text = fallback });
-            await Response.WriteAsync($"data: {fallbackData}\n\n");
-            await Response.Body.FlushAsync();
-            firstTextSentAtMs ??= turnTimeline.ElapsedMilliseconds;
+            await EmitResponsePartsAsync([new SpeechFirstResponseChunk(SpeechFirstResponsePart.Text, fallback)]);
         }
 
         if (fullResponse.Length == 0)
@@ -1024,17 +1043,19 @@ public class ChatController : ControllerBase
             _logger.LogWarning("Gemini returned no visible text for session {SessionId}; retrying without grounding", req.SessionId);
             try
             {
+                var retryParser = new SpeechFirstResponseParser();
                 await foreach (var chunk in _gemini.StreamResponseAsync(
-                                   systemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey,
+                                   speechFirstSystemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey,
                                    enableGrounding: false, cancellationToken: HttpContext.RequestAborted))
                 {
-                    if (fullResponse.Length == 0) llmFirstTokenMs = swLlm.ElapsedMilliseconds;
-                    fullResponse.Append(chunk);
-                    var data = JsonSerializer.Serialize(new { text = chunk });
-                    await Response.WriteAsync($"data: {data}\n\n");
-                    await Response.Body.FlushAsync();
-                    firstTextSentAtMs ??= turnTimeline.ElapsedMilliseconds;
+                    if (!llmFirstChunkReceived)
+                    {
+                        llmFirstTokenMs = swLlm.ElapsedMilliseconds;
+                        llmFirstChunkReceived = true;
+                    }
+                    await EmitResponsePartsAsync(retryParser.Append(chunk));
                 }
+                await EmitResponsePartsAsync(retryParser.Finish());
             }
             catch (GeminiApiException ex)
             {
@@ -1097,6 +1118,7 @@ public class ChatController : ControllerBase
             MemoryRecallReadyAtMs = memoryRecallReadyAtMs,
             AgentReadyAtMs = agentReadyAtMs,
             LlmStartedAtMs = llmStartedAtMs,
+            FirstSpeechTextSentAtMs = firstSpeechTextSentAtMs,
             FirstTextSentAtMs = firstTextSentAtMs,
             ResponsePersistedAtMs = responsePersistedAtMs,
             ServerCompletedAtMs = turnTimeline.ElapsedMilliseconds,
