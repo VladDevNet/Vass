@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { ArrowLeft, Check, FileWarning, History, X } from 'lucide-react-native';
+import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ArrowLeft, Check, FileWarning, History, Share2, X } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
+import { shareLibraryRevisionAsPdf } from '../library/libraryPdf';
 import { readLibraryArtifactRevisionHtml } from '../library/libraryStore';
 import type { LibraryArtifact } from '../library/types';
 import { amoled } from '../theme/amoled';
@@ -16,7 +17,9 @@ export function LibraryReaderScreen({ artifact, onDone }: LibraryReaderScreenPro
   const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedRevisionId, setSelectedRevisionId] = useState(artifact.currentRevisionId);
+  const [loadedRevisionId, setLoadedRevisionId] = useState<string | null>(null);
   const [showRevisions, setShowRevisions] = useState(false);
+  const [sharingPdf, setSharingPdf] = useState(false);
 
   const selectedRevisionIndex = artifact.revisions.findIndex((revision) => revision.id === selectedRevisionId);
   const selectedRevisionNumber = selectedRevisionIndex >= 0 ? selectedRevisionIndex + 1 : artifact.revisions.length;
@@ -29,6 +32,7 @@ export function LibraryReaderScreen({ artifact, onDone }: LibraryReaderScreenPro
     let cancelled = false;
     setHtml(null);
     setError(null);
+    setLoadedRevisionId(null);
     void readLibraryArtifactRevisionHtml(artifact.id, selectedRevisionId, artifact)
       .then((content) => {
         if (cancelled) return;
@@ -37,6 +41,7 @@ export function LibraryReaderScreen({ artifact, onDone }: LibraryReaderScreenPro
           return;
         }
         setHtml(content);
+        setLoadedRevisionId(selectedRevisionId);
       })
       .catch(() => {
         if (!cancelled) setError('Не удалось прочитать книгу.');
@@ -45,6 +50,23 @@ export function LibraryReaderScreen({ artifact, onDone }: LibraryReaderScreenPro
       cancelled = true;
     };
   }, [artifact, selectedRevisionId]);
+
+  const canShareCurrentRevision = html !== null && loadedRevisionId === selectedRevisionId;
+
+  async function shareCurrentRevisionPdf() {
+    if (!html || !canShareCurrentRevision || sharingPdf) return;
+    setSharingPdf(true);
+    try {
+      await shareLibraryRevisionAsPdf(artifact.title, html);
+    } catch (shareError) {
+      Alert.alert(
+        'Не удалось отправить PDF',
+        shareError instanceof Error ? shareError.message : 'Попробуйте ещё раз.',
+      );
+    } finally {
+      setSharingPdf(false);
+    }
+  }
 
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
@@ -56,13 +78,23 @@ export function LibraryReaderScreen({ artifact, onDone }: LibraryReaderScreenPro
           <Text style={styles.title} numberOfLines={1}>{artifact.title}</Text>
           <Text style={styles.subtitle}>Версия {selectedRevisionNumber} из {artifact.revisions.length}</Text>
         </View>
-        <Pressable
-          style={styles.iconButton}
-          onPress={() => setShowRevisions(true)}
-          accessibilityLabel="Выбрать версию книги"
-        >
-          <History size={21} color={amoled.textPrimary} />
-        </Pressable>
+        <View style={styles.toolbarActions}>
+          <Pressable
+            style={[styles.iconButton, (!canShareCurrentRevision || sharingPdf) && styles.iconButtonDisabled]}
+            onPress={() => void shareCurrentRevisionPdf()}
+            disabled={!canShareCurrentRevision || sharingPdf}
+            accessibilityLabel={`Отправить PDF: ${artifact.title}, версия ${selectedRevisionNumber}`}
+          >
+            {sharingPdf ? <ActivityIndicator size="small" color="#F6D37A" /> : <Share2 size={20} color={amoled.textPrimary} />}
+          </Pressable>
+          <Pressable
+            style={styles.iconButton}
+            onPress={() => setShowRevisions(true)}
+            accessibilityLabel="Выбрать версию книги"
+          >
+            <History size={21} color={amoled.textPrimary} />
+          </Pressable>
+        </View>
       </View>
       {html ? (
         <WebView
@@ -158,7 +190,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: amoled.glassBackground,
   },
+  iconButtonDisabled: { opacity: 0.42 },
   titleBlock: { flex: 1, marginLeft: 12 },
+  toolbarActions: { flexDirection: 'row', gap: 8, marginLeft: 12 },
   title: { color: amoled.textPrimary, fontSize: 19, fontWeight: '700' },
   subtitle: { color: amoled.textSecondary, fontSize: 13, marginTop: 2 },
   reader: { flex: 1, backgroundColor: '#f7f8fb' },
