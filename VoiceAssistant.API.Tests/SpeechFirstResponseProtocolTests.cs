@@ -25,6 +25,27 @@ public class SpeechFirstResponseProtocolTests
     }
 
     [Fact]
+    public void Parser_StreamsInterleavedSpeechAndDisplayPairsAcrossMarkerBoundaries()
+    {
+        var parser = new SpeechFirstResponseParser();
+        var emitted = new List<SpeechFirstResponseChunk>();
+
+        emitted.AddRange(parser.Append("[[VASS_SPEECH]]Первая фраза. [[VASS_TEXT]]Первая фраза. [[VASS_SP"));
+        emitted.AddRange(parser.Append("EECH]]Вторая фраза. [[VASS_TEXT]]Вторая фраза."));
+        emitted.AddRange(parser.Finish());
+
+        Assert.Equal(
+        [
+            new SpeechFirstResponseChunk(SpeechFirstResponsePart.Speech, "Первая фраза. "),
+            new SpeechFirstResponseChunk(SpeechFirstResponsePart.Text, "Первая фраза. "),
+            new SpeechFirstResponseChunk(SpeechFirstResponsePart.Speech, "Вторая фраза. "),
+            new SpeechFirstResponseChunk(SpeechFirstResponsePart.Text, "Вторая фраза.")
+        ], emitted);
+        Assert.True(parser.HasSpeech);
+        Assert.True(parser.HasText);
+    }
+
+    [Fact]
     public void Parser_FallsBackToLegacyTextWithoutDelayingIt()
     {
         var parser = new SpeechFirstResponseParser();
@@ -62,6 +83,7 @@ public class SpeechFirstResponseProtocolTests
 
         Assert.Contains(SpeechFirstResponseParser.SpeechStartMarker, prompt);
         Assert.Contains(SpeechFirstResponseParser.TextStartMarker, prompt);
+        Assert.Contains("Не пиши сначала короткое устное резюме", prompt);
         Assert.StartsWith("base", prompt, StringComparison.Ordinal);
     }
 }

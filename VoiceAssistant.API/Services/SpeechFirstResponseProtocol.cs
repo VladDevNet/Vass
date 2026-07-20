@@ -2,8 +2,8 @@ using System.Text;
 
 namespace VoiceAssistant.API.Services;
 
-// The model produces the spoken Russian-phonetic form before the normal
-// user-facing form. These markers are internal to the server: they never
+// The model produces a Russian-phonetic speech form paired with each normal
+// user-facing sentence. These markers are internal to the server: they never
 // reach a client, chat history, or a TextToSpeech engine.
 public enum SpeechFirstResponsePart
 {
@@ -39,7 +39,7 @@ public sealed class SpeechFirstResponseParser
         if (_finished || string.IsNullOrEmpty(value)) return [];
 
         var emitted = new List<SpeechFirstResponseChunk>();
-        if (_state is ParseState.Text or ParseState.LegacyText)
+        if (_state == ParseState.LegacyText)
         {
             Emit(emitted, SpeechFirstResponsePart.Text, value);
             return emitted;
@@ -100,23 +100,33 @@ public sealed class SpeechFirstResponseParser
         {{systemPrompt}}
 
         ## Внутренний формат голосового ответа
-        Этот формат нужен только серверу, пользователь его не увидит. Начинай КАЖДЫЙ
-        обычный ответ ровно с маркера {{SpeechStartMarker}} без приветствия, пробелов,
-        Markdown или кодового блока. После него сначала напиши версию ответа для
-        озвучивания, затем ровно маркер {{TextStartMarker}}, затем обычную видимую
-        версию ответа.
+        Этот формат нужен только серверу, пользователь его не увидит. Обычный ответ
+        состоит из ПОСЛЕДОВАТЕЛЬНЫХ ПАР, по одной паре на каждое законченное смысловое
+        предложение. Начинай ответ ровно с {{SpeechStartMarker}} без приветствия,
+        пробелов, Markdown или кодового блока. Затем пиши:
 
-        В части до {{TextStartMarker}} пиши тот же смысл естественными русскими
+        {{SpeechStartMarker}} фонетическая русская версия первого предложения
+        {{TextStartMarker}} обычная видимая версия ТОГО ЖЕ первого предложения
+        {{SpeechStartMarker}} фонетическая русская версия второго предложения
+        {{TextStartMarker}} обычная видимая версия ТОГО ЖЕ второго предложения
+
+        И так до самого конца ответа. Не пиши сначала короткое устное резюме, а затем
+        длинный чат-ответ: голосовая часть каждой пары обязана передавать ВСЕ факты,
+        оговорки, выводы и вопрос соответствующего видимого предложения в том же
+        порядке. Единственные допустимые различия: русская фонетическая запись слов не
+        на кириллице и удаление Markdown, URL или технических названий, которые нельзя
+        естественно произнести. Не добавляй новых фактов, обещаний или действий.
+
+        В части сразу после каждого {{SpeechStartMarker}} пиши естественными русскими
         словами для одного русского голоса: каждое слово или фразу не на кириллице
         передавай русской фонетической записью. Например: Gemini Live -> Джемини Лайв,
         YouTube -> Ютуб, GPT -> джи пи ти. Не оставляй там латиницу, URL, Markdown,
         названия инструментов и сами маркеры. Не читай ссылку посимвольно: назови ее
-        естественно, если это уместно. Не добавляй новых фактов, обещаний или действий.
+        естественно, если это уместно.
 
-        После {{TextStartMarker}} напиши обычный ответ для чата с исходным написанием
-        названий, ссылок и аббревиатур. Обе части должны быть краткими и смыслово
-        совпадать. Маркеры используй только один раз и больше ничего после видимого
-        ответа не добавляй.
+        В части сразу после каждого {{TextStartMarker}} пиши обычный текст для чата с
+        исходным написанием названий, ссылок и аббревиатур. Используй маркеры только в
+        этих парах и не добавляй ничего после последней видимой части.
         """;
 
     private void Drain(List<SpeechFirstResponseChunk> emitted)
@@ -134,6 +144,9 @@ public sealed class SpeechFirstResponseParser
                     continue;
 
                 case ParseState.Text:
+                    if (!DrainText(emitted)) return;
+                    continue;
+
                 case ParseState.LegacyText:
                     if (_buffer.Length > 0)
                     {
@@ -196,6 +209,35 @@ public sealed class SpeechFirstResponseParser
         if (safeLength > 0)
         {
             EmitSpeech(emitted, value[..safeLength]);
+            _buffer.Clear();
+            _buffer.Append(value[safeLength..]);
+        }
+        return false;
+    }
+
+    // The current protocol deliberately interleaves speech and display
+    // blocks sentence by sentence. Keep a possible partial speech marker in
+    // the buffer just as DrainSpeech does for a partial display marker; that
+    // lets a Gemini chunk split a marker at any character without leaking it
+    // into the visible reply.
+    private bool DrainText(List<SpeechFirstResponseChunk> emitted)
+    {
+        var value = _buffer.ToString();
+        var markerAt = value.IndexOf(SpeechStartMarker, StringComparison.Ordinal);
+        if (markerAt >= 0)
+        {
+            Emit(emitted, SpeechFirstResponsePart.Text, value[..markerAt]);
+            _buffer.Clear();
+            _buffer.Append(value[(markerAt + SpeechStartMarker.Length)..]);
+            _state = ParseState.Speech;
+            return true;
+        }
+
+        var retainedPrefixLength = LongestSuffixThatStartsMarker(value, SpeechStartMarker);
+        var safeLength = value.Length - retainedPrefixLength;
+        if (safeLength > 0)
+        {
+            Emit(emitted, SpeechFirstResponsePart.Text, value[..safeLength]);
             _buffer.Clear();
             _buffer.Append(value[safeLength..]);
         }
