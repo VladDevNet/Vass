@@ -370,8 +370,7 @@ class VassOverlayModule : Module() {
     AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
     AudioDeviceInfo.TYPE_HEARING_AID,
     AudioDeviceInfo.TYPE_BLE_HEADSET,
-    AudioDeviceInfo.TYPE_BLE_SPEAKER,
-    AudioDeviceInfo.TYPE_BLE_HEARING_AID -> "bluetooth"
+    AudioDeviceInfo.TYPE_BLE_SPEAKER -> "bluetooth"
     else -> null
   }
 
