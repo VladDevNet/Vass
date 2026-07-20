@@ -1,10 +1,15 @@
 diff --git a/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt b/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
-index 9ca869c..9f3c10f 100644
+index 9ca869c..a4d5a1b 100644
 --- a/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
 +++ b/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
-@@ -2,0 +3 @@ package expo.modules.speech
+@@ -1,5 +1,6 @@
+ package expo.modules.speech
+ 
 +import android.media.AudioAttributes
-@@ -36,8 +36,17 @@ class SpeechModule : Module() {
+ import android.os.Bundle
+ import android.speech.tts.TextToSpeech
+ import android.speech.tts.UtteranceProgressListener
+@@ -36,8 +37,17 @@ class SpeechModule : Module() {
        TextToSpeech.getMaxSpeechInputLength()
      }
  
@@ -24,7 +29,7 @@ index 9ca869c..9f3c10f 100644
      }
  
      AsyncFunction<Boolean>("isSpeaking") {
-@@ -130,12 +139,16 @@ class SpeechModule : Module() {
+@@ -130,12 +140,16 @@ class SpeechModule : Module() {
        }
      }
  
@@ -42,7 +47,7 @@ index 9ca869c..9f3c10f 100644
    }
  
    // TextToSpeech object related code
-@@ -143,13 +156,24 @@ class SpeechModule : Module() {
+@@ -143,13 +157,34 @@ class SpeechModule : Module() {
    private val isTextToSpeechReady
      get() = _ttsReady
  
@@ -83,7 +88,7 @@ index 9ca869c..9f3c10f 100644
  
              override fun onStart(utteranceId: String) {
                sendEvent(speakingStartedEvent, idToMap(utteranceId))
-@@ -176,17 +200,36 @@ class SpeechModule : Module() {
+@@ -176,17 +211,36 @@ class SpeechModule : Module() {
                sendEvent(speakingErrorEvent, idToMap(utteranceId))
              }
            })
@@ -125,7 +130,7 @@ index 9ca869c..9f3c10f 100644
    }
  
    // Helpers
-@@ -200,7 +243,7 @@ class SpeechModule : Module() {
+@@ -200,7 +254,7 @@ class SpeechModule : Module() {
      val options: SpeechOptions
    )
  
