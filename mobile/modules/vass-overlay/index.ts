@@ -17,6 +17,28 @@ export interface OverlayStatus {
   running: boolean;
 }
 
+export type AudioOutputKind = 'speaker' | 'wired' | 'bluetooth';
+
+export interface AudioOutputDevice {
+  id: string;
+  kind: AudioOutputKind;
+  label: string;
+}
+
+export interface AudioOutputStatus {
+  available: boolean;
+  supportsExplicitRouting: boolean;
+  outputs: AudioOutputDevice[];
+  selectedId: string | null;
+}
+
+const DEFAULT_AUDIO_OUTPUT_STATUS: AudioOutputStatus = {
+  available: false,
+  supportsExplicitRouting: false,
+  outputs: [{ id: 'speaker', kind: 'speaker', label: 'Динамик телефона' }],
+  selectedId: 'speaker',
+};
+
 export type OverlayEvent =
   | { type: 'controlPress' }
   | { type: 'pauseToggle'; paused: boolean }
@@ -54,6 +76,9 @@ interface NativeVassOverlayModule {
   canRequestPackageInstalls(): Promise<boolean>;
   requestPackageInstallPermission(): Promise<void>;
   installUpdateApk(uri: string, expectedSha256: string | null): Promise<void>;
+  getAudioOutputs(): Promise<AudioOutputStatus>;
+  selectAudioOutput(outputId: string): Promise<AudioOutputStatus>;
+  clearAudioOutput(): Promise<void>;
   requestScreenCapture(requestId: string): Promise<void>;
   getScreenCaptureResult(): Promise<ScreenCaptureResult>;
   clearScreenCaptureResult(requestId: string): Promise<void>;
@@ -128,6 +153,27 @@ export const VassOverlay = {
       throw new Error('В этой версии Vass ещё нет встроенной установки обновлений.');
     }
     await nativeModule.installUpdateApk(uri, expectedSha256);
+  },
+
+  async getAudioOutputs(): Promise<AudioOutputStatus> {
+    if (!nativeModule || typeof nativeModule.getAudioOutputs !== 'function') {
+      return DEFAULT_AUDIO_OUTPUT_STATUS;
+    }
+    return nativeModule.getAudioOutputs();
+  },
+
+  async selectAudioOutput(outputId: string): Promise<AudioOutputStatus> {
+    if (!nativeModule || typeof nativeModule.selectAudioOutput !== 'function') {
+      if (outputId !== 'speaker') throw new Error('Выбор наушников доступен после обновления Vass.');
+      return DEFAULT_AUDIO_OUTPUT_STATUS;
+    }
+    return nativeModule.selectAudioOutput(outputId);
+  },
+
+  async clearAudioOutput(): Promise<void> {
+    if (typeof nativeModule?.clearAudioOutput === 'function') {
+      await nativeModule.clearAudioOutput();
+    }
   },
 
   async requestScreenCapture(requestId: string): Promise<void> {

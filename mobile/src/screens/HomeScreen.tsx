@@ -26,6 +26,7 @@ import { VisualSourceSheet } from '../components/VisualSourceSheet';
 import { PendingVisualPreview } from '../components/PendingVisualPreview';
 import { PendingSharedTextPreview } from '../components/PendingSharedTextPreview';
 import { EndConversationModal } from '../components/EndConversationModal';
+import { AudioOutputPicker } from '../components/AudioOutputPicker';
 import type { VisualSource } from '../visual/types';
 
 const SLEEP_AFTER_MS = 90_000;
@@ -78,6 +79,10 @@ export function HomeScreen() {
     reply,
     error,
     ttsPlaying,
+    audioOutputs,
+    selectedAudioOutputId,
+    refreshAudioOutputs,
+    selectAudioOutput,
     forceFinalize,
     pauseConversation,
     endConversation,
@@ -206,14 +211,20 @@ export function HomeScreen() {
         <View style={styles.identityRow}>
           <View style={styles.identityLeft}>
             <View style={styles.onlineDot} />
-            <View>
-              <Text style={styles.identityName}>
+            <View style={styles.identityDetails}>
+              <Text style={styles.identityName} numberOfLines={1}>
                 {assistantName || (displayAvatarId === 'male' ? 'Максим' : 'Ольга')}
               </Text>
               <Text style={styles.identityPresence}>{PRESENCE_LABEL[state]}</Text>
             </View>
           </View>
           <View style={styles.identityActions}>
+            <AudioOutputPicker
+              outputs={audioOutputs}
+              selectedOutputId={selectedAudioOutputId}
+              onRefresh={refreshAudioOutputs}
+              onSelect={selectAudioOutput}
+            />
             <Pressable
               style={styles.endConversationButton}
               onPress={() => setShowEndConversation(true)}
@@ -318,6 +329,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   identityLeft: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -377,6 +390,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  identityDetails: {
+    flexShrink: 1,
   },
   endConversationButton: {
     width: 40,

@@ -7,6 +7,7 @@ import {
   setAudioModeAsync,
   useAudioRecorder,
 } from 'expo-audio';
+import type { AudioMode } from 'expo-audio';
 import { api, sendMessage, type ExternalActionEvent, type ScreenCaptureRequest, type ServerTurnStats } from '../api/client';
 import {
   cancelLocalReminder,
@@ -30,11 +31,21 @@ import type { StreamingSpeech, VoiceTurnTelemetry } from '../tts/systemSpeech';
 import { DEFAULT_THRESHOLD_DB, useVad } from './useVad';
 import { log } from '../logging/remoteLogger';
 import { executeExternalAction, ExternalActionExecutionError } from '../actions/externalActions';
-import { VassOverlay } from '../../modules/vass-overlay';
+import { VassOverlay, type AudioOutputDevice, type AudioOutputStatus } from '../../modules/vass-overlay';
 import type { LibraryAssistantCatalog } from '../library/types';
 import type { PendingSharedText, PendingVisualInput, StageVisualAssetInput } from '../visual/types';
 
 export type VoiceState = 'idle' | 'recording' | 'thinking' | 'speaking' | 'paused';
+
+export interface VoiceAudioOutput extends AudioOutputDevice {}
+
+const DEFAULT_AUDIO_OUTPUT: VoiceAudioOutput = {
+  id: 'speaker',
+  kind: 'speaker',
+  label: 'Динамик телефона',
+};
+
+type VoiceAudioMode = Omit<AudioMode, 'shouldRouteThroughEarpiece'>;
 
 interface VisualTurnBridge {
   getPendingVisual: () => PendingVisualInput | null;
@@ -356,6 +367,8 @@ export function useVoiceChat(
   const [error, setError] = useState<string | null>(null);
   const [conversationEnded, setConversationEnded] = useState(false);
   const [ttsPlaying, setTtsPlaying] = useState(false);
+  const [audioOutputs, setAudioOutputs] = useState<VoiceAudioOutput[]>([DEFAULT_AUDIO_OUTPUT]);
+  const [selectedAudioOutputId, setSelectedAudioOutputId] = useState(DEFAULT_AUDIO_OUTPUT.id);
   const recorder = useAudioRecorder(RECORDING_OPTIONS);
   const shadowRecorder = useAudioRecorder(RECORDING_OPTIONS);
 
@@ -367,6 +380,11 @@ export function useVoiceChat(
   useEffect(() => subscribeToTtsPlayback(setTtsPlaying), []);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
+  // Output is intentionally session-scoped. A fresh app launch always starts
+  // on the phone speaker; an external route persists only while this voice
+  // conversation is alive and is never selected merely because it connects.
+  const selectedAudioOutputIdRef = useRef(DEFAULT_AUDIO_OUTPUT.id);
+  const audioSessionConfiguredRef = useRef(false);
   const visualBridgeRef = useRef(visualBridge);
   visualBridgeRef.current = visualBridge;
   // Mirrors `state` into a ref so useVad's stable onSpeechStart callback can
@@ -723,6 +741,107 @@ export function useVoiceChat(
     await armMic();
   }, [armMic]);
 
+  const acceptAudioOutputStatus = useCallback((status: AudioOutputStatus, preferredId: string) => {
+    const outputs = status.outputs.length > 0 ? status.outputs : [DEFAULT_AUDIO_OUTPUT];
+    const resolvedId = status.selectedId && outputs.some((output) => output.id === status.selectedId)
+      ? status.selectedId
+      : outputs.some((output) => output.id === preferredId)
+        ? preferredId
+        : DEFAULT_AUDIO_OUTPUT.id;
+    selectedAudioOutputIdRef.current = resolvedId;
+    setAudioOutputs(outputs);
+    setSelectedAudioOutputId(resolvedId);
+    return resolvedId;
+  }, []);
+
+  // expo-audio rewrites AudioManager's legacy speaker setting every time its
+  // mode changes. Keep Android in communication mode, then immediately apply
+  // our explicit device choice. This prevents a newly connected headset from
+  // silently taking over the conversation route.
+  const applyAudioOutput = useCallback(async (requestedId: string, fallBackToSpeaker: boolean) => {
+    const select = async (outputId: string) => {
+      const status = await VassOverlay.selectAudioOutput(outputId);
+      const selectedId = acceptAudioOutputStatus(status, outputId);
+      log('info', 'audio', 'voice output selected', {
+        requestedOutputId: outputId,
+        selectedOutputId: selectedId,
+        supportsExplicitRouting: status.supportsExplicitRouting,
+      });
+      return status;
+    };
+
+    try {
+      return await select(requestedId);
+    } catch (err) {
+      if (!fallBackToSpeaker || requestedId === DEFAULT_AUDIO_OUTPUT.id) throw err;
+      log('warn', 'audio', 'selected output disappeared; restoring phone speaker', {
+        requestedOutputId: requestedId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return select(DEFAULT_AUDIO_OUTPUT.id);
+    }
+  }, [acceptAudioOutputStatus]);
+
+  const refreshAudioOutputs = useCallback(async () => {
+    const status = await VassOverlay.getAudioOutputs();
+    acceptAudioOutputStatus(status, selectedAudioOutputIdRef.current);
+    return status;
+  }, [acceptAudioOutputStatus]);
+
+  const selectAudioOutput = useCallback(async (outputId: string) => {
+    try {
+      await applyAudioOutput(outputId, false);
+    } catch (err) {
+      if (outputId !== DEFAULT_AUDIO_OUTPUT.id) {
+        await applyAudioOutput(DEFAULT_AUDIO_OUTPUT.id, false).catch(() => undefined);
+        setError('Выбранное устройство больше не подключено. Включён динамик телефона.');
+        return;
+      }
+      throw err;
+    }
+  }, [applyAudioOutput]);
+
+  const resetAudioOutputToSpeaker = useCallback(() => {
+    selectedAudioOutputIdRef.current = DEFAULT_AUDIO_OUTPUT.id;
+    setSelectedAudioOutputId(DEFAULT_AUDIO_OUTPUT.id);
+    setAudioOutputs((outputs) => outputs.some((output) => output.id === DEFAULT_AUDIO_OUTPUT.id)
+      ? outputs
+      : [DEFAULT_AUDIO_OUTPUT, ...outputs]);
+  }, []);
+
+  const configureVoiceAudio = useCallback(async (mode: VoiceAudioMode, reason: string) => {
+    await setAudioModeAsync({
+      ...mode,
+      // The native selector immediately chooses the real output below. This
+      // keeps Android in MODE_IN_COMMUNICATION, which gives its selected
+      // communication device priority for both the recorder and TTS.
+      shouldRouteThroughEarpiece: Platform.OS === 'android',
+    });
+    if (Platform.OS === 'android') {
+      await applyAudioOutput(selectedAudioOutputIdRef.current, true);
+    }
+    audioSessionConfiguredRef.current = true;
+    log('debug', 'audio', 'voice audio session configured', {
+      reason,
+      outputId: selectedAudioOutputIdRef.current,
+    });
+  }, [applyAudioOutput]);
+
+  useEffect(() => {
+    if (
+      appState !== 'active' ||
+      !sessionId ||
+      conversationEndedRef.current ||
+      !audioSessionConfiguredRef.current ||
+      Platform.OS !== 'android'
+    ) return;
+    void applyAudioOutput(selectedAudioOutputIdRef.current, true).catch((err) => {
+      log('warn', 'audio', 'could not restore selected output after foregrounding', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }, [appState, applyAudioOutput, sessionId]);
+
   // One-time setup: mic permission + audio mode, then arm for the first turn.
   useEffect(() => {
     if (!sessionId) return;
@@ -736,13 +855,14 @@ export function useVoiceChat(
           log('error', 'mic', 'permission denied');
           return;
         }
-        await setAudioModeAsync({
+        resetAudioOutputToSpeaker();
+        await configureVoiceAudio({
           playsInSilentMode: true,
           allowsRecording: true,
           interruptionMode: 'doNotMix',
           shouldPlayInBackground: false,
           allowsBackgroundRecording: false,
-        });
+        }, 'session started');
         if (cancelled) return;
         await armMic();
       } catch (err) {
@@ -752,7 +872,7 @@ export function useVoiceChat(
     return () => {
       cancelled = true;
     };
-  }, [sessionId, armMic]);
+  }, [sessionId, armMic, configureVoiceAudio, resetAudioOutputToSpeaker]);
 
   // The core of this design (see the file-level comment). `fromShadow`
   // distinguishes the very first segment of a turn (captured by the main
@@ -1669,13 +1789,13 @@ export function useVoiceChat(
     pausedRef.current = false;
     if (externalMediaWaitingRef.current) {
       externalMediaWaitingRef.current = false;
-      await setAudioModeAsync({
+      await configureVoiceAudio({
         playsInSilentMode: true,
         allowsRecording: true,
         interruptionMode: 'doNotMix',
         shouldPlayInBackground: backgroundRecordingEnabledRef.current,
         allowsBackgroundRecording: backgroundRecordingEnabledRef.current,
-      });
+      }, 'external media wait ended');
       log('info', 'external-action', 'external media wait ended, audio session restored');
       await armMic();
       return;
@@ -1708,7 +1828,7 @@ export function useVoiceChat(
       log('info', 'turn', 'resumed by user — nothing to continue, listening again');
       await armMic();
     }
-  }, [rearmRecorderOnly, armMic, stopRecorderIfLive]);
+  }, [rearmRecorderOnly, armMic, stopRecorderIfLive, configureVoiceAudio]);
 
   // A shared item or accepted screen frame is a device event, not a model
   // reply. Pause the live recorder around its local spoken acknowledgement so
@@ -1748,13 +1868,13 @@ export function useVoiceChat(
       backgroundRecordingEnabledRef.current = enabled;
       try {
         if (!wasPaused) await pauseConversation();
-        await setAudioModeAsync({
+        await configureVoiceAudio({
           playsInSilentMode: true,
           allowsRecording: true,
           interruptionMode: 'doNotMix',
           shouldPlayInBackground: enabled,
           allowsBackgroundRecording: enabled,
-        });
+        }, enabled ? 'overlay mode enabled' : 'overlay mode disabled');
         if (!wasPaused && resumeAfterConfiguration) await resumeConversation();
         log('info', 'overlay', 'background recording mode changed', { enabled });
       } catch (err) {
@@ -1765,7 +1885,7 @@ export function useVoiceChat(
         throw err;
       }
     },
-    [pauseConversation, resumeConversation],
+    [pauseConversation, resumeConversation, configureVoiceAudio],
   );
 
   // This is intentionally stronger than pauseConversation: no pending work
@@ -1804,10 +1924,14 @@ export function useVoiceChat(
         interruptionMode: 'doNotMix',
         shouldPlayInBackground: false,
         allowsBackgroundRecording: false,
+        shouldRouteThroughEarpiece: false,
       }),
+      VassOverlay.clearAudioOutput(),
     ]);
     await Promise.race([stopRuntime, waitFor(2_000)]);
-  }, [stopRecorderIfLive, stopShadowRecorderIfLive]);
+    audioSessionConfiguredRef.current = false;
+    resetAudioOutputToSpeaker();
+  }, [stopRecorderIfLive, stopShadowRecorderIfLive, resetAudioOutputToSpeaker]);
 
   // finishAndRemoveTask normally terminates the JS process. Android is free
   // to keep it alive, though, so a manual launcher tap must still be able to
@@ -1828,13 +1952,14 @@ export function useVoiceChat(
     setError(null);
 
     try {
-      await setAudioModeAsync({
+      resetAudioOutputToSpeaker();
+      await configureVoiceAudio({
         playsInSilentMode: true,
         allowsRecording: true,
         interruptionMode: 'doNotMix',
         shouldPlayInBackground: false,
         allowsBackgroundRecording: false,
-      });
+      }, 'explicit app launch');
       await armMic();
       log('info', 'turn', 'conversation started after explicit app launch');
     } catch (err) {
@@ -1844,7 +1969,7 @@ export function useVoiceChat(
       setState('paused');
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [armMic]);
+  }, [armMic, configureVoiceAudio, resetAudioOutputToSpeaker]);
 
   // Manual override: send whatever's been captured so far immediately,
   // regardless of the 1.2s pause timer — same shape as before, just calling
@@ -1907,6 +2032,10 @@ export function useVoiceChat(
     startConversationAfterExplicitLaunch,
     announceSystemNotice,
     configureBackgroundRecording,
+    audioOutputs,
+    selectedAudioOutputId,
+    refreshAudioOutputs,
+    selectAudioOutput,
     micArmed,
   };
 }

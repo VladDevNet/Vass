@@ -2,6 +2,8 @@ diff --git a/node_modules/expo-speech/android/src/main/java/expo/modules/speech/
 index 9ca869c..9f3c10f 100644
 --- a/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
 +++ b/node_modules/expo-speech/android/src/main/java/expo/modules/speech/SpeechModule.kt
+@@ -2,0 +3 @@ package expo.modules.speech
++import android.media.AudioAttributes
 @@ -36,8 +36,17 @@ class SpeechModule : Module() {
        TextToSpeech.getMaxSpeechInputLength()
      }
@@ -65,6 +67,16 @@ index 9ca869c..9f3c10f 100644
 +        }
 +
 +        if (status == TextToSpeech.SUCCESS) {
++          // Vass is a two-way voice conversation. Mark TTS as communication
++          // audio so AudioManager.setCommunicationDevice() controls its
++          // output along with the recorder instead of Android independently
++          // moving speech between speaker and a newly connected headset.
++          newTtsInstance.setAudioAttributes(
++            AudioAttributes.Builder()
++              .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
++              .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
++              .build(),
++          )
            _ttsReady = true
 -          _textToSpeech!!.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
 +          newTtsInstance.setOnUtteranceProgressListener(object : UtteranceProgressListener() {

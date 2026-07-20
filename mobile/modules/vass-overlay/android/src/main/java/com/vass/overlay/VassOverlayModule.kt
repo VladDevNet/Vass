@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Intent
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -147,6 +149,19 @@ class VassOverlayModule : Module() {
       null
     }
 
+    AsyncFunction("getAudioOutputs") {
+      getAudioOutputStatus(requireContext())
+    }
+
+    AsyncFunction("selectAudioOutput") { outputId: String ->
+      selectAudioOutput(requireContext(), outputId)
+    }
+
+    AsyncFunction("clearAudioOutput") {
+      clearAudioOutput(requireContext())
+      null
+    }
+
     AsyncFunction("requestScreenCapture") { requestId: String ->
       val context = requireContext()
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
@@ -257,6 +272,108 @@ class VassOverlayModule : Module() {
   private fun requireContext(): Context =
     appContext.reactContext?.applicationContext
       ?: throw IllegalStateException("React context is not available")
+
+  private fun getAudioOutputStatus(context: Context): Map<String, Any?> {
+    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+      return mapOf(
+        "available" to true,
+        "supportsExplicitRouting" to false,
+        "outputs" to listOf(speakerOutput()),
+        "selectedId" to "speaker",
+      )
+    }
+
+    val outputs = audioManager.availableCommunicationDevices
+      .mapNotNull(::audioOutputForDevice)
+      .distinctBy { it["id"] }
+      .let { devices ->
+        if (devices.any { it["id"] == "speaker" }) devices else listOf(speakerOutput()) + devices
+      }
+    val selectedId = audioManager.communicationDevice
+      ?.let(::audioOutputForDevice)
+      ?.get("id") as? String
+
+    return mapOf(
+      "available" to true,
+      "supportsExplicitRouting" to true,
+      "outputs" to outputs,
+      "selectedId" to selectedId,
+    )
+  }
+
+  private fun selectAudioOutput(context: Context, outputId: String): Map<String, Any?> {
+    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+      if (outputId != "speaker") {
+        throw IllegalStateException("This Android version cannot explicitly select a headset output")
+      }
+      enableLegacySpeaker(audioManager)
+      return getAudioOutputStatus(context)
+    }
+
+    audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+    val device = audioManager.availableCommunicationDevices
+      .firstOrNull { audioOutputForDevice(it)?.get("id") == outputId }
+      ?: throw IllegalArgumentException("Selected audio output is no longer connected")
+    if (!audioManager.setCommunicationDevice(device)) {
+      throw IllegalStateException("Android rejected the selected audio output")
+    }
+    return getAudioOutputStatus(context)
+  }
+
+  private fun clearAudioOutput(context: Context) {
+    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      audioManager.clearCommunicationDevice()
+    } else {
+      @Suppress("DEPRECATION")
+      audioManager.isSpeakerphoneOn = false
+      audioManager.mode = AudioManager.MODE_NORMAL
+    }
+  }
+
+  @Suppress("DEPRECATION")
+  private fun enableLegacySpeaker(audioManager: AudioManager) {
+    audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+    audioManager.isSpeakerphoneOn = true
+  }
+
+  private fun audioOutputForDevice(device: AudioDeviceInfo): Map<String, String>? {
+    val kind = audioOutputKind(device.type) ?: return null
+    return mapOf(
+      "id" to if (kind == "speaker") "speaker" else "device:${device.id}",
+      "kind" to kind,
+      "label" to when (kind) {
+        "speaker" -> "Динамик телефона"
+        "wired" -> "Проводные наушники"
+        else -> "Bluetooth-устройство"
+      },
+    )
+  }
+
+  private fun speakerOutput(): Map<String, String> = mapOf(
+    "id" to "speaker",
+    "kind" to "speaker",
+    "label" to "Динамик телефона",
+  )
+
+  private fun audioOutputKind(deviceType: Int): String? = when (deviceType) {
+    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
+    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER_SAFE -> "speaker"
+    AudioDeviceInfo.TYPE_WIRED_HEADSET,
+    AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+    AudioDeviceInfo.TYPE_USB_HEADSET,
+    AudioDeviceInfo.TYPE_USB_DEVICE,
+    AudioDeviceInfo.TYPE_USB_ACCESSORY -> "wired"
+    AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+    AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+    AudioDeviceInfo.TYPE_HEARING_AID,
+    AudioDeviceInfo.TYPE_BLE_HEADSET,
+    AudioDeviceInfo.TYPE_BLE_SPEAKER,
+    AudioDeviceInfo.TYPE_BLE_HEARING_AID -> "bluetooth"
+    else -> null
+  }
 
   private fun resolveUpdateApk(context: Context, rawUri: String): File {
     val uri = Uri.parse(rawUri)

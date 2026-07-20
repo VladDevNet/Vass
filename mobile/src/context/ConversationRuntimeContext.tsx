@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 import { api, type ExternalActionEvent } from '../api/client';
-import { useVoiceChat, type VoiceState } from '../hooks/useVoiceChat';
+import { useVoiceChat, type VoiceAudioOutput, type VoiceState } from '../hooks/useVoiceChat';
 import { useAuth } from './AuthContext';
 import { VassOverlay, type OverlayEvent, type SharedContentResult } from '../../modules/vass-overlay';
 import { log } from '../logging/remoteLogger';
@@ -26,6 +26,8 @@ interface ConversationRuntimeValue {
   ttsPlaying: boolean;
   micArmed: boolean;
   conversationEnded: boolean;
+  audioOutputs: VoiceAudioOutput[];
+  selectedAudioOutputId: string;
   libraryNavigation: LibraryNavigationRequest | null;
   forceFinalize: () => void;
   pauseConversation: () => Promise<void>;
@@ -33,6 +35,8 @@ interface ConversationRuntimeValue {
   endConversation: () => Promise<void>;
   clearLibraryNavigation: (requestId: number) => void;
   announceSystemNotice: (text: string) => Promise<void>;
+  refreshAudioOutputs: () => Promise<unknown>;
+  selectAudioOutput: (outputId: string) => Promise<void>;
   prepareOverlayMode: () => Promise<void>;
   disableOverlayMode: (resumeWhenVisible: boolean) => Promise<void>;
   pendingVisual: PendingVisualInput | null;
@@ -364,6 +368,8 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
         ttsPlaying: runtime.ttsPlaying,
         micArmed: runtime.micArmed,
         conversationEnded: runtime.conversationEnded,
+        audioOutputs: runtime.audioOutputs,
+        selectedAudioOutputId: runtime.selectedAudioOutputId,
         libraryNavigation,
         forceFinalize: runtime.forceFinalize,
         pauseConversation: runtime.pauseConversation,
@@ -371,6 +377,8 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
         endConversation,
         clearLibraryNavigation,
         announceSystemNotice: runtime.announceSystemNotice,
+        refreshAudioOutputs: runtime.refreshAudioOutputs,
+        selectAudioOutput: runtime.selectAudioOutput,
         prepareOverlayMode,
         disableOverlayMode,
         pendingVisual: visual.pendingVisual,
