@@ -659,6 +659,7 @@ export interface SendMessageParams {
   supportsExternalActions?: boolean;
   supportsScreenAnalysis?: boolean;
   supportsLibrary?: boolean;
+  supportsSpeechText?: boolean;
   libraryCatalog?: LibraryCatalogEntry[];
   librarySections?: LibraryCatalogSection[];
   visualAssetId?: string;

@@ -39,6 +39,7 @@ public sealed class AssistantAgentTurnService
         string userId,
         int sourceMessageId,
         AssistantRuntimeContext context,
+        bool supportsSpeechText,
         CancellationToken cancellationToken)
     {
         var contents = BuildInitialContents(messages);
@@ -59,7 +60,7 @@ public sealed class AssistantAgentTurnService
                     contents,
                     apiKey,
                     turnCancellationToken,
-                    emitSpeechFirstResponse: usedTools);
+                    emitSpeechFirstResponse: supportsSpeechText && usedTools);
                 if (!proposal.ProviderAvailable || !proposal.HasModelContent)
                 {
                     return new(usedTools, executions, null, false, false, ProviderFailed: usedTools);

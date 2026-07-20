@@ -254,6 +254,7 @@ public class ChatController : ControllerBase
         Guid? VisualAssetId = null,
         bool SupportsScreenAnalysis = false,
         bool SupportsLibrary = false,
+        bool SupportsSpeechText = false,
         IReadOnlyList<LibraryCatalogRequestItem>? LibraryCatalog = null,
         IReadOnlyList<LibrarySectionRequestItem>? LibrarySections = null,
         string? SharedContent = null,
@@ -731,6 +732,7 @@ public class ChatController : ControllerBase
                 userId,
                 userMessage.Id,
                 capabilityContext,
+                req.SupportsSpeechText,
                 HttpContext.RequestAborted);
         }
         agentStopwatch.Stop();
@@ -933,7 +935,9 @@ public class ChatController : ControllerBase
                     ? GetSafeToolFallback(toolExecutions, externalAction)
                     : null;
         var useAgentFinalText = responseOverride is not null;
-        var speechFirstSystemPrompt = SpeechFirstResponseParser.AddInstructions(systemPrompt);
+        var speechFirstSystemPrompt = req.SupportsSpeechText
+            ? SpeechFirstResponseParser.AddInstructions(systemPrompt)
+            : systemPrompt;
 
         // Kick off a fast, non-grounded "will this need search/deep thought?" check
         // in parallel with the real (possibly slow, search-grounded) response, so we
