@@ -939,10 +939,15 @@ public class ChatController : ControllerBase
             agentFinalText = null;
         }
 
+        var webSearchFailed = toolExecutions.Any(execution =>
+            execution.Name == "web_search" && execution.Status != "grounded");
+
         var responseOverride = reminderDraft is { } receiptReminder
             ? BuildReminderReceiptReply(receiptReminder, reminderDeliveryStatus)
             : externalAction is not null
                 ? GetExternalActionFallback(externalAction.Type)
+            : webSearchFailed
+                ? "Сейчас не удалось подтвердить свежие сведения по надежным источникам. Попробуйте повторить запрос немного позже."
             : !attemptedReminder && agentFinalText is not null
                 ? agentFinalText
                 : rejectedInternalProtocolText

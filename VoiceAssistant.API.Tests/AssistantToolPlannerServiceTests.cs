@@ -62,6 +62,7 @@ public class AssistantToolPlannerServiceTests
         Assert.Contains("periodic_reminder_create", requestBody);
         Assert.Contains("library_write", requestBody);
         Assert.Contains("library_open", requestBody);
+        Assert.Contains("web_search", requestBody);
         Assert.Contains("capability_discovery_status", requestBody);
         Assert.Contains("sectionTitle", requestBody);
 

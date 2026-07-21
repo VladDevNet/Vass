@@ -91,6 +91,7 @@ public sealed class AssistantAgentTurnService
                         HasAttemptedReminder = executions.Any(execution =>
                             execution.Name is "reminder_create" or "periodic_reminder_create")
                     },
+                    apiKey,
                     turnCancellationToken);
                 executions.AddRange(stepExecutions);
                 contents.Add(proposal.ModelContent!.Value);

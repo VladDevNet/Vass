@@ -123,6 +123,7 @@ builder.Services.AddHttpClient();
 
 // Services
 builder.Services.AddSingleton<GeminiService>();
+builder.Services.AddSingleton<GroundedWebSearchService>();
 builder.Services.AddSingleton<VisualAssetService>();
 builder.Services.AddSingleton<CompanionPromptService>();
 builder.Services.AddSingleton<AudioAnalysisService>();

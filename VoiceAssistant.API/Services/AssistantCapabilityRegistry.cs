@@ -85,7 +85,7 @@ public sealed class AssistantCapabilityRegistry
             new("library.write", context.SupportsLibrary ? "available" : "unavailable", "client", AssistantActionTaxonomies.UserControl, "Создать новую или следующую версию локальной HTML-книги"),
             new("library.list", context.SupportsLibrary ? "available" : "unavailable", "client", AssistantActionTaxonomies.UserControl, "Показать оглавление локальной библиотеки"),
             new("library.open", context.SupportsLibrary ? "available" : "unavailable", "client", AssistantActionTaxonomies.UserControl, "Открыть локальную книгу или оглавление на устройстве"),
-            new("provider.web_search", "available", "provider", AssistantActionTaxonomies.ProviderHosted, "Провайдер может использовать web search внутри ответа; это не действие на устройстве"),
+            new("provider.web_search", "available", "server", AssistantActionTaxonomies.ProviderHosted, "Серверный web_search получает подтвержденные Google Search сведения перед ответом об актуальных фактах"),
             new("visual.input", context.HasVisualAttachment ? "attached" : "user_control_only", "client", AssistantActionTaxonomies.UserControl, "Камера, галерея и share доступны только пользователю через UI"),
             new("screen.analysis", context.SupportsScreenAnalysis ? "available_with_consent" : "unavailable", "client", AssistantActionTaxonomies.UserControl, "Снимок экрана требует системного согласия"),
             new("capability.help", "available", "server", AssistantActionTaxonomies.ServerLocal, "Кратко объяснить доступные возможности и следующий шаг"),

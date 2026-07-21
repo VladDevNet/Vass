@@ -34,6 +34,7 @@ public sealed class AssistantToolBroker
     private readonly ActionReceiptService _actionReceipts;
     private readonly AssistantCapabilityRegistry _capabilities;
     private readonly CapabilityDiscoveryService _capabilityDiscovery;
+    private readonly GroundedWebSearchService _webSearch;
 
     public AssistantToolBroker(
         MemoryItemService memory,
@@ -41,7 +42,8 @@ public sealed class AssistantToolBroker
         ReminderService reminders,
         ActionReceiptService actionReceipts,
         AssistantCapabilityRegistry capabilities,
-        CapabilityDiscoveryService capabilityDiscovery)
+        CapabilityDiscoveryService capabilityDiscovery,
+        GroundedWebSearchService webSearch)
     {
         _memory = memory;
         _conversationSearch = conversationSearch;
@@ -49,6 +51,7 @@ public sealed class AssistantToolBroker
         _actionReceipts = actionReceipts;
         _capabilities = capabilities;
         _capabilityDiscovery = capabilityDiscovery;
+        _webSearch = webSearch;
     }
 
     public async Task<IReadOnlyList<AssistantToolExecution>> ExecuteAsync(
@@ -56,6 +59,7 @@ public sealed class AssistantToolBroker
         string userId,
         int sourceMessageId,
         AssistantRuntimeContext context,
+        string? apiKey,
         CancellationToken cancellationToken)
     {
         var results = new List<AssistantToolExecution>();
@@ -96,6 +100,7 @@ public sealed class AssistantToolBroker
                     userId,
                     sourceMessageId,
                     context,
+                    apiKey,
                     CreateOperationId(sourceMessageId, call, context.ClientTurnId),
                     cancellationToken);
             }
@@ -121,6 +126,7 @@ public sealed class AssistantToolBroker
         string userId,
         int sourceMessageId,
         AssistantRuntimeContext context,
+        string? apiKey,
         Guid operationId,
         CancellationToken cancellationToken)
     {
@@ -137,6 +143,7 @@ public sealed class AssistantToolBroker
                 context.TimeZoneId,
                 sourceMessageId,
                 cancellationToken),
+            "web_search" => await WebSearchAsync(GetString(call.Arguments, "query"), apiKey, cancellationToken),
             "memory_remember" => await RememberAsync(
                 userId,
                 sourceMessageId,
@@ -270,6 +277,19 @@ public sealed class AssistantToolBroker
                     excerpt = hit.Excerpt,
                     createdAt = hit.CreatedAt
                 })
+            }));
+    }
+
+    private async Task<AssistantToolExecution> WebSearchAsync(string? query, string? apiKey, CancellationToken ct)
+    {
+        var result = await _webSearch.SearchAsync(query, apiKey, ct);
+        return new("web_search", result.Status, result.Summary,
+            Data: ToData(new
+            {
+                status = result.Status,
+                summary = result.Summary,
+                queryCount = result.QueryCount,
+                sources = result.Sources.Select(source => new { title = source.Title, url = source.Url })
             }));
     }
 
