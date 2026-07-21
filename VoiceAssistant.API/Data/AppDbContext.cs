@@ -26,6 +26,7 @@ public class AppDbContext : IdentityDbContext<User>
     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
     public DbSet<MemoryOperation> MemoryOperations => Set<MemoryOperation>();
     public DbSet<ActionReceipt> ActionReceipts => Set<ActionReceipt>();
+    public DbSet<CapabilityDiscoveryProgress> CapabilityDiscoveryProgresses => Set<CapabilityDiscoveryProgress>();
     public DbSet<Reminder> Reminders => Set<Reminder>();
     public DbSet<ReminderDelivery> ReminderDeliveries => Set<ReminderDelivery>();
     public DbSet<VisualAsset> VisualAssets => Set<VisualAsset>();
@@ -215,6 +216,15 @@ public class AppDbContext : IdentityDbContext<User>
             e.Property(receipt => receipt.ResultCode).HasMaxLength(64);
             e.HasIndex(receipt => new { receipt.UserId, receipt.CreatedAt });
             e.HasIndex(receipt => new { receipt.SourceMessageId, receipt.CreatedAt });
+        });
+
+        builder.Entity<CapabilityDiscoveryProgress>(e =>
+        {
+            e.HasOne(progress => progress.User).WithMany()
+                .HasForeignKey(progress => progress.UserId).OnDelete(DeleteBehavior.Cascade);
+            e.Property(progress => progress.CapabilityId).HasMaxLength(40);
+            e.HasIndex(progress => new { progress.UserId, progress.CapabilityId }).IsUnique();
+            e.HasIndex(progress => new { progress.UserId, progress.LastSuggestedAt });
         });
 
         builder.Entity<Reminder>(e =>

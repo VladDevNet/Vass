@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VoiceAssistant.API.Services;
@@ -10,10 +11,12 @@ namespace VoiceAssistant.API.Controllers;
 public class CapabilitiesController : ControllerBase
 {
     private readonly AssistantCapabilityRegistry _capabilities;
+    private readonly CapabilityDiscoveryService _discovery;
 
-    public CapabilitiesController(AssistantCapabilityRegistry capabilities)
+    public CapabilitiesController(AssistantCapabilityRegistry capabilities, CapabilityDiscoveryService discovery)
     {
         _capabilities = capabilities;
+        _discovery = discovery;
     }
 
     // This is presentation-only. The model receives the authoritative
@@ -36,5 +39,44 @@ public class CapabilitiesController : ControllerBase
             SupportsPeriodicReminders: supportsPeriodicReminders,
             SupportsLibrary: supportsLibrary);
         return Ok(_capabilities.GetHelp(context, topic));
+    }
+
+    public record RecordCapabilityUsageRequest(string CapabilityId);
+
+    [HttpGet("discovery")]
+    public async Task<ActionResult<CapabilityDiscoverySnapshot>> GetDiscovery(
+        [FromQuery] bool supportsReminders,
+        [FromQuery] bool supportsPeriodicReminders,
+        [FromQuery] bool supportsExternalActions,
+        [FromQuery] bool supportsScreenAnalysis,
+        [FromQuery] bool supportsLibrary,
+        CancellationToken cancellationToken)
+    {
+        var context = new AssistantRuntimeContext(
+            HasVisualAttachment: false,
+            SupportsScreenAnalysis: supportsScreenAnalysis,
+            SupportsExternalActions: supportsExternalActions,
+            SupportsReminders: supportsReminders,
+            SupportsPeriodicReminders: supportsPeriodicReminders,
+            SupportsLibrary: supportsLibrary);
+        return Ok(await _discovery.GetSnapshotAsync(
+            User.FindFirstValue(ClaimTypes.NameIdentifier)!,
+            context,
+            cancellationToken));
+    }
+
+    // Only user-operated client surfaces report here. Server-side tool and
+    // receipt outcomes are recorded internally, so a client cannot invent a
+    // memory/reminder/YouTube success by posting an arbitrary feature ID.
+    [HttpPost("usage")]
+    public async Task<IActionResult> RecordUsage(
+        [FromBody] RecordCapabilityUsageRequest request,
+        CancellationToken cancellationToken)
+    {
+        var recorded = await _discovery.MarkClientReportedUseAsync(
+            User.FindFirstValue(ClaimTypes.NameIdentifier)!,
+            request.CapabilityId,
+            cancellationToken);
+        return recorded ? NoContent() : BadRequest(new { error = "Неизвестная пользовательская возможность." });
     }
 }

@@ -135,6 +135,7 @@ builder.Services.AddScoped<LongTermMemoryService>();
 builder.Services.AddScoped<MemoryItemService>();
 builder.Services.AddScoped<ConversationSearchService>();
 builder.Services.AddSingleton<AssistantCapabilityRegistry>();
+builder.Services.AddScoped<CapabilityDiscoveryService>();
 builder.Services.AddScoped<AssistantToolPlannerService>();
 builder.Services.AddScoped<AssistantToolBroker>();
 builder.Services.AddScoped<AssistantAgentTurnService>();

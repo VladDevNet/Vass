@@ -5,6 +5,7 @@ import {
   type OverlayAvatarId,
   type OverlayStatus,
 } from '../../modules/vass-overlay';
+import { api } from '../api/client';
 import { useConversationRuntime } from '../context/ConversationRuntimeContext';
 
 const EMPTY_STATUS: OverlayStatus = {
@@ -47,7 +48,10 @@ export function OverlaySettings({ avatarId }: { avatarId: OverlayAvatarId }) {
       setShowRestrictedSettingsHelp(false);
       setPermissionWait(false);
       await new Promise((resolve) => setTimeout(resolve, 250));
-      await refreshStatus();
+      const next = await refreshStatus();
+      if (next.enabled && next.running) {
+        void api.recordCapabilityUsage('overlay').catch(() => undefined);
+      }
     } catch (err) {
       if (backgroundPrepared) await disableOverlayMode(true);
       setError(err instanceof Error ? err.message : String(err));

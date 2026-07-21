@@ -1373,6 +1373,11 @@ export function useVoiceChat(
             assetId: staged.assetId,
             sizeBytes: staged.sizeBytes,
           });
+          void api.recordCapabilityUsage('screen').catch((err) => {
+            log('warn', 'screen-capture', 'could not record successful screen capture usage', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
 
           logChatRequestStart('screen_capture_retry');
           fullReply = await sendMessage({

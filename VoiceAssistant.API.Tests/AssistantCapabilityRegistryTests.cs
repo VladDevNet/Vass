@@ -84,6 +84,26 @@ public class AssistantCapabilityRegistryTests
     }
 
     [Fact]
+    public void DiscoverableHelpCatalog_ExcludesOrdinaryConversation_AndKeepsOnlyTrackableCapabilities()
+    {
+        var registry = new AssistantCapabilityRegistry(new ConfigurationBuilder().Build());
+        var context = new AssistantRuntimeContext(
+            HasVisualAttachment: false,
+            SupportsScreenAnalysis: true,
+            SupportsExternalActions: true,
+            SupportsReminders: true,
+            SupportsPeriodicReminders: true,
+            SupportsLibrary: true);
+
+        var discoverable = registry.GetDiscoverableHelp(context);
+
+        Assert.DoesNotContain(discoverable, item => item.Id == "conversation");
+        Assert.All(discoverable, item => Assert.True(AssistantCapabilityRegistry.IsDiscoverableHelpId(item.Id)));
+        Assert.Contains(discoverable, item => item.Id == "memory");
+        Assert.Contains(discoverable, item => item.Id == "overlay");
+    }
+
+    [Fact]
     public void LibraryCapability_IsClientBound_AndCatalogIsMarkedUntrusted()
     {
         var registry = new AssistantCapabilityRegistry(new ConfigurationBuilder().Build());

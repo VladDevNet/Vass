@@ -285,6 +285,31 @@ export interface CapabilityHelpItem {
   interfaceHint: string;
 }
 
+export interface CapabilityRuntimeParams {
+  supportsReminders: boolean;
+  supportsPeriodicReminders: boolean;
+  supportsExternalActions: boolean;
+  supportsScreenAnalysis: boolean;
+  supportsLibrary: boolean;
+}
+
+export interface CapabilityDiscoveryItem extends CapabilityHelpItem {
+  state: 'unused' | 'used' | 'declined';
+  usageCount: number;
+  firstUsedAt: string | null;
+  lastUsedAt: string | null;
+  suggestionCount: number;
+  lastSuggestedAt: string | null;
+  declinedAt: string | null;
+  pendingResponseSeenAt: string | null;
+}
+
+export interface CapabilityDiscoverySnapshot {
+  canSuggest: boolean;
+  userMessageCount: number;
+  items: CapabilityDiscoveryItem[];
+}
+
 export interface AndroidAppUpdate {
   updateAvailable: boolean;
   mandatory: boolean;
@@ -442,13 +467,7 @@ export const api = {
   cancelReminder: (id: number): Promise<Array<{ deviceId: string; localNotificationId: string }>> =>
     request<Array<{ deviceId: string; localNotificationId: string }>>(`/reminders/${id}`, { method: 'DELETE' }),
 
-  getCapabilityHelp: (params: {
-    supportsReminders: boolean;
-    supportsPeriodicReminders: boolean;
-    supportsExternalActions: boolean;
-    supportsScreenAnalysis: boolean;
-    supportsLibrary: boolean;
-  }): Promise<CapabilityHelpItem[]> => {
+  getCapabilityHelp: (params: CapabilityRuntimeParams): Promise<CapabilityHelpItem[]> => {
     const query = new URLSearchParams({
       supportsReminders: String(params.supportsReminders),
       supportsPeriodicReminders: String(params.supportsPeriodicReminders),
@@ -458,6 +477,23 @@ export const api = {
     });
     return request<CapabilityHelpItem[]>(`/capabilities/help?${query.toString()}`);
   },
+
+  getCapabilityDiscovery: (params: CapabilityRuntimeParams): Promise<CapabilityDiscoverySnapshot> => {
+    const query = new URLSearchParams({
+      supportsReminders: String(params.supportsReminders),
+      supportsPeriodicReminders: String(params.supportsPeriodicReminders),
+      supportsExternalActions: String(params.supportsExternalActions),
+      supportsScreenAnalysis: String(params.supportsScreenAnalysis),
+      supportsLibrary: String(params.supportsLibrary),
+    });
+    return request<CapabilityDiscoverySnapshot>(`/capabilities/discovery?${query.toString()}`);
+  },
+
+  recordCapabilityUsage: (capabilityId: 'share' | 'screen' | 'overlay'): Promise<void> =>
+    request<void>('/capabilities/usage', {
+      method: 'POST',
+      body: JSON.stringify({ capabilityId }),
+    }),
 
   markReminderScheduled: (id: number, deviceId: string, localNotificationId: string): Promise<void> =>
     request<void>(`/reminders/${id}/scheduled`, {

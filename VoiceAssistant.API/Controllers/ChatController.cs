@@ -18,7 +18,7 @@ namespace VoiceAssistant.API.Controllers;
 public class ChatController : ControllerBase
 {
     private static readonly Regex InternalProtocolReplyPattern = new(
-        @"^\s*(?:(?:reminder_create|periodic_reminder_create|reminder_list|reminder_cancel|memory_status|memory_list|memory_search|memory_remember|memory_correct|memory_forget|conversation_search|library_list|library_write|library_open|capability_help|screen_capture_once|open_vass|youtube_search|youtube_watch)\s*[\(\{]|(?:search|function(?:Call|Response)?|tool(?:Call|Response)?)\s*\{)",
+        @"^\s*(?:(?:reminder_create|periodic_reminder_create|reminder_list|reminder_cancel|memory_status|memory_list|memory_search|memory_remember|memory_correct|memory_forget|conversation_search|library_list|library_write|library_open|capability_help|capability_discovery_status|capability_discovery_candidates|capability_discovery_present|capability_discovery_decline|screen_capture_once|open_vass|youtube_search|youtube_watch)\s*[\(\{]|(?:search|function(?:Call|Response)?|tool(?:Call|Response)?)\s*\{)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private readonly AppDbContext _db;
@@ -34,6 +34,7 @@ public class ChatController : ControllerBase
     private readonly ReminderService _reminders;
     private readonly VisualAssetService _visualAssets;
     private readonly AssistantCapabilityRegistry _capabilities;
+    private readonly CapabilityDiscoveryService _capabilityDiscovery;
     private readonly ActionReceiptService _actionReceipts;
     private readonly AssistantAgentTurnService _agentTurn;
     private readonly IConfiguration _config;
@@ -48,6 +49,7 @@ public class ChatController : ControllerBase
         ReminderService reminders,
         VisualAssetService visualAssets,
         AssistantCapabilityRegistry capabilities,
+        CapabilityDiscoveryService capabilityDiscovery,
         ActionReceiptService actionReceipts,
         AssistantAgentTurnService agentTurn,
         IConfiguration config, IWebHostEnvironment env, ILogger<ChatController> logger)
@@ -65,6 +67,7 @@ public class ChatController : ControllerBase
         _reminders = reminders;
         _visualAssets = visualAssets;
         _capabilities = capabilities;
+        _capabilityDiscovery = capabilityDiscovery;
         _actionReceipts = actionReceipts;
         _agentTurn = agentTurn;
         _config = config;
@@ -579,6 +582,10 @@ public class ChatController : ControllerBase
         }
         session.Messages.Add(userMessage);
         await _db.SaveChangesAsync();
+        if (visualAsset is not null)
+            await _capabilityDiscovery.MarkUsedAsync(userId, "visual", HttpContext.RequestAborted);
+        if (sharedContent is not null)
+            await _capabilityDiscovery.MarkUsedAsync(userId, "share", HttpContext.RequestAborted);
 
         // For an AudioCore voice turn the primary model has already supplied
         // a short, safe phrase in the native function call. Emit it before
@@ -672,6 +679,12 @@ public class ChatController : ControllerBase
             recalledFacts);
 
         systemPrompt = _capabilities.BuildPromptManifest(capabilityContext) + "\n\n" + systemPrompt;
+        var discoveryTurn = await _capabilityDiscovery.GetTurnContextAsync(
+            userId,
+            capabilityContext,
+            HttpContext.RequestAborted);
+        if (!string.IsNullOrWhiteSpace(discoveryTurn.Prompt))
+            systemPrompt = discoveryTurn.Prompt + "\n\n" + systemPrompt;
 
         if (visualAsset is not null)
         {
@@ -715,7 +728,8 @@ public class ChatController : ControllerBase
         var bypassAgentPlanner = audioCoreUsed &&
                                  audioCoreResult is { RequiresTool: false } &&
                                  visualAsset is null &&
-                                 sharedContent is null;
+                                 sharedContent is null &&
+                                 !discoveryTurn.RequiresAgentPlanner;
         var agentStopwatch = Stopwatch.StartNew();
         AssistantAgentTurnResult agentTurn;
         if (bypassAgentPlanner)

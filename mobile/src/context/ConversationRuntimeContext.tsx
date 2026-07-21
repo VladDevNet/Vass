@@ -195,6 +195,11 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
         await actionsRef.current.announceSystemNotice(
           /(?:https?:\/\/|www\.)/i.test(shared.text) ? 'Получена ссылка.' : 'Получен текст.'
         );
+        void api.recordCapabilityUsage('share').catch((err) => {
+          log('warn', 'share', 'could not record successful shared content usage', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
         log('info', 'share', 'shared text staged for next voice turn', { length: shared.text.length });
         return;
       }
@@ -222,6 +227,11 @@ export function ConversationRuntimeProvider({ children }: { children: ReactNode 
       await actionsRef.current.announceSystemNotice(
         shared.mimeType.startsWith('image/') ? 'Получено изображение.' : 'Получен документ.'
       );
+      void api.recordCapabilityUsage('share').catch((err) => {
+        log('warn', 'share', 'could not record successful shared attachment usage', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
       log('info', 'visual', 'shared attachment staged for next voice turn', { mimeType: shared.mimeType });
     };
 

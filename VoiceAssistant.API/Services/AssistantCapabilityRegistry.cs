@@ -52,7 +52,11 @@ public sealed record AssistantRuntimeContext(
 // actually do; it never turns UI-only controls into model-callable actions.
 public sealed class AssistantCapabilityRegistry
 {
-    public const int SnapshotVersion = 4;
+    public const int SnapshotVersion = 5;
+    private static readonly HashSet<string> DiscoverableHelpIds =
+    [
+        "memory", "reminders", "visual", "share", "screen", "youtube", "library", "overlay"
+    ];
     private readonly bool _memoryEnabled;
 
     public AssistantCapabilityRegistry(IConfiguration configuration)
@@ -84,7 +88,8 @@ public sealed class AssistantCapabilityRegistry
             new("provider.web_search", "available", "provider", AssistantActionTaxonomies.ProviderHosted, "Провайдер может использовать web search внутри ответа; это не действие на устройстве"),
             new("visual.input", context.HasVisualAttachment ? "attached" : "user_control_only", "client", AssistantActionTaxonomies.UserControl, "Камера, галерея и share доступны только пользователю через UI"),
             new("screen.analysis", context.SupportsScreenAnalysis ? "available_with_consent" : "unavailable", "client", AssistantActionTaxonomies.UserControl, "Снимок экрана требует системного согласия"),
-            new("capability.help", "available", "server", AssistantActionTaxonomies.ServerLocal, "Кратко объяснить доступные возможности и следующий шаг")
+            new("capability.help", "available", "server", AssistantActionTaxonomies.ServerLocal, "Кратко объяснить доступные возможности и следующий шаг"),
+            new("capability.discovery", "available", "server", AssistantActionTaxonomies.ServerLocal, "Ненавязчиво предложить ещё не использованную возможность с учётом явного отказа")
         ]);
 
     public string BuildPromptManifest(AssistantRuntimeContext context)
@@ -140,6 +145,12 @@ public sealed class AssistantCapabilityRegistry
             .ToList();
         return matches.Count > 0 ? matches : items;
     }
+
+    public IReadOnlyList<AssistantCapabilityHelpItem> GetDiscoverableHelp(AssistantRuntimeContext context) =>
+        GetHelp(context).Where(item => IsDiscoverableHelpId(item.Id)).ToArray();
+
+    public static bool IsDiscoverableHelpId(string? id) =>
+        id is not null && DiscoverableHelpIds.Contains(id);
 
     private static bool IsHelpAvailable(string id, ISet<string> available) => id switch
     {

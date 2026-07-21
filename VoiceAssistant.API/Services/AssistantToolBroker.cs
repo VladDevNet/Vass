@@ -33,19 +33,22 @@ public sealed class AssistantToolBroker
     private readonly ReminderService _reminders;
     private readonly ActionReceiptService _actionReceipts;
     private readonly AssistantCapabilityRegistry _capabilities;
+    private readonly CapabilityDiscoveryService _capabilityDiscovery;
 
     public AssistantToolBroker(
         MemoryItemService memory,
         ConversationSearchService conversationSearch,
         ReminderService reminders,
         ActionReceiptService actionReceipts,
-        AssistantCapabilityRegistry capabilities)
+        AssistantCapabilityRegistry capabilities,
+        CapabilityDiscoveryService capabilityDiscovery)
     {
         _memory = memory;
         _conversationSearch = conversationSearch;
         _reminders = reminders;
         _actionReceipts = actionReceipts;
         _capabilities = capabilities;
+        _capabilityDiscovery = capabilityDiscovery;
     }
 
     public async Task<IReadOnlyList<AssistantToolExecution>> ExecuteAsync(
@@ -105,6 +108,8 @@ public sealed class AssistantToolBroker
             // side-effect slot; clarification happens in the next user turn.
             if (IsReminderTool(call.Name))
                 hasAttemptedReminder = true;
+            if (GetConfirmedCapabilityUse(execution) is { } usedCapability)
+                await _capabilityDiscovery.MarkUsedAsync(userId, usedCapability, cancellationToken);
             results.Add(execution with { CallId = call.CallId });
         }
 
@@ -187,6 +192,18 @@ public sealed class AssistantToolBroker
                 context,
                 cancellationToken),
             "capability_help" => CapabilityHelp(context, GetString(call.Arguments, "topic")),
+            "capability_discovery_status" => await CapabilityDiscoveryStatusAsync(userId, context, cancellationToken),
+            "capability_discovery_candidates" => await CapabilityDiscoveryCandidatesAsync(userId, context, cancellationToken),
+            "capability_discovery_present" => await CapabilityDiscoveryPresentAsync(
+                userId,
+                GetString(call.Arguments, "capabilityId"),
+                context,
+                cancellationToken),
+            "capability_discovery_decline" => await CapabilityDiscoveryDeclineAsync(
+                userId,
+                GetString(call.Arguments, "capabilityId"),
+                context,
+                cancellationToken),
             "screen_capture_once" => RequestScreenCapture(call.Name, context),
             "open_vass" => await ProposeActionAsync(call.Name, ExternalActionTypes.OpenVass, null, null, userId, sourceMessageId, context, cancellationToken),
             "youtube_search" => await ProposeActionAsync(call.Name, ExternalActionTypes.YouTubeSearch, GetString(call.Arguments, "query"), null, userId, sourceMessageId, context, cancellationToken),
@@ -591,6 +608,97 @@ public sealed class AssistantToolBroker
             }));
     }
 
+    private async Task<AssistantToolExecution> CapabilityDiscoveryCandidatesAsync(
+        string userId,
+        AssistantRuntimeContext context,
+        CancellationToken ct)
+    {
+        var result = await _capabilityDiscovery.GetCandidatesAsync(userId, context, ct);
+        var candidates = result.Candidates ?? [];
+        return new("capability_discovery_candidates", result.Status, result.Summary,
+            Data: ToData(new
+            {
+                status = result.Status,
+                candidates = candidates.Select(candidate => new
+                {
+                    id = candidate.Id,
+                    title = candidate.Title,
+                    description = candidate.Description,
+                    examples = candidate.Examples,
+                    interfaceHint = candidate.InterfaceHint,
+                })
+            }));
+    }
+
+    private async Task<AssistantToolExecution> CapabilityDiscoveryStatusAsync(
+        string userId,
+        AssistantRuntimeContext context,
+        CancellationToken ct)
+    {
+        var snapshot = await _capabilityDiscovery.GetSnapshotAsync(userId, context, ct);
+        return new("capability_discovery_status", "ok",
+            snapshot.Items.Count == 0
+                ? "Доступных возможностей для отслеживания нет."
+                : string.Join("\n", snapshot.Items.Select(item =>
+                    $"{item.Title}: {item.State}; использовано: {item.UsageCount}; подсказок: {item.SuggestionCount}.")),
+            Data: ToData(new
+            {
+                status = "ok",
+                userMessageCount = snapshot.UserMessageCount,
+                canSuggest = snapshot.CanSuggest,
+                items = snapshot.Items.Select(item => new
+                {
+                    id = item.Id,
+                    title = item.Title,
+                    state = item.State,
+                    usageCount = item.UsageCount,
+                    suggestionCount = item.SuggestionCount,
+                    declined = item.DeclinedAt is not null,
+                })
+            }));
+    }
+
+    private async Task<AssistantToolExecution> CapabilityDiscoveryPresentAsync(
+        string userId,
+        string? capabilityId,
+        AssistantRuntimeContext context,
+        CancellationToken ct)
+    {
+        var result = await _capabilityDiscovery.PresentAsync(userId, capabilityId, context, ct);
+        return new("capability_discovery_present", result.Status, result.Summary,
+            Data: ToData(new
+            {
+                status = result.Status,
+                capability = result.Capability is null ? null : new
+                {
+                    id = result.Capability.Id,
+                    title = result.Capability.Title,
+                    description = result.Capability.Description,
+                    examples = result.Capability.Examples,
+                    interfaceHint = result.Capability.InterfaceHint,
+                }
+            }));
+    }
+
+    private async Task<AssistantToolExecution> CapabilityDiscoveryDeclineAsync(
+        string userId,
+        string? capabilityId,
+        AssistantRuntimeContext context,
+        CancellationToken ct)
+    {
+        var result = await _capabilityDiscovery.DeclineAsync(userId, capabilityId, context, ct);
+        return new("capability_discovery_decline", result.Status, result.Summary,
+            Data: ToData(new
+            {
+                status = result.Status,
+                capability = result.Capability is null ? null : new
+                {
+                    id = result.Capability.Id,
+                    title = result.Capability.Title,
+                }
+            }));
+    }
+
     private static AssistantToolExecution RequestScreenCapture(string name, AssistantRuntimeContext context)
     {
         if (!context.SupportsScreenAnalysis)
@@ -763,6 +871,24 @@ public sealed class AssistantToolBroker
 
     private static bool IsClientAction(string name) => name is "open_vass" or "youtube_search" or "youtube_watch" or "library_write" or "library_open";
     private static bool IsReminderTool(string name) => name is "reminder_create" or "periodic_reminder_create";
+
+    private static string? GetConfirmedCapabilityUse(AssistantToolExecution execution) => (execution.Name, execution.Status) switch
+    {
+        ("memory_status", "available") or
+        ("memory_list", "ok") or
+        ("memory_search", "ok") or
+        ("memory_search", "not_found") or
+        ("memory_remember", "remembered") or
+        ("memory_remember", "already_known") or
+        ("memory_correct", "corrected") or
+        ("memory_forget", "forgotten") => "memory",
+        ("reminder_create", "created") or
+        ("periodic_reminder_create", "created") or
+        ("reminder_list", "ok") or
+        ("reminder_cancel", "cancelled") => "reminders",
+        ("library_list", "ok") => "library",
+        _ => null,
+    };
 
     private static IReadOnlyList<object> ToToolItems(IEnumerable<MemoryItemResponse> items) =>
         items.Take(8).Select(item => (object)new

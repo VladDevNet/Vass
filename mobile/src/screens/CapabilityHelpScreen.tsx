@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { ArrowLeft, Lightbulb, RefreshCw } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { api, type CapabilityHelpItem } from '../api/client';
+import { api, type CapabilityDiscoveryItem, type CapabilityHelpItem, type CapabilityRuntimeParams } from '../api/client';
 import { VassOverlay } from '../../modules/vass-overlay';
 import { amoled } from '../theme/amoled';
 
@@ -12,6 +12,7 @@ interface CapabilityHelpScreenProps {
 
 export function CapabilityHelpScreen({ onDone }: CapabilityHelpScreenProps) {
   const [items, setItems] = useState<CapabilityHelpItem[]>([]);
+  const [discovery, setDiscovery] = useState<Record<string, CapabilityDiscoveryItem>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -19,13 +20,19 @@ export function CapabilityHelpScreen({ onDone }: CapabilityHelpScreenProps) {
     setError(null);
     try {
       const isPhone = Platform.OS === 'android' || Platform.OS === 'ios';
-      setItems(await api.getCapabilityHelp({
+      const capabilities: CapabilityRuntimeParams = {
         supportsReminders: isPhone,
         supportsPeriodicReminders: isPhone,
         supportsExternalActions: isPhone,
         supportsScreenAnalysis: Platform.OS === 'android' && VassOverlay.isAvailable(),
         supportsLibrary: isPhone,
-      }));
+      };
+      const [help, snapshot] = await Promise.all([
+        api.getCapabilityHelp(capabilities),
+        api.getCapabilityDiscovery(capabilities),
+      ]);
+      setItems(help);
+      setDiscovery(Object.fromEntries(snapshot.items.map((item) => [item.id, item])));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось загрузить возможности');
     } finally {
@@ -44,14 +51,25 @@ export function CapabilityHelpScreen({ onDone }: CapabilityHelpScreenProps) {
       </View>
       <ScrollView contentContainerStyle={styles.content} refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void load()} tintColor="#F6D37A" />}>
         {error && <Text style={styles.error}>{error}</Text>}
-        {loading ? <ActivityIndicator color="#F6D37A" style={styles.loading} /> : items.map((item) => (
-          <View key={item.id} style={styles.item}>
-            <View style={styles.itemTitle}><Lightbulb size={19} color="#F6D37A" /><Text style={styles.itemTitleText}>{item.title}</Text></View>
-            <Text style={styles.description}>{item.description}</Text>
-            <View style={styles.examples}>{item.examples.map((example) => <Text key={example} style={styles.example}>{example}</Text>)}</View>
-            <Text style={styles.interfaceHint}>{item.interfaceHint}</Text>
-          </View>
-        ))}
+        {loading ? <ActivityIndicator color="#F6D37A" style={styles.loading} /> : items.map((item) => {
+          const progress = discovery[item.id];
+          const status = progress?.state === 'used'
+            ? 'Уже пробовали'
+            : progress?.state === 'declined'
+              ? 'Подсказки выключены'
+              : progress
+                ? 'Ещё не пробовали'
+                : null;
+          return (
+            <View key={item.id} style={styles.item}>
+              <View style={styles.itemTitle}><Lightbulb size={19} color="#F6D37A" /><Text style={styles.itemTitleText}>{item.title}</Text></View>
+              {status && <Text style={[styles.progress, progress?.state === 'declined' && styles.progressMuted]}>{status}</Text>}
+              <Text style={styles.description}>{item.description}</Text>
+              <View style={styles.examples}>{item.examples.map((example) => <Text key={example} style={styles.example}>{example}</Text>)}</View>
+              <Text style={styles.interfaceHint}>{item.interfaceHint}</Text>
+            </View>
+          );
+        })}
       </ScrollView>
     </SafeAreaView>
   );
@@ -70,6 +88,8 @@ const styles = StyleSheet.create({
   item: { padding: 15, borderRadius: 8, backgroundColor: amoled.glassBackground, borderWidth: 1, borderColor: amoled.glassBorder },
   itemTitle: { flexDirection: 'row', alignItems: 'center', gap: 9 },
   itemTitleText: { color: amoled.textPrimary, fontSize: 17, fontWeight: '700' },
+  progress: { marginTop: 8, color: '#7DD3FC', fontSize: 13, fontWeight: '600' },
+  progressMuted: { color: amoled.textSecondary },
   description: { marginTop: 10, color: amoled.textSecondary, fontSize: 14, lineHeight: 20 },
   examples: { marginTop: 12, gap: 6 },
   example: { color: '#F6D37A', fontSize: 14, lineHeight: 20 },

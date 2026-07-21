@@ -36,10 +36,12 @@ public sealed class ActionReceiptService
 {
     private static readonly Regex ResultCodePattern = new(@"\A[a-z0-9_]{1,64}\z", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private readonly IDbContextFactory<AppDbContext> _dbFactory;
+    private readonly CapabilityDiscoveryService _capabilityDiscovery;
 
-    public ActionReceiptService(IDbContextFactory<AppDbContext> dbFactory)
+    public ActionReceiptService(IDbContextFactory<AppDbContext> dbFactory, CapabilityDiscoveryService capabilityDiscovery)
     {
         _dbFactory = dbFactory;
+        _capabilityDiscovery = capabilityDiscovery;
     }
 
     public static string? GetTaxonomy(string actionType) => actionType switch
@@ -84,10 +86,24 @@ public sealed class ActionReceiptService
         if (receipt.Status != ActionReceiptStatuses.Proposed && receipt.Status != status)
             return null;
 
+        var transitionedFromProposal = receipt.Status == ActionReceiptStatuses.Proposed;
+
         receipt.Status = status;
         receipt.ResultCode = resultCode;
         receipt.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
+        if (transitionedFromProposal && status == ActionReceiptStatuses.HandlerDispatched &&
+            GetConfirmedCapabilityUse(receipt.ActionType) is { } usedCapability)
+        {
+            await _capabilityDiscovery.MarkUsedAsync(userId, usedCapability, cancellationToken);
+        }
         return new(receipt.Id, receipt.ActionType, receipt.Taxonomy, receipt.Status, receipt.ResultCode);
     }
+
+    private static string? GetConfirmedCapabilityUse(string actionType) => actionType switch
+    {
+        ExternalActionTypes.YouTubeSearch or ExternalActionTypes.YouTubeWatch => "youtube",
+        ExternalActionTypes.LibraryWrite or ExternalActionTypes.LibraryOpen => "library",
+        _ => null,
+    };
 }
