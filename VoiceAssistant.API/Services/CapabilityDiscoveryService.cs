@@ -46,7 +46,7 @@ public sealed class CapabilityDiscoveryService
 {
     private const int MinimumUserMessages = 4;
     private const int MaximumSuggestionsPerCapability = 2;
-    private static readonly TimeSpan GlobalSuggestionCooldown = TimeSpan.FromDays(7);
+    private static readonly TimeSpan GlobalSuggestionCooldown = TimeSpan.FromDays(1);
     private static readonly TimeSpan CapabilitySuggestionCooldown = TimeSpan.FromDays(28);
     private static readonly TimeSpan PendingResponseWindow = TimeSpan.FromDays(7);
 
