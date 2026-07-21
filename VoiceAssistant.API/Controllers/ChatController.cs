@@ -783,7 +783,6 @@ public class ChatController : ControllerBase
                     userId,
                     userMessage.Id,
                     capabilityContext,
-                    req.SupportsSpeechText,
                     webSearchPrefetch,
                     HttpContext.RequestAborted);
             }
@@ -998,9 +997,10 @@ public class ChatController : ControllerBase
                     ? GetSafeToolFallback(toolExecutions, externalAction)
                     : null;
         var useAgentFinalText = responseOverride is not null;
-        var speechFirstSystemPrompt = req.SupportsSpeechText
-            ? SpeechFirstResponseParser.AddInstructions(systemPrompt)
-            : systemPrompt;
+        // Do not let the model rewrite normal Russian for TTS. The mobile
+        // client already speaks the visible response when no speechText event
+        // is sent, which keeps pronunciation under the device TTS engine.
+        var responseSystemPrompt = systemPrompt;
 
         // Kick off a fast, non-grounded "will this need search/deep thought?" check
         // in parallel with the real (possibly slow, search-grounded) response, so we
@@ -1016,7 +1016,7 @@ public class ChatController : ControllerBase
         // native function-response loop, so emit it as one durable SSE chunk.
         var stream = useAgentFinalText
             ? StreamSingleResponseAsync(responseOverride!)
-            : _gemini.StreamResponseAsync(speechFirstSystemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey, cancellationToken: HttpContext.RequestAborted);
+            : _gemini.StreamResponseAsync(responseSystemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey, cancellationToken: HttpContext.RequestAborted);
         var enumerator = stream.GetAsyncEnumerator(HttpContext.RequestAborted);
         var speechFirstParser = new SpeechFirstResponseParser();
 
@@ -1112,7 +1112,7 @@ public class ChatController : ControllerBase
             {
                 var retryParser = new SpeechFirstResponseParser();
                 await foreach (var chunk in _gemini.StreamResponseAsync(
-                                   speechFirstSystemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey,
+                                   responseSystemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey,
                                    enableGrounding: false, cancellationToken: HttpContext.RequestAborted))
                 {
                     if (!llmFirstChunkReceived)

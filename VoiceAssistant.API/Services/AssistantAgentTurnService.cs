@@ -40,7 +40,6 @@ public sealed class AssistantAgentTurnService
         string userId,
         int sourceMessageId,
         AssistantRuntimeContext context,
-        bool supportsSpeechText,
         GroundedWebSearchPrefetch? webSearchPrefetch,
         CancellationToken cancellationToken)
     {
@@ -62,8 +61,7 @@ public sealed class AssistantAgentTurnService
                     systemPrompt,
                     contents,
                     apiKey,
-                    turnCancellationToken,
-                    emitSpeechFirstResponse: supportsSpeechText && usedTools);
+                    turnCancellationToken);
                 plannerStopwatch.Stop();
                 _logger.LogInformation(
                     "Assistant agent planner completed: Step {Step}; Duration {DurationMs}ms; Calls {CallCount}; ProviderAvailable {ProviderAvailable}",

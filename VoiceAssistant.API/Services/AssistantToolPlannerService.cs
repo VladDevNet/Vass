@@ -46,16 +46,11 @@ public sealed class AssistantToolPlannerService
         string systemPrompt,
         IReadOnlyList<JsonElement> contents,
         string? apiKey,
-        CancellationToken cancellationToken,
-        bool emitSpeechFirstResponse = false)
+        CancellationToken cancellationToken)
     {
         var key = string.IsNullOrWhiteSpace(apiKey) ? _configuration["Gemini:ApiKey"] : apiKey;
         if (string.IsNullOrWhiteSpace(key) || contents.Count == 0)
             return AssistantToolModelResponse.Unavailable();
-        var effectiveSystemPrompt = emitSpeechFirstResponse
-            ? SpeechFirstResponseParser.AddInstructions(systemPrompt)
-            : systemPrompt;
-
         var payload = new
         {
             contents,
@@ -66,7 +61,7 @@ public sealed class AssistantToolPlannerService
                     new
                     {
                         text = $$"""
-                            {{effectiveSystemPrompt}}
+                            {{systemPrompt}}
 
                             Ты управляешь только объявленными инструментами Vass. Вызывай
                             инструмент, когда пользователь явно просит выполнить действие
