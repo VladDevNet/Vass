@@ -756,6 +756,7 @@ public class ChatController : ControllerBase
                                  sharedContent is null &&
                                  !discoveryTurn.RequiresAgentPlanner;
         var agentStopwatch = Stopwatch.StartNew();
+        var webSearchProgressCount = 0;
         AssistantAgentTurnResult agentTurn;
         if (bypassAgentPlanner)
         {
@@ -764,16 +765,33 @@ public class ChatController : ControllerBase
         }
         else
         {
-            agentTurn = await _agentTurn.RunAsync(
-                systemPrompt,
-                messages,
-                geminiKey,
-                userId,
-                userMessage.Id,
-                capabilityContext,
-                req.SupportsSpeechText,
-                webSearchPrefetch,
-                HttpContext.RequestAborted);
+            var agentCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var progressTask = webSearchPrefetch is null
+                ? Task.CompletedTask
+                : EmitVoiceWebSearchProgressAsync(
+                    agentCompleted.Task,
+                    req.ClientTurnId,
+                    turnTimeline,
+                    () => webSearchProgressCount++,
+                    HttpContext.RequestAborted);
+            try
+            {
+                agentTurn = await _agentTurn.RunAsync(
+                    systemPrompt,
+                    messages,
+                    geminiKey,
+                    userId,
+                    userMessage.Id,
+                    capabilityContext,
+                    req.SupportsSpeechText,
+                    webSearchPrefetch,
+                    HttpContext.RequestAborted);
+            }
+            finally
+            {
+                agentCompleted.TrySetResult();
+            }
+            await progressTask;
         }
         agentStopwatch.Stop();
         agentMs = agentStopwatch.ElapsedMilliseconds;
@@ -1142,8 +1160,8 @@ public class ChatController : ControllerBase
         responsePersistedAtMs = turnTimeline.ElapsedMilliseconds;
 
         // Log stats to server logs
-        _logger.LogInformation("VoiceAssistant Performance Stats - Turn: {ClientTurnId}, User: {UserEmail}, Session: {SessionId}, AudioCore: {AudioCoreMs}ms (Used: {AudioCoreUsed}, Fallback: {AudioCoreFallback}), MemoryRecall: {MemoryRecallMs}ms, Agent: {AgentMs}ms (Skipped: {AgentSkipped}), Preamble: {PreambleSent}, Convert: {ConvertMs}ms, Transcribe: {TranscribeMs}ms, SpeakerId: {SpeakerIdMs}ms, LLM (First Token): {LlmFirstMs}ms, LLM (Total): {LlmTotalMs}ms, Total: {TotalMs}ms",
-            req.ClientTurnId, user.Email, req.SessionId, audioCoreMs, audioCoreUsed, audioCoreFallback, memoryRecallMs, agentMs, agentSkipped, preambleSent, convertMs, transcribeMs, speakerIdMs, llmFirstTokenMs, llmTotalMs, turnTimeline.ElapsedMilliseconds);
+        _logger.LogInformation("VoiceAssistant Performance Stats - Turn: {ClientTurnId}, User: {UserEmail}, Session: {SessionId}, AudioCore: {AudioCoreMs}ms (Used: {AudioCoreUsed}, Fallback: {AudioCoreFallback}), MemoryRecall: {MemoryRecallMs}ms, Agent: {AgentMs}ms (Skipped: {AgentSkipped}), Preamble: {PreambleSent}, WebSearchProgress: {WebSearchProgressCount}, Convert: {ConvertMs}ms, Transcribe: {TranscribeMs}ms, SpeakerId: {SpeakerIdMs}ms, LLM (First Token): {LlmFirstMs}ms, LLM (Total): {LlmTotalMs}ms, Total: {TotalMs}ms",
+            req.ClientTurnId, user.Email, req.SessionId, audioCoreMs, audioCoreUsed, audioCoreFallback, memoryRecallMs, agentMs, agentSkipped, preambleSent, webSearchProgressCount, convertMs, transcribeMs, speakerIdMs, llmFirstTokenMs, llmTotalMs, turnTimeline.ElapsedMilliseconds);
 
         // Send stats event to client, then [DONE] last -- both only after the
         // save above has actually completed.
@@ -1156,6 +1174,7 @@ public class ChatController : ControllerBase
             AgentMs = agentMs,
             AgentSkipped = agentSkipped,
             PreambleSent = preambleSent,
+            WebSearchProgressCount = webSearchProgressCount,
             ConvertMs = convertMs,
             TranscribeMs = transcribeMs,
             SpeakerIdMs = speakerIdMs,
@@ -1194,6 +1213,51 @@ public class ChatController : ControllerBase
         // If this line is ever changed to run concurrently like the two tasks
         // above, give it its own DbContext first.
         await _conversationMemory.CheckAndUpdateAsync(session, geminiKey, HttpContext.RequestAborted);
+    }
+
+    // Progress is deliberately voice-only: it keeps a slow grounded lookup
+    // conversational without inserting system chatter into the saved reply.
+    private async Task EmitVoiceWebSearchProgressAsync(
+        Task agentCompleted,
+        Guid? clientTurnId,
+        Stopwatch timeline,
+        Action onProgressSent,
+        CancellationToken cancellationToken)
+    {
+        var updates = new (TimeSpan Delay, string Text)[]
+        {
+            (TimeSpan.FromSeconds(3.5), "Ищу свежие сведения."),
+            (TimeSpan.FromSeconds(5), "Проверяю источники.")
+        };
+
+        try
+        {
+            for (var index = 0; index < updates.Length; index++)
+            {
+                var update = updates[index];
+                var delayTask = Task.Delay(update.Delay, cancellationToken);
+                if (await Task.WhenAny(agentCompleted, delayTask) == agentCompleted)
+                    return;
+
+                await delayTask;
+                if (agentCompleted.IsCompleted)
+                    return;
+
+                var progressData = JsonSerializer.Serialize(new { progressText = update.Text });
+                await Response.WriteAsync($"data: {progressData}\n\n", cancellationToken);
+                await Response.Body.FlushAsync(cancellationToken);
+                onProgressSent();
+                _logger.LogInformation(
+                    "Voice turn web search progress sent: Turn {ClientTurnId}; At {ElapsedMs}ms; Index {ProgressIndex}",
+                    clientTurnId,
+                    timeline.ElapsedMilliseconds,
+                    index + 1);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The client ended the turn; normal request cancellation owns cleanup.
+        }
     }
 
     private static async IAsyncEnumerable<string> StreamSingleResponseAsync(string response)

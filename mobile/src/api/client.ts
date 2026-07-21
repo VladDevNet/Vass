@@ -758,6 +758,7 @@ export interface ReminderSyncItem {
 export interface SendMessageCallbacks {
   onTranscription?: (text: string) => void;
   onPreamble?: (text: string) => void;
+  onProgressText?: (text: string) => void;
   // A hidden, Russian-phonetic representation of the assistant reply. It
   // arrives before normal text and must never be rendered in chat.
   onSpeechText?: (text: string) => void;
@@ -778,6 +779,7 @@ export interface ServerTurnStats {
   agentMs?: number;
   agentSkipped?: boolean;
   preambleSent?: boolean;
+  webSearchProgressCount?: number;
   convertMs?: number;
   transcribeMs?: number;
   speakerIdMs?: number;
@@ -812,6 +814,7 @@ function parseTurnStats(value: unknown): ServerTurnStats | null {
     agentMs: numberValue('agentMs'),
     agentSkipped: typeof candidate.agentSkipped === 'boolean' ? candidate.agentSkipped : undefined,
     preambleSent: typeof candidate.preambleSent === 'boolean' ? candidate.preambleSent : undefined,
+    webSearchProgressCount: numberValue('webSearchProgressCount'),
     convertMs: numberValue('convertMs'),
     transcribeMs: numberValue('transcribeMs'),
     speakerIdMs: numberValue('speakerIdMs'),
@@ -1027,6 +1030,8 @@ export async function sendMessage(
           callbacks.onTranscription?.(parsed.transcription);
         } else if (typeof parsed.preamble === 'string') {
           callbacks.onPreamble?.(parsed.preamble);
+        } else if (typeof parsed.progressText === 'string') {
+          callbacks.onProgressText?.(parsed.progressText);
         } else if (typeof parsed.speechText === 'string') {
           callbacks.onSpeechText?.(parsed.speechText);
         } else if (typeof parsed.text === 'string') {

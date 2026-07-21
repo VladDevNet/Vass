@@ -100,7 +100,8 @@ public sealed class AssistantAgentTurnService
                     {
                         HasProposedClientAction = executions.Any(execution => execution.ExternalAction is not null),
                         HasAttemptedReminder = executions.Any(execution =>
-                            execution.Name is "reminder_create" or "periodic_reminder_create")
+                            execution.Name is "reminder_create" or "periodic_reminder_create"),
+                        HasAttemptedWebSearch = executions.Any(execution => execution.Name == "web_search")
                     },
                     apiKey,
                     webSearchPrefetch,
@@ -114,6 +115,12 @@ public sealed class AssistantAgentTurnService
                     string.Join(',', callsForStep.Select(call => call.Name).Distinct(StringComparer.Ordinal)));
                 executions.AddRange(stepExecutions);
                 contents.Add(proposal.ModelContent!.Value);
+
+                // A grounded search already returns the compact, verified text
+                // the user asked for. A second model pass only adds latency and
+                // can accidentally trigger a duplicate search.
+                if (TryGetDirectWebSearchFinalText(executions, callsForStep, stepExecutions, out var webSearchFinalText))
+                    return new(true, executions, webSearchFinalText, false, false, false);
 
                 // Screen capture is mediated user input, not a background
                 // tool result. The retry with the OS-approved image begins a
@@ -143,6 +150,33 @@ public sealed class AssistantAgentTurnService
             _logger.LogWarning(ex, "Assistant agent turn failed after {ToolCount} tool execution(s)", executions.Count);
             return new(usedTools, executions, null, false, false, ProviderFailed: usedTools);
         }
+    }
+
+    internal static bool TryGetDirectWebSearchFinalText(
+        IReadOnlyList<AssistantToolExecution> allExecutions,
+        IReadOnlyList<AssistantToolCall> callsForStep,
+        IReadOnlyList<AssistantToolExecution> stepExecutions,
+        out string? finalText)
+    {
+        finalText = null;
+        if (allExecutions.Count != 1 ||
+            callsForStep.Count != 1 ||
+            callsForStep[0].Name != "web_search" ||
+            stepExecutions.Count != 1)
+        {
+            return false;
+        }
+
+        var execution = stepExecutions[0];
+        if (execution.Name != "web_search" ||
+            execution.Status != "grounded" ||
+            string.IsNullOrWhiteSpace(execution.Summary))
+        {
+            return false;
+        }
+
+        finalText = execution.Summary.Trim();
+        return true;
     }
 
     // The tool-planning call sees the same current-turn attachment as the

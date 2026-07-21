@@ -41,6 +41,7 @@ public sealed record AssistantRuntimeContext(
     string? TimeZoneId = null,
     bool HasProposedClientAction = false,
     bool HasAttemptedReminder = false,
+    bool HasAttemptedWebSearch = false,
     bool SupportsPeriodicReminders = false,
     Guid? ClientTurnId = null,
     Guid? VisualAssetId = null,

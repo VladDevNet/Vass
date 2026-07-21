@@ -67,6 +67,7 @@ public sealed class AssistantToolBroker
         var index = 0;
         var hasProposedClientAction = context.HasProposedClientAction;
         var hasAttemptedReminder = context.HasAttemptedReminder;
+        var hasAttemptedWebSearch = context.HasAttemptedWebSearch;
         foreach (var call in calls)
         {
             AssistantToolExecution execution;
@@ -94,6 +95,14 @@ public sealed class AssistantToolBroker
                     "В одном ходе разрешено создать только одно напоминание.",
                     Data: ToData(new { status = "rejected", code = "reminder_already_created" }));
             }
+            else if (call.Name == "web_search" && hasAttemptedWebSearch)
+            {
+                execution = new AssistantToolExecution(
+                    call.Name,
+                    "rejected",
+                    "В одном интерактивном ходе разрешен только один поиск в интернете.",
+                    Data: ToData(new { status = "rejected", code = "web_search_already_attempted" }));
+            }
             else
             {
                 execution = await ExecuteOneAsync(
@@ -115,6 +124,8 @@ public sealed class AssistantToolBroker
             // side-effect slot; clarification happens in the next user turn.
             if (IsReminderTool(call.Name))
                 hasAttemptedReminder = true;
+            if (call.Name == "web_search")
+                hasAttemptedWebSearch = true;
             if (GetConfirmedCapabilityUse(execution) is { } usedCapability)
                 await _capabilityDiscovery.MarkUsedAsync(userId, usedCapability, cancellationToken);
             results.Add(execution with { CallId = call.CallId });

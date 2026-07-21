@@ -1,9 +1,43 @@
+using System.Text.Json;
 using VoiceAssistant.API.Services;
 
 namespace VoiceAssistant.API.Tests;
 
 public class AssistantAgentTurnServiceTests
 {
+    [Fact]
+    public void TryGetDirectWebSearchFinalText_OnlySuccessfulGroundedSearch_ReturnsItsSummary()
+    {
+        var call = new AssistantToolCall("web_search", JsonSerializer.SerializeToElement(new { query = "latest news" }), "call-1");
+        var execution = new AssistantToolExecution("web_search", "grounded", "Проверенная краткая выжимка.");
+
+        var direct = AssistantAgentTurnService.TryGetDirectWebSearchFinalText(
+            [execution],
+            [call],
+            [execution],
+            out var finalText);
+
+        Assert.True(direct);
+        Assert.Equal("Проверенная краткая выжимка.", finalText);
+    }
+
+    [Fact]
+    public void TryGetDirectWebSearchFinalText_AdditionalWork_DoesNotBypassPlanner()
+    {
+        var call = new AssistantToolCall("web_search", JsonSerializer.SerializeToElement(new { query = "latest news" }), "call-1");
+        var search = new AssistantToolExecution("web_search", "grounded", "Проверенная выжимка.");
+        var extra = new AssistantToolExecution("memory_status", "ok", "Память доступна.");
+
+        var direct = AssistantAgentTurnService.TryGetDirectWebSearchFinalText(
+            [search, extra],
+            [call],
+            [search],
+            out var finalText);
+
+        Assert.False(direct);
+        Assert.Null(finalText);
+    }
+
     [Fact]
     public void BuildInitialContents_MultimodalMessage_PreservesInlineImageAlongsideText()
     {

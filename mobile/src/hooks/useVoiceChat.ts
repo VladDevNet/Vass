@@ -1053,6 +1053,18 @@ export function useVoiceChat(
         ensureStreamingSpeech().push(speech, 'preamble');
       };
 
+      const handleProgressText = (progressText: string) => {
+        if (myGeneration !== segmentGenerationRef.current || bargedInRef.current) return;
+        const speech = stripMarkdownForSpeechChunk(progressText).trim();
+        if (!speech) return;
+        log('info', 'voice-timeline', 'voice web search progress received', {
+          clientTurnId,
+          elapsedMs: Date.now() - turnStartedAt,
+          length: speech.length,
+        });
+        ensureStreamingSpeech().push(speech, 'progress');
+      };
+
       // Normal replies now have two hidden representations: a Russian
       // phonetic speech stream first, followed by the normal text stream for
       // chat. Keep legacy servers working by using visible text for speech
@@ -1255,6 +1267,7 @@ export function useVoiceChat(
             sharedContent,
           }, {
             onPreamble: handlePreamble,
+            onProgressText: handleProgressText,
             onSpeechText: handleSpeechText,
             onChunk: handleChunk,
             onStats: handleStats,
@@ -1308,6 +1321,7 @@ export function useVoiceChat(
                 if (myGeneration === segmentGenerationRef.current) setTranscript(pendingText());
               },
               onPreamble: handlePreamble,
+              onProgressText: handleProgressText,
               onSpeechText: handleSpeechText,
               onChunk: handleChunk,
               onStats: handleStats,
@@ -1396,6 +1410,7 @@ export function useVoiceChat(
             visualAssetId,
           }, {
             onPreamble: handlePreamble,
+            onProgressText: handleProgressText,
             onSpeechText: handleSpeechText,
             onChunk: handleChunk,
             onStats: handleStats,

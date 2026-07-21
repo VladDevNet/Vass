@@ -71,7 +71,7 @@ export function subscribeToTtsPlayback(listener: (playing: boolean) => void): ()
   return () => playbackListeners.delete(listener);
 }
 
-export type VoiceSpeechSource = 'local_acknowledgement' | 'preamble' | 'reply';
+export type VoiceSpeechSource = 'local_acknowledgement' | 'preamble' | 'progress' | 'reply';
 
 export interface VoiceTurnTelemetry {
   clientTurnId: string;
@@ -564,7 +564,7 @@ export interface StreamingSpeech {
   // repeatedly while a previous sentence is still playing — that's the
   // whole point: an SSE onChunk callback firing faster than speech can keep
   // up just grows the queue, it doesn't block.
-  push(text: string, source?: 'preamble' | 'reply'): void;
+  push(text: string, source?: 'preamble' | 'progress' | 'reply'): void;
   // Signals no more sentences are coming. Resolves once the queue fully
   // drains and everything's been spoken. Rejects only on a genuine,
   // unrecovered TTS engine failure (see speakChunk's onError/unexpected-
@@ -631,7 +631,7 @@ export function createStreamingSpeech(
     Speech.stop();
     activeStreaming = null;
   }
-  const queue: Array<{ text: string; source: 'preamble' | 'reply'; sequence: number }> = [];
+  const queue: Array<{ text: string; source: 'preamble' | 'progress' | 'reply'; sequence: number }> = [];
   let finished = false;
   let aborted = false;
   let paused = startPaused;
@@ -641,7 +641,7 @@ export function createStreamingSpeech(
   // the queue (not just queue[0]) so pause() can hand it back to the pump
   // loop on the very next resume without disturbing whatever's still
   // queued behind it.
-  let currentSentence: { text: string; source: 'preamble' | 'reply'; sequence: number } | null = null;
+  let currentSentence: { text: string; source: 'preamble' | 'progress' | 'reply'; sequence: number } | null = null;
   let armed = false;
   let voice: string | null = null;
   let spokenCount = 0;
@@ -752,7 +752,7 @@ export function createStreamingSpeech(
   pumpPromise.catch(() => {});
 
   const handle: StreamingSpeech = {
-    push(text: string, source: 'preamble' | 'reply' = 'reply') {
+    push(text: string, source: 'preamble' | 'progress' | 'reply' = 'reply') {
       const queued = { text, source, sequence: ++queuedSequence };
       queue.push(queued);
       logVoiceTimeline('TTS utterance queued', telemetry ? { source, telemetry, sequence: queued.sequence } : undefined, {
