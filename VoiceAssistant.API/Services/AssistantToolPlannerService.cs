@@ -116,7 +116,7 @@ public sealed class AssistantToolPlannerService
             },
             tools = new object[] { new { functionDeclarations = GetDeclarations() } },
             toolConfig = new { functionCallingConfig = new { mode = "AUTO" } },
-            generationConfig = new { maxOutputTokens = 4096, thinkingConfig = new { thinkingBudget = 0 } }
+            generationConfig = new { maxOutputTokens = 4096, thinkingConfig = new { thinkingLevel = "medium" } }
         };
 
         var url = $"https://generativelanguage.googleapis.com/v1beta/models/{Model}:generateContent?key={key}";

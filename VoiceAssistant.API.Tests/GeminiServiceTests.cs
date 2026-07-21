@@ -41,6 +41,8 @@ public class GeminiServiceTests
         var inlineData = parts[1].GetProperty("inline_data");
         Assert.Equal("image/jpeg", inlineData.GetProperty("mime_type").GetString());
         Assert.Equal(Convert.ToBase64String(image), inlineData.GetProperty("data").GetString());
+        Assert.Equal("medium", document.RootElement.GetProperty("generationConfig")
+            .GetProperty("thinkingConfig").GetProperty("thinkingLevel").GetString());
     }
 
     [Fact]

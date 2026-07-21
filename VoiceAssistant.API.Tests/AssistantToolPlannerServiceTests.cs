@@ -70,6 +70,8 @@ public class AssistantToolPlannerServiceTests
         using var requestDocument = JsonDocument.Parse(capturedRequest);
         Assert.Equal(4096, requestDocument.RootElement.GetProperty("generationConfig")
             .GetProperty("maxOutputTokens").GetInt32());
+        Assert.Equal("medium", requestDocument.RootElement.GetProperty("generationConfig")
+            .GetProperty("thinkingConfig").GetProperty("thinkingLevel").GetString());
     }
 
     private static AssistantToolPlannerService CreatePlanner(HttpMessageHandler handler)

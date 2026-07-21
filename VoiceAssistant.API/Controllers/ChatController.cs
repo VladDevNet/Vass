@@ -1016,7 +1016,7 @@ public class ChatController : ControllerBase
         // native function-response loop, so emit it as one durable SSE chunk.
         var stream = useAgentFinalText
             ? StreamSingleResponseAsync(responseOverride!)
-            : _gemini.StreamResponseAsync(responseSystemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey, cancellationToken: HttpContext.RequestAborted);
+            : _gemini.StreamResponseAsync(responseSystemPrompt, messages, model: "gemini-3.5-flash", maxTokens: 8192, apiKey: geminiKey, cancellationToken: HttpContext.RequestAborted);
         var enumerator = stream.GetAsyncEnumerator(HttpContext.RequestAborted);
         var speechFirstParser = new SpeechFirstResponseParser();
 
@@ -1112,7 +1112,7 @@ public class ChatController : ControllerBase
             {
                 var retryParser = new SpeechFirstResponseParser();
                 await foreach (var chunk in _gemini.StreamResponseAsync(
-                                   responseSystemPrompt, messages, model: "gemini-3.5-flash", apiKey: geminiKey,
+                                   responseSystemPrompt, messages, model: "gemini-3.5-flash", maxTokens: 8192, apiKey: geminiKey,
                                    enableGrounding: false, cancellationToken: HttpContext.RequestAborted))
                 {
                     if (!llmFirstChunkReceived)

@@ -15,7 +15,7 @@ namespace VoiceAssistant.API.IntegrationTests;
 // real parsing code runs unmodified against it.
 //
 // ChatController.Send() fires up to three concurrent StreamResponseAsync
-// calls per turn: the main reply (maxOutputTokens: 2048, the default), a
+// calls per turn: the main reply (maxOutputTokens: 8192), a
 // "does this need a preamble" check (maxOutputTokens: ChatController.PreambleCheckMaxTokens),
 // and a background "did the user ask to remember something" check
 // (maxOutputTokens: ChatController.CustomInstructionCheckMaxTokens).

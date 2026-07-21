@@ -183,7 +183,10 @@ public class GeminiService
             generationConfig = new
             {
                 maxOutputTokens = maxTokens,
-                thinkingConfig = new { thinkingBudget = 0 }
+                // Gemini 3.5 Flash defaults to medium reasoning. State it
+                // explicitly so a provider default cannot silently restore
+                // the old low-depth voice behaviour.
+                thinkingConfig = new { thinkingLevel = "medium" }
             }
         };
 
