@@ -89,6 +89,15 @@ const SCREEN_CAPTURE_RESULT_TIMEOUT_MS = 120_000;
 const SCREEN_CAPTURE_RESULT_POLL_MS = 150;
 const SCREEN_CAPTURE_NATIVE_REQUEST_TIMEOUT_MS = 2_000;
 
+// Thinking can take longer than the initial acknowledgement, especially for
+// a model turn with tools. These stay voice-only and stop as soon as a real
+// reply or a more specific server progress update arrives.
+const THINKING_PLACEHOLDERS = [
+  { delayMs: 3_000, text: 'Думаю, секунду.' },
+  { delayMs: 6_000, text: 'Ещё момент.' },
+  { delayMs: 9_000, text: 'Сейчас.' },
+] as const;
+
 function waitFor(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -1007,6 +1016,8 @@ export function useVoiceChat(
       let visibleReplyBuffer = '';
       let speechTextReceived = false;
       let firstSpeechTextChunkAt: number | null = null;
+      let replyStarted = false;
+      let cancelThinkingPlaceholders = () => {};
       const pendingExternalActionHolder: { current: ExternalActionEvent | null } = { current: null };
       const screenCaptureHolder: { current: ScreenCaptureRequest | null } = { current: null };
       let nativeScreenCaptureRequestId: string | null = null;
@@ -1055,6 +1066,7 @@ export function useVoiceChat(
 
       const handleProgressText = (progressText: string) => {
         if (myGeneration !== segmentGenerationRef.current || bargedInRef.current) return;
+        cancelThinkingPlaceholders();
         const speech = stripMarkdownForSpeechChunk(progressText).trim();
         if (!speech) return;
         log('info', 'voice-timeline', 'voice web search progress received', {
@@ -1091,6 +1103,8 @@ export function useVoiceChat(
           return;
         }
         if (!speechText.trim()) return;
+        replyStarted = true;
+        cancelThinkingPlaceholders();
         speechTextReceived = true;
         if (firstSpeechTextChunkAt === null) {
           firstSpeechTextChunkAt = Date.now();
@@ -1124,6 +1138,8 @@ export function useVoiceChat(
           streamingHolder.current?.abort();
           return;
         }
+        replyStarted = true;
+        cancelThinkingPlaceholders();
         if (firstReplyChunkAt === null) {
           firstReplyChunkAt = Date.now();
           log('info', 'voice-timeline', 'reply first text chunk received', {
@@ -1143,6 +1159,34 @@ export function useVoiceChat(
           elapsedMs: Date.now() - turnStartedAt,
         });
       };
+
+      const placeholderTimers: Array<ReturnType<typeof setTimeout>> = [];
+      cancelThinkingPlaceholders = () => {
+        while (placeholderTimers.length > 0) {
+          const timer = placeholderTimers.pop();
+          if (timer) clearTimeout(timer);
+        }
+      };
+      if (!fromShadow) {
+        for (const placeholder of THINKING_PLACEHOLDERS) {
+          placeholderTimers.push(setTimeout(() => {
+            if (
+              replyStarted ||
+              myGeneration !== segmentGenerationRef.current ||
+              bargedInRef.current ||
+              pausedRef.current ||
+              conversationEndedRef.current
+            ) return;
+
+            ensureStreamingSpeech().push(placeholder.text, 'progress');
+            log('info', 'voice-timeline', 'thinking placeholder queued', {
+              clientTurnId,
+              elapsedMs: Date.now() - turnStartedAt,
+              text: placeholder.text,
+            });
+          }, placeholder.delayMs));
+        }
+      }
 
       try {
         let fullReply: string;
@@ -1585,6 +1629,7 @@ export function useVoiceChat(
           await speakSystemNotice(message);
         }
       } finally {
+        cancelThinkingPlaceholders();
         activeTurnAbortControllersRef.current.delete(requestAbortController);
         if (nativeScreenCaptureRequestId) {
           await VassOverlay.clearScreenCaptureResult(nativeScreenCaptureRequestId).catch(() => undefined);

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Vass",
     "slug": "vass-mobile",
-    "version": "1.2.30",
+    "version": "1.2.31",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -12,7 +12,7 @@
     },
     "android": {
       "package": "com.vass.assistant",
-      "versionCode": 34,
+      "versionCode": 35,
       "permissions": [
         "android.permission.SCHEDULE_EXACT_ALARM",
         "android.permission.CAMERA"
