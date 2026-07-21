@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
@@ -26,6 +27,26 @@ public sealed record GroundedWebSearchResult(
         0);
 }
 
+// A one-turn result started before the agent has selected the web_search
+// function. It can be consumed exactly once, so a later independent lookup
+// never receives a result for the wrong query.
+public sealed class GroundedWebSearchPrefetch
+{
+    private readonly Task<GroundedWebSearchResult> _resultTask;
+    private int _consumed;
+
+    public GroundedWebSearchPrefetch(Task<GroundedWebSearchResult> resultTask)
+    {
+        _resultTask = resultTask;
+    }
+
+    public bool TryTake(out Task<GroundedWebSearchResult> resultTask)
+    {
+        resultTask = _resultTask;
+        return Interlocked.Exchange(ref _consumed, 1) == 0;
+    }
+}
+
 // Google Search is provider-hosted, but the agent needs a typed and verified
 // result before it can safely answer a request about news or other live facts.
 public sealed class GroundedWebSearchService
@@ -50,7 +71,8 @@ public sealed class GroundedWebSearchService
     public async Task<GroundedWebSearchResult> SearchAsync(
         string? query,
         string? apiKey,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string executionSource = "agent_tool")
     {
         var normalizedQuery = NormalizeQuery(query);
         if (normalizedQuery is null)
@@ -113,6 +135,7 @@ public sealed class GroundedWebSearchService
         };
 
         var url = $"https://generativelanguage.googleapis.com/v1beta/models/{Model}:generateContent?key={key}";
+        var stopwatch = Stopwatch.StartNew();
         try
         {
             using var http = _httpClientFactory.CreateClient();
@@ -124,14 +147,20 @@ public sealed class GroundedWebSearchService
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Grounded web search failed with Gemini status {Status}", response.StatusCode);
+                _logger.LogWarning(
+                    "Grounded web search failed: Source {ExecutionSource}; Status {Status}; Duration {DurationMs}ms",
+                    executionSource,
+                    response.StatusCode,
+                    stopwatch.ElapsedMilliseconds);
                 return GroundedWebSearchResult.Unavailable();
             }
 
             var result = ParseResponse(body);
             _logger.LogInformation(
-                "Grounded web search completed with status {Status}; queries={QueryCount}; sources={SourceCount}",
+                "Grounded web search completed: Source {ExecutionSource}; Status {Status}; Duration {DurationMs}ms; Queries {QueryCount}; Sources {SourceCount}",
+                executionSource,
                 result.Status,
+                stopwatch.ElapsedMilliseconds,
                 result.QueryCount,
                 result.Sources.Count);
             return result;
@@ -142,7 +171,11 @@ public sealed class GroundedWebSearchService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Grounded web search request failed");
+            _logger.LogWarning(
+                ex,
+                "Grounded web search request failed: Source {ExecutionSource}; Duration {DurationMs}ms",
+                executionSource,
+                stopwatch.ElapsedMilliseconds);
             return GroundedWebSearchResult.Unavailable();
         }
     }

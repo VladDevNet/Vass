@@ -19,7 +19,7 @@ public class AudioCoreTranscriptionServiceTests
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent("""
-                    {"candidates":[{"content":{"parts":[{"functionCall":{"name":"capture_user_utterance","args":{"transcript":"Поставь напоминание на завтра","preamble":"Про напоминание, секунду.","requiresTool":true}}}]}}]}
+                    {"candidates":[{"content":{"parts":[{"functionCall":{"name":"capture_user_utterance","args":{"transcript":"Поставь напоминание на завтра","preamble":"Про напоминание, секунду.","requiresTool":true,"requiresWebSearch":false}}}]}}]}
                     """, Encoding.UTF8, "application/json")
             };
         });
@@ -36,6 +36,7 @@ public class AudioCoreTranscriptionServiceTests
             Assert.Equal("Поставь напоминание на завтра", result.Transcription);
             Assert.Equal("Про напоминание, секунду.", result.Preamble);
             Assert.True(result.RequiresTool);
+            Assert.False(result.RequiresWebSearch);
 
             using var document = JsonDocument.Parse(requestBody!);
             var inlineData = document.RootElement.GetProperty("contents")[0].GetProperty("parts")[0].GetProperty("inline_data");
@@ -47,6 +48,11 @@ public class AudioCoreTranscriptionServiceTests
                 .GetProperty("text").GetString();
             Assert.Contains("локальную библиотеку", instruction);
             Assert.Contains("не план действий", instruction);
+            Assert.Contains("requiresWebSearch", instruction);
+            Assert.True(document.RootElement.GetProperty("tools")[0]
+                .GetProperty("functionDeclarations")[0]
+                .GetProperty("parameters").GetProperty("properties")
+                .TryGetProperty("requiresWebSearch", out _));
         }
         finally
         {
@@ -82,7 +88,20 @@ public class AudioCoreTranscriptionServiceTests
 
         Assert.True(result.ProviderAvailable);
         Assert.False(result.RequiresTool);
+        Assert.False(result.RequiresWebSearch);
         Assert.Equal("Понял, минутку.", result.Preamble);
+    }
+
+    [Fact]
+    public void ParseResponse_LiveInformation_MarksWebSearchForPrefetch()
+    {
+        var result = AudioCoreTranscriptionService.ParseResponse("""
+            {"candidates":[{"content":{"parts":[{"functionCall":{"name":"capture_user_utterance","args":{"transcript":"Какие сегодня главные новости?","preamble":"Сейчас.","requiresTool":false,"requiresWebSearch":true}}}]}}]}
+            """);
+
+        Assert.True(result.ProviderAvailable);
+        Assert.True(result.RequiresTool);
+        Assert.True(result.RequiresWebSearch);
     }
 
     [Theory]

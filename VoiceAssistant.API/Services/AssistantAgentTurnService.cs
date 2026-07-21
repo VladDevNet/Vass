@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace VoiceAssistant.API.Services;
@@ -40,6 +41,7 @@ public sealed class AssistantAgentTurnService
         int sourceMessageId,
         AssistantRuntimeContext context,
         bool supportsSpeechText,
+        GroundedWebSearchPrefetch? webSearchPrefetch,
         CancellationToken cancellationToken)
     {
         var contents = BuildInitialContents(messages);
@@ -55,12 +57,20 @@ public sealed class AssistantAgentTurnService
         {
             for (var step = 0; step < MaxModelSteps; step++)
             {
+                var plannerStopwatch = Stopwatch.StartNew();
                 var proposal = await _planner.GenerateAsync(
                     systemPrompt,
                     contents,
                     apiKey,
                     turnCancellationToken,
                     emitSpeechFirstResponse: supportsSpeechText && usedTools);
+                plannerStopwatch.Stop();
+                _logger.LogInformation(
+                    "Assistant agent planner completed: Step {Step}; Duration {DurationMs}ms; Calls {CallCount}; ProviderAvailable {ProviderAvailable}",
+                    step + 1,
+                    plannerStopwatch.ElapsedMilliseconds,
+                    proposal.Calls.Count,
+                    proposal.ProviderAvailable);
                 if (!proposal.ProviderAvailable || !proposal.HasModelContent)
                 {
                     return new(usedTools, executions, null, false, false, ProviderFailed: usedTools);
@@ -81,6 +91,7 @@ public sealed class AssistantAgentTurnService
                 var callsForStep = proposal.Calls.Any(call => call.Name == "screen_capture_once")
                     ? proposal.Calls.Where(call => call.Name == "screen_capture_once").Take(1).ToArray()
                     : proposal.Calls;
+                var toolsStopwatch = Stopwatch.StartNew();
                 var stepExecutions = await _broker.ExecuteAsync(
                     callsForStep,
                     userId,
@@ -92,7 +103,15 @@ public sealed class AssistantAgentTurnService
                             execution.Name is "reminder_create" or "periodic_reminder_create")
                     },
                     apiKey,
+                    webSearchPrefetch,
                     turnCancellationToken);
+                toolsStopwatch.Stop();
+                _logger.LogInformation(
+                    "Assistant agent tools completed: Step {Step}; Duration {DurationMs}ms; Calls {CallCount}; Names {ToolNames}",
+                    step + 1,
+                    toolsStopwatch.ElapsedMilliseconds,
+                    callsForStep.Count,
+                    string.Join(',', callsForStep.Select(call => call.Name).Distinct(StringComparer.Ordinal)));
                 executions.AddRange(stepExecutions);
                 contents.Add(proposal.ModelContent!.Value);
 

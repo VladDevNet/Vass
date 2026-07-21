@@ -60,6 +60,7 @@ public sealed class AssistantToolBroker
         int sourceMessageId,
         AssistantRuntimeContext context,
         string? apiKey,
+        GroundedWebSearchPrefetch? webSearchPrefetch,
         CancellationToken cancellationToken)
     {
         var results = new List<AssistantToolExecution>();
@@ -101,6 +102,7 @@ public sealed class AssistantToolBroker
                     sourceMessageId,
                     context,
                     apiKey,
+                    webSearchPrefetch,
                     CreateOperationId(sourceMessageId, call, context.ClientTurnId),
                     cancellationToken);
             }
@@ -127,6 +129,7 @@ public sealed class AssistantToolBroker
         int sourceMessageId,
         AssistantRuntimeContext context,
         string? apiKey,
+        GroundedWebSearchPrefetch? webSearchPrefetch,
         Guid operationId,
         CancellationToken cancellationToken)
     {
@@ -143,7 +146,11 @@ public sealed class AssistantToolBroker
                 context.TimeZoneId,
                 sourceMessageId,
                 cancellationToken),
-            "web_search" => await WebSearchAsync(GetString(call.Arguments, "query"), apiKey, cancellationToken),
+            "web_search" => await WebSearchAsync(
+                GetString(call.Arguments, "query"),
+                apiKey,
+                webSearchPrefetch,
+                cancellationToken),
             "memory_remember" => await RememberAsync(
                 userId,
                 sourceMessageId,
@@ -280,15 +287,36 @@ public sealed class AssistantToolBroker
             }));
     }
 
-    private async Task<AssistantToolExecution> WebSearchAsync(string? query, string? apiKey, CancellationToken ct)
+    private async Task<AssistantToolExecution> WebSearchAsync(
+        string? query,
+        string? apiKey,
+        GroundedWebSearchPrefetch? prefetch,
+        CancellationToken ct)
     {
-        var result = await _webSearch.SearchAsync(query, apiKey, ct);
+        Task<GroundedWebSearchResult>? prefetchedTask = null;
+        var usedPrefetch = prefetch is not null && prefetch.TryTake(out prefetchedTask);
+        var result = usedPrefetch
+            ? await prefetchedTask!
+            : await _webSearch.SearchAsync(query, apiKey, ct);
+        var resultSource = usedPrefetch ? "voice_prefetch" : "agent_tool";
+
+        // A broad voice utterance can occasionally be too ambiguous for a
+        // grounded result. In that case, retain correctness by retrying the
+        // planner's more focused query instead of treating the prefetch as a
+        // final answer.
+        if (usedPrefetch && (result.Status is "not_grounded" or "invalid"))
+        {
+            result = await _webSearch.SearchAsync(query, apiKey, ct, "agent_retry_after_prefetch");
+            resultSource = "agent_retry_after_prefetch";
+        }
+
         return new("web_search", result.Status, result.Summary,
             Data: ToData(new
             {
                 status = result.Status,
                 summary = result.Summary,
                 queryCount = result.QueryCount,
+                source = resultSource,
                 sources = result.Sources.Select(source => new { title = source.Title, url = source.Url })
             }));
     }

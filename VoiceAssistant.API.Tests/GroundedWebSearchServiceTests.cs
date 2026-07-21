@@ -11,6 +11,18 @@ namespace VoiceAssistant.API.Tests;
 public class GroundedWebSearchServiceTests
 {
     [Fact]
+    public void Prefetch_CanOnlyBeConsumedOnce()
+    {
+        var task = Task.FromResult(new GroundedWebSearchResult("grounded", "Кратко.", [], 1));
+        var prefetch = new GroundedWebSearchPrefetch(task);
+
+        Assert.True(prefetch.TryTake(out var first));
+        Assert.Same(task, first);
+        Assert.False(prefetch.TryTake(out var second));
+        Assert.Same(task, second);
+    }
+
+    [Fact]
     public async Task SearchAsync_ReturnsOnlyVerifiedGroundedResult()
     {
         string? requestBody = null;

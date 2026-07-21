@@ -11,9 +11,10 @@ public sealed record AudioCoreTranscriptionResult(
     string Transcription,
     string? Preamble,
     bool RequiresTool,
+    bool RequiresWebSearch,
     bool ProviderAvailable)
 {
-    public static AudioCoreTranscriptionResult Unavailable() => new("", null, true, false);
+    public static AudioCoreTranscriptionResult Unavailable() => new("", null, true, false, false);
 }
 
 public sealed class AudioCoreTranscriptionService
@@ -49,7 +50,7 @@ public sealed class AudioCoreTranscriptionService
         try
         {
             var audioBytes = await File.ReadAllBytesAsync(audioPath, cancellationToken);
-            if (audioBytes.Length == 0) return new AudioCoreTranscriptionResult("", null, true, true);
+            if (audioBytes.Length == 0) return new AudioCoreTranscriptionResult("", null, true, false, true);
 
             var payload = new
             {
@@ -102,6 +103,10 @@ public sealed class AudioCoreTranscriptionService
                                 не уверен, передай true. Передавай false только для обычного разговора,
                                 эмоциональной поддержки или вопроса, на который достаточно обычного
                                 текстового ответа без актуальной интернет-проверки.
+                                В requiresWebSearch передай true только когда для корректного ответа нужны
+                                свежие публичные сведения: новости, текущая погода, цены, расписание,
+                                события или явный поиск в интернете. Во всех остальных случаях передай
+                                false. Если requiresWebSearch=true, requiresTool также обязан быть true.
                                 Не отвечай пользователю и не пиши пояснений: эта функция является твоим
                                 единственным результатом.
                                 """
@@ -137,9 +142,14 @@ public sealed class AudioCoreTranscriptionService
                                         {
                                             type = "boolean",
                                             description = "true, когда для запроса нужен инструмент Vass или есть сомнение."
+                                        },
+                                        requiresWebSearch = new
+                                        {
+                                            type = "boolean",
+                                            description = "true только когда нужны свежие публичные сведения через поиск в интернете."
                                         }
                                     },
-                                    required = new[] { "transcript", "preamble", "requiresTool" }
+                                    required = new[] { "transcript", "preamble", "requiresTool", "requiresWebSearch" }
                                 }
                             }
                         }
@@ -221,7 +231,14 @@ public sealed class AudioCoreTranscriptionService
                 // regular planner still runs rather than skipping an action.
                 var requiresTool = !args.TryGetProperty("requiresTool", out var requiresToolValue) ||
                                    requiresToolValue.ValueKind != JsonValueKind.False;
-                return new AudioCoreTranscriptionResult(filtered ?? "", preamble, requiresTool, true);
+                var requiresWebSearch = args.TryGetProperty("requiresWebSearch", out var requiresWebSearchValue) &&
+                                        requiresWebSearchValue.ValueKind == JsonValueKind.True;
+                return new AudioCoreTranscriptionResult(
+                    filtered ?? "",
+                    preamble,
+                    requiresTool || requiresWebSearch,
+                    requiresWebSearch,
+                    true);
             }
         }
         catch (JsonException)

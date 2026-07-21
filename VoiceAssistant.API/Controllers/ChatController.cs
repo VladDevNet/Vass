@@ -18,7 +18,7 @@ namespace VoiceAssistant.API.Controllers;
 public class ChatController : ControllerBase
 {
     private static readonly Regex InternalProtocolReplyPattern = new(
-        @"^\s*(?:(?:reminder_create|periodic_reminder_create|reminder_list|reminder_cancel|memory_status|memory_list|memory_search|memory_remember|memory_correct|memory_forget|conversation_search|library_list|library_write|library_open|capability_help|capability_discovery_status|capability_discovery_candidates|capability_discovery_present|capability_discovery_decline|screen_capture_once|open_vass|youtube_search|youtube_watch)\s*[\(\{]|(?:search|function(?:Call|Response)?|tool(?:Call|Response)?)\s*\{)",
+        @"^\s*(?:(?:reminder_create|periodic_reminder_create|reminder_list|reminder_cancel|memory_status|memory_list|memory_search|memory_remember|memory_correct|memory_forget|conversation_search|web_search|library_list|library_write|library_open|capability_help|capability_discovery_status|capability_discovery_candidates|capability_discovery_present|capability_discovery_decline|screen_capture_once|open_vass|youtube_search|youtube_watch)\s*[\(\{]|(?:search|function(?:Call|Response)?|tool(?:Call|Response)?)\s*\{)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private readonly AppDbContext _db;
@@ -28,6 +28,7 @@ public class ChatController : ControllerBase
     private readonly CompanionPromptService _tutor;
     private readonly AudioAnalysisService _audioAnalysis;
     private readonly AudioCoreTranscriptionService _audioCoreTranscription;
+    private readonly GroundedWebSearchService _groundedWebSearch;
     private readonly SpeakerRegistryService _speakerRegistry;
     private readonly ConversationMemoryService _conversationMemory;
     private readonly LongTermMemoryService _longTermMemory;
@@ -44,6 +45,7 @@ public class ChatController : ControllerBase
     public ChatController(AppDbContext db, IDbContextFactory<AppDbContext> dbContextFactory, UserManager<User> userManager,
         GeminiService gemini, CompanionPromptService tutor,
         AudioAnalysisService audioAnalysis, AudioCoreTranscriptionService audioCoreTranscription,
+        GroundedWebSearchService groundedWebSearch,
         SpeakerRegistryService speakerRegistry, ConversationMemoryService conversationMemory,
         LongTermMemoryService longTermMemory,
         ReminderService reminders,
@@ -61,6 +63,7 @@ public class ChatController : ControllerBase
         _tutor = tutor;
         _audioAnalysis = audioAnalysis;
         _audioCoreTranscription = audioCoreTranscription;
+        _groundedWebSearch = groundedWebSearch;
         _speakerRegistry = speakerRegistry;
         _conversationMemory = conversationMemory;
         _longTermMemory = longTermMemory;
@@ -544,6 +547,28 @@ public class ChatController : ControllerBase
             }
         }
 
+        // AudioCore has already classified this as a request for fresh public
+        // information. Start the independent lookup before memory recall and
+        // the first agent plan, then hand its single result to web_search if
+        // the planner confirms that action.
+        GroundedWebSearchPrefetch? webSearchPrefetch = null;
+        if (audioCoreUsed &&
+            audioCoreResult is { RequiresWebSearch: true } &&
+            visualAsset is null &&
+            sharedContent is null)
+        {
+            webSearchPrefetch = new GroundedWebSearchPrefetch(
+                _groundedWebSearch.SearchAsync(
+                    messageText,
+                    geminiKey,
+                    HttpContext.RequestAborted,
+                    "voice_prefetch"));
+            _logger.LogInformation(
+                "Voice turn web search prefetch started: Turn {ClientTurnId}; At {ElapsedMs}ms",
+                req.ClientTurnId,
+                turnTimeline.ElapsedMilliseconds);
+        }
+
         // Persist a content-free record of the runtime capabilities the model
         // sees for this turn. It makes a later diagnosis reproducible without
         // logging the prompt, user text, attachment, or provider payload.
@@ -747,6 +772,7 @@ public class ChatController : ControllerBase
                 userMessage.Id,
                 capabilityContext,
                 req.SupportsSpeechText,
+                webSearchPrefetch,
                 HttpContext.RequestAborted);
         }
         agentStopwatch.Stop();
