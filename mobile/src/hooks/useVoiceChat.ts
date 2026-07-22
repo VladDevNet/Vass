@@ -20,7 +20,6 @@ import {
   interruptSpeaking,
   pauseSpeaking,
   resumeSpeaking,
-  speakBackchannel,
   speakSystemNotice,
   stopSpeaking,
   stripMarkdownForSpeechChunk,
@@ -89,14 +88,11 @@ const SCREEN_CAPTURE_RESULT_TIMEOUT_MS = 120_000;
 const SCREEN_CAPTURE_RESULT_POLL_MS = 150;
 const SCREEN_CAPTURE_NATIVE_REQUEST_TIMEOUT_MS = 2_000;
 
-// Thinking can take longer than the initial acknowledgement, especially for
-// a model turn with tools. These stay voice-only and stop as soon as a real
-// reply or a more specific server progress update arrives.
-const THINKING_PLACEHOLDERS = [
-  { delayMs: 3_000, text: 'Думаю, секунду.' },
-  { delayMs: 6_000, text: 'Ещё момент.' },
-  { delayMs: 9_000, text: 'Сейчас.' },
-] as const;
+// A single long-wait cue is enough. The model's early preamble is already a
+// natural acknowledgement, so stacking several generic cues makes the turn
+// sound like a recording rather than a conversation.
+const THINKING_FALLBACK_DELAY_MS = 6_000;
+const THINKING_AFTER_PREAMBLE_DELAY_MS = 4_000;
 
 function waitFor(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -989,7 +985,6 @@ export function useVoiceChat(
         // the bargedInRef gap below: a barge-in used to be able to
         // surface one via this exact path.
         setError(null);
-        speakBackchannel(voiceTelemetry);
       } else {
         // The 'thinking'-entry effect above only fires on a state
         // TRANSITION into 'thinking', which already happened for the first
@@ -1017,7 +1012,9 @@ export function useVoiceChat(
       let speechTextReceived = false;
       let firstSpeechTextChunkAt: number | null = null;
       let replyStarted = false;
+      let thinkingPlaceholderQueued = false;
       let cancelThinkingPlaceholders = () => {};
+      let scheduleThinkingPlaceholder = (_delayMs: number, _text: string, _reason: string) => {};
       const pendingExternalActionHolder: { current: ExternalActionEvent | null } = { current: null };
       const screenCaptureHolder: { current: ScreenCaptureRequest | null } = { current: null };
       let nativeScreenCaptureRequestId: string | null = null;
@@ -1062,6 +1059,7 @@ export function useVoiceChat(
           length: speech.length,
         });
         ensureStreamingSpeech().push(speech, 'preamble');
+        scheduleThinkingPlaceholder(THINKING_AFTER_PREAMBLE_DELAY_MS, 'Ещё момент.', 'after_preamble');
       };
 
       const handleProgressText = (progressText: string) => {
@@ -1160,32 +1158,40 @@ export function useVoiceChat(
         });
       };
 
-      const placeholderTimers: Array<ReturnType<typeof setTimeout>> = [];
+      let placeholderTimer: ReturnType<typeof setTimeout> | null = null;
       cancelThinkingPlaceholders = () => {
-        while (placeholderTimers.length > 0) {
-          const timer = placeholderTimers.pop();
-          if (timer) clearTimeout(timer);
+        if (placeholderTimer) {
+          clearTimeout(placeholderTimer);
+          placeholderTimer = null;
         }
       };
-      if (!fromShadow) {
-        for (const placeholder of THINKING_PLACEHOLDERS) {
-          placeholderTimers.push(setTimeout(() => {
-            if (
-              replyStarted ||
-              myGeneration !== segmentGenerationRef.current ||
-              bargedInRef.current ||
-              pausedRef.current ||
-              conversationEndedRef.current
-            ) return;
+      scheduleThinkingPlaceholder = (delayMs, text, reason) => {
+        if (fromShadow || replyStarted || thinkingPlaceholderQueued) return;
 
-            ensureStreamingSpeech().push(placeholder.text, 'progress');
-            log('info', 'voice-timeline', 'thinking placeholder queued', {
-              clientTurnId,
-              elapsedMs: Date.now() - turnStartedAt,
-              text: placeholder.text,
-            });
-          }, placeholder.delayMs));
-        }
+        cancelThinkingPlaceholders();
+        placeholderTimer = setTimeout(() => {
+          placeholderTimer = null;
+          if (
+            replyStarted ||
+            thinkingPlaceholderQueued ||
+            myGeneration !== segmentGenerationRef.current ||
+            bargedInRef.current ||
+            pausedRef.current ||
+            conversationEndedRef.current
+          ) return;
+
+          thinkingPlaceholderQueued = true;
+          ensureStreamingSpeech().push(text, 'progress');
+          log('info', 'voice-timeline', 'long thinking placeholder queued', {
+            clientTurnId,
+            elapsedMs: Date.now() - turnStartedAt,
+            text,
+            reason,
+          });
+        }, delayMs);
+      };
+      if (!fromShadow) {
+        scheduleThinkingPlaceholder(THINKING_FALLBACK_DELAY_MS, 'Думаю, секунду.', 'no_preamble');
       }
 
       try {
