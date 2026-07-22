@@ -60,7 +60,42 @@ public sealed class AssistantToolPlannerService
                 {
                     new
                     {
-                        text = $$"""
+                        text = BuildPlannerInstructions(systemPrompt)
+                    }
+                }
+            },
+            tools = new object[] { new { functionDeclarations = GetDeclarations() } },
+            toolConfig = new { functionCallingConfig = new { mode = "AUTO" } },
+            generationConfig = new { maxOutputTokens = 4096, thinkingConfig = new { thinkingLevel = "medium" } }
+        };
+
+        var url = $"https://generativelanguage.googleapis.com/v1beta/models/{Model}:generateContent?key={key}";
+        using var http = _httpClientFactory.CreateClient();
+        http.Timeout = TimeSpan.FromSeconds(30);
+        try
+        {
+            var response = await http.PostAsync(
+                url,
+                new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
+                cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Assistant tool generation failed with Gemini status {Status}", response.StatusCode);
+                return AssistantToolModelResponse.Unavailable();
+            }
+
+            return ParseResponse(body);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Assistant tool generation failed");
+            return AssistantToolModelResponse.Unavailable();
+        }
+    }
+
+    internal static string BuildPlannerInstructions(string systemPrompt) => $$"""
                             {{systemPrompt}}
 
                             Ты управляешь только объявленными инструментами Vass. Вызывай
@@ -110,40 +145,7 @@ public sealed class AssistantToolPlannerService
                             зафиксируй именно выбранную возможность через present. Явный отказ от
                             уже предложенной возможности фиксируй через decline; не угадывай отказ
                             по смене темы или обычному молчанию.
-                            """
-                    }
-                }
-            },
-            tools = new object[] { new { functionDeclarations = GetDeclarations() } },
-            toolConfig = new { functionCallingConfig = new { mode = "AUTO" } },
-            generationConfig = new { maxOutputTokens = 4096, thinkingConfig = new { thinkingLevel = "medium" } }
-        };
-
-        var url = $"https://generativelanguage.googleapis.com/v1beta/models/{Model}:generateContent?key={key}";
-        using var http = _httpClientFactory.CreateClient();
-        http.Timeout = TimeSpan.FromSeconds(30);
-        try
-        {
-            var response = await http.PostAsync(
-                url,
-                new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
-                cancellationToken);
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                _logger.LogWarning("Assistant tool generation failed with Gemini status {Status}", response.StatusCode);
-                return AssistantToolModelResponse.Unavailable();
-            }
-
-            return ParseResponse(body);
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Assistant tool generation failed");
-            return AssistantToolModelResponse.Unavailable();
-        }
-    }
+                            """;
 
     internal static AssistantToolModelResponse ParseResponse(string payload)
     {
@@ -197,7 +199,7 @@ public sealed class AssistantToolPlannerService
         }
     }
 
-    private static object[] GetDeclarations() =>
+    internal static object[] GetDeclarations() =>
     [
         new { name = "memory_status", description = "Показывает доступность и количество сохраненных воспоминаний.", parameters = EmptyObjectSchema() },
         new { name = "web_search", description = "Ищет актуальную публичную информацию через Google Search и возвращает проверенную выжимку с источниками. Вызывай до ответа на свежие новости, погоду, цены, расписания, последние события или явную просьбу поискать в интернете. За один интерактивный ход вызови его не более одного раза. Не используй для устойчивых общеизвестных фактов.", parameters = ObjectSchema(new { query = StringProperty("Короткий точный поисковый запрос по смыслу просьбы пользователя.") }, ["query"]) },

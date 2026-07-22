@@ -123,6 +123,8 @@ builder.Services.AddHttpClient();
 
 // Services
 builder.Services.AddSingleton<GeminiService>();
+builder.Services.AddSingleton<OpenAiResponsesService>();
+builder.Services.AddSingleton<IPrimaryConversationService, PrimaryConversationService>();
 builder.Services.AddSingleton<GroundedWebSearchService>();
 builder.Services.AddSingleton<VisualAssetService>();
 builder.Services.AddSingleton<CompanionPromptService>();
@@ -139,6 +141,7 @@ builder.Services.AddSingleton<AssistantCapabilityRegistry>();
 builder.Services.AddScoped<CapabilityDiscoveryService>();
 builder.Services.AddScoped<AssistantToolPlannerService>();
 builder.Services.AddScoped<AssistantToolBroker>();
+builder.Services.AddScoped<OpenAiAssistantAgentTurnService>();
 builder.Services.AddScoped<AssistantAgentTurnService>();
 builder.Services.AddScoped<ActionReceiptService>();
 builder.Services.AddScoped<ReminderService>();
@@ -361,8 +364,9 @@ app.MapGet("/api/health", () => Results.Ok("healthy"));
 // Readiness -- can this instance actually serve the user-facing flow right
 // now? Checks real DB connectivity and that the audio volume is writable
 // (both hard requirements -- reflected in the overall status/HTTP code).
-// Gemini is checked by CONFIGURATION presence only (never a real paid API
-// call) -- also per REL-03, so probing readiness doesn't cost money/quota.
+// Provider keys are checked by configuration presence only (never a real paid
+// API call), so readiness stays free. Gemini remains required for AudioCore,
+// embeddings and grounded search even when OpenAI is the primary model.
 app.MapGet("/api/health/ready", async (
     AppDbContext db,
     IConfiguration configuration,
@@ -441,8 +445,12 @@ app.MapGet("/api/health/ready", async (
         readinessLogger.LogWarning(ex, "Readiness check: visual storage not writable");
     }
 
+    var primaryProvider = PrimaryModelSettings.Provider(configuration);
+    checks["primary_model"] = primaryProvider;
     checks["gemini"] = string.IsNullOrWhiteSpace(configuration["Gemini:ApiKey"]) ? "not_configured" : "configured";
     if (checks["gemini"] == "not_configured") ready = false;
+    checks["openai"] = string.IsNullOrWhiteSpace(configuration["OpenAI:ApiKey"]) ? "not_configured" : "configured";
+    if (primaryProvider == PrimaryModelSettings.OpenAi && checks["openai"] == "not_configured") ready = false;
 
     var payload = new { status = ready ? "ready" : "not_ready", checks };
     return ready ? Results.Ok(payload) : Results.Json(payload, statusCode: StatusCodes.Status503ServiceUnavailable);

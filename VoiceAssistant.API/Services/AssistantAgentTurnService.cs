@@ -20,16 +20,22 @@ public sealed class AssistantAgentTurnService
     public static readonly TimeSpan MaxTurnDuration = TimeSpan.FromSeconds(25);
 
     private readonly AssistantToolPlannerService _planner;
+    private readonly OpenAiAssistantAgentTurnService _openAi;
     private readonly AssistantToolBroker _broker;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<AssistantAgentTurnService> _logger;
 
     public AssistantAgentTurnService(
         AssistantToolPlannerService planner,
+        OpenAiAssistantAgentTurnService openAi,
         AssistantToolBroker broker,
+        IConfiguration configuration,
         ILogger<AssistantAgentTurnService> logger)
     {
         _planner = planner;
+        _openAi = openAi;
         _broker = broker;
+        _configuration = configuration;
         _logger = logger;
     }
 
@@ -43,6 +49,19 @@ public sealed class AssistantAgentTurnService
         GroundedWebSearchPrefetch? webSearchPrefetch,
         CancellationToken cancellationToken)
     {
+        if (PrimaryModelSettings.Provider(_configuration) == PrimaryModelSettings.OpenAi)
+        {
+            return await _openAi.RunAsync(
+                systemPrompt,
+                messages,
+                apiKey,
+                userId,
+                sourceMessageId,
+                context,
+                webSearchPrefetch,
+                cancellationToken);
+        }
+
         var contents = BuildInitialContents(messages);
         if (contents.Count == 0)
             return new(false, [], null, false, false, false);

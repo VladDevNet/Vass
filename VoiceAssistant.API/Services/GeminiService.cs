@@ -40,10 +40,12 @@ public record GeminiMessage(string Role, string Content)
 // (PROJECT-AUDIT-2026-07-10 REL-04). IsRetryable lets a caller decide
 // whether surfacing "try again" makes sense (transient/rate-limit) vs. not
 // (misconfiguration).
-public class GeminiApiException(string message, bool isRetryable) : Exception(message)
+public class ModelApiException(string message, bool isRetryable) : Exception(message)
 {
     public bool IsRetryable { get; } = isRetryable;
 }
+
+public class GeminiApiException(string message, bool isRetryable) : ModelApiException(message, isRetryable);
 
 public class GeminiService
 {

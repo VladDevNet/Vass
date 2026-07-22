@@ -6,6 +6,11 @@ services:
       - ASPNETCORE_URLS=http://+:5000
       - ConnectionStrings__Default=Host=db;Database=vass;Username=app;Password=${DB_PASSWORD}
       - Gemini__ApiKey=${GEMINI_API_KEY}
+      # The central response + native tool loop can be switched without a
+      # database migration: openai or gemini. Gemini remains the rollback.
+      - PrimaryModel__Provider=${PRIMARY_MODEL_PROVIDER:-gemini}
+      - OpenAI__ApiKey=${OPENAI_API_KEY:-}
+      - OpenAI__Model=${OPENAI_MODEL:-gpt-5.4}
       - Audio__Path=/app/audio
       - Visual__Path=/app/visual
       - Jwt__Secret=${JWT_SECRET}

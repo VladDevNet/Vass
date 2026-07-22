@@ -25,6 +25,7 @@ public class ChatController : ControllerBase
     private readonly IDbContextFactory<AppDbContext> _dbContextFactory;
     private readonly UserManager<User> _userManager;
     private readonly GeminiService _gemini;
+    private readonly IPrimaryConversationService _primaryConversation;
     private readonly CompanionPromptService _tutor;
     private readonly AudioAnalysisService _audioAnalysis;
     private readonly AudioCoreTranscriptionService _audioCoreTranscription;
@@ -43,7 +44,7 @@ public class ChatController : ControllerBase
     private readonly string _audioPath;
 
     public ChatController(AppDbContext db, IDbContextFactory<AppDbContext> dbContextFactory, UserManager<User> userManager,
-        GeminiService gemini, CompanionPromptService tutor,
+        GeminiService gemini, IPrimaryConversationService primaryConversation, CompanionPromptService tutor,
         AudioAnalysisService audioAnalysis, AudioCoreTranscriptionService audioCoreTranscription,
         GroundedWebSearchService groundedWebSearch,
         SpeakerRegistryService speakerRegistry, ConversationMemoryService conversationMemory,
@@ -60,6 +61,7 @@ public class ChatController : ControllerBase
         _dbContextFactory = dbContextFactory;
         _userManager = userManager;
         _gemini = gemini;
+        _primaryConversation = primaryConversation;
         _tutor = tutor;
         _audioAnalysis = audioAnalysis;
         _audioCoreTranscription = audioCoreTranscription;
@@ -1052,7 +1054,8 @@ public class ChatController : ControllerBase
         // native function-response loop, so emit it as one durable SSE chunk.
         var stream = useAgentFinalText
             ? StreamSingleResponseAsync(responseOverride!)
-            : _gemini.StreamResponseAsync(responseSystemPrompt, messages, model: "gemini-3.5-flash", maxTokens: 8192, apiKey: geminiKey, cancellationToken: HttpContext.RequestAborted);
+            : _primaryConversation.StreamResponseAsync(responseSystemPrompt, messages, maxTokens: 8192, geminiApiKey: geminiKey,
+                enableGrounding: true, cancellationToken: HttpContext.RequestAborted);
         var enumerator = stream.GetAsyncEnumerator(HttpContext.RequestAborted);
         var speechFirstParser = new SpeechFirstResponseParser();
 
@@ -1105,7 +1108,7 @@ public class ChatController : ControllerBase
                 hasMore = await enumerator.MoveNextAsync();
             }
         }
-        catch (GeminiApiException ex)
+        catch (ModelApiException ex)
         {
             // Infrastructure failure (missing key, non-2xx, connection error) --
             // GeminiService throws instead of yielding a fake content chunk
@@ -1115,7 +1118,7 @@ public class ChatController : ControllerBase
             // retryability hint) instead of [DONE], and don't save
             // fullResponse -- it's empty anyway, since GeminiService only
             // ever throws before yielding its first real chunk.
-            _logger.LogWarning(ex, "Gemini API error during chat response for session {SessionId}", req.SessionId);
+            _logger.LogWarning(ex, "Primary model API error during chat response for session {SessionId}; Provider {Provider}", req.SessionId, _primaryConversation.Provider);
             var errorData = JsonSerializer.Serialize(new { error = ex.Message, retryable = ex.IsRetryable });
             await Response.WriteAsync($"data: {errorData}\n\n");
             await Response.Body.FlushAsync();
@@ -1147,8 +1150,8 @@ public class ChatController : ControllerBase
             try
             {
                 var retryParser = new SpeechFirstResponseParser();
-                await foreach (var chunk in _gemini.StreamResponseAsync(
-                                   responseSystemPrompt, messages, model: "gemini-3.5-flash", maxTokens: 8192, apiKey: geminiKey,
+                await foreach (var chunk in _primaryConversation.StreamResponseAsync(
+                                   responseSystemPrompt, messages, maxTokens: 8192, geminiApiKey: geminiKey,
                                    enableGrounding: false, cancellationToken: HttpContext.RequestAborted))
                 {
                     if (!llmFirstChunkReceived)
@@ -1160,9 +1163,9 @@ public class ChatController : ControllerBase
                 }
                 await EmitResponsePartsAsync(retryParser.Finish());
             }
-            catch (GeminiApiException ex)
+            catch (ModelApiException ex)
             {
-                _logger.LogWarning(ex, "Gemini retry failed for session {SessionId}", req.SessionId);
+                _logger.LogWarning(ex, "Primary model retry failed for session {SessionId}; Provider {Provider}", req.SessionId, _primaryConversation.Provider);
             }
         }
 
