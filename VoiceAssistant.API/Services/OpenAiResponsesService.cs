@@ -30,7 +30,7 @@ public sealed record OpenAiResponse(
 public sealed class OpenAiResponsesService
 {
     private const string Endpoint = "https://api.openai.com/v1/responses";
-    private const string DefaultModel = "gpt-5.4";
+    private const string DefaultModel = "gpt-5.6";
 
     private readonly IConfiguration _configuration;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -47,6 +47,7 @@ public sealed class OpenAiResponsesService
     }
 
     public string Model => _configuration["OpenAI:Model"] ?? DefaultModel;
+    public string ReasoningEffort => _configuration["OpenAI:ReasoningEffort"] ?? "high";
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_configuration["OpenAI:ApiKey"]);
 
     public async IAsyncEnumerable<string> StreamResponseAsync(
@@ -63,7 +64,7 @@ public sealed class OpenAiResponsesService
             max_output_tokens = maxTokens,
             stream = true,
             store = false,
-            reasoning = new { effort = "medium" },
+            reasoning = new { effort = ReasoningEffort },
             text = new { verbosity = "medium" }
         };
 
@@ -102,7 +103,7 @@ public sealed class OpenAiResponsesService
             max_output_tokens = maxTokens,
             parallel_tool_calls = true,
             store = false,
-            reasoning = new { effort = "medium" },
+            reasoning = new { effort = ReasoningEffort },
             text = new { verbosity = "medium" }
         };
 

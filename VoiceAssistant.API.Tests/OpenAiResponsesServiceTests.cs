@@ -44,7 +44,8 @@ public class OpenAiResponsesServiceTests
 
         Assert.Equal(["Готово"], chunks);
         using var document = JsonDocument.Parse(requestBody!);
-        Assert.Equal("gpt-5.4", document.RootElement.GetProperty("model").GetString());
+        Assert.Equal("gpt-5.6", document.RootElement.GetProperty("model").GetString());
+        Assert.Equal("high", document.RootElement.GetProperty("reasoning").GetProperty("effort").GetString());
         Assert.True(document.RootElement.GetProperty("stream").GetBoolean());
         var content = document.RootElement.GetProperty("input")[0].GetProperty("content");
         Assert.Equal("input_text", content[0].GetProperty("type").GetString());
@@ -111,7 +112,8 @@ public class OpenAiResponsesServiceTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["OpenAI:ApiKey"] = "test-key",
-                ["OpenAI:Model"] = "gpt-5.4"
+                ["OpenAI:Model"] = "gpt-5.6",
+                ["OpenAI:ReasoningEffort"] = "high"
             })
             .Build();
         return new OpenAiResponsesService(configuration, new TestHttpClientFactory(handler), NullLogger<OpenAiResponsesService>.Instance);
