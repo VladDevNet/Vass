@@ -325,6 +325,7 @@ public sealed class AssistantToolBroker
             Data: ToData(new
             {
                 status = result.Status,
+                query,
                 summary = result.Summary,
                 queryCount = result.QueryCount,
                 source = resultSource,

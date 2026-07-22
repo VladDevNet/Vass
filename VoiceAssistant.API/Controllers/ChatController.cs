@@ -796,6 +796,41 @@ public class ChatController : ControllerBase
         agentMs = agentStopwatch.ElapsedMilliseconds;
         agentReadyAtMs = turnTimeline.ElapsedMilliseconds;
         var toolExecutions = agentTurn.ToolExecutions;
+        var failedWebSearch = toolExecutions.LastOrDefault(execution =>
+            execution.Name == "web_search" && execution.Status != "grounded");
+        string? retriedWebSearchText = null;
+        if (failedWebSearch is not null && TryGetWebSearchQuery(failedWebSearch, out var failedWebSearchQuery))
+        {
+            // The first lookup can fail transiently or return an incomplete
+            // grounding payload. Tell the person what is happening, then
+            // make one bounded retry before giving up on fresh facts.
+            var retryNoticeData = JsonSerializer.Serialize(new { progressText = "Поиск дал сбой, повторяю запрос." });
+            await Response.WriteAsync($"data: {retryNoticeData}\n\n", HttpContext.RequestAborted);
+            await Response.Body.FlushAsync(HttpContext.RequestAborted);
+            webSearchProgressCount++;
+
+            var retryResult = await _groundedWebSearch.SearchAsync(
+                failedWebSearchQuery,
+                geminiKey,
+                HttpContext.RequestAborted,
+                "server_retry_after_failed_search");
+            if (retryResult.Status == "grounded")
+            {
+                retriedWebSearchText = retryResult.Summary;
+                _logger.LogInformation(
+                    "Grounded web search recovered on retry: Session {SessionId}; Sources {SourceCount}",
+                    req.SessionId,
+                    retryResult.Sources.Count);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Grounded web search retry did not recover: Session {SessionId}; InitialStatus {InitialStatus}; RetryStatus {RetryStatus}",
+                    req.SessionId,
+                    failedWebSearch.Status,
+                    retryResult.Status);
+            }
+        }
         var screenCaptureRequested = agentTurn.RequestsScreenCapture;
         var reminderDraft = toolExecutions.Select(result => result.Reminder).FirstOrDefault(reminder => reminder is not null);
         var reminderDeliveryStatus = ReminderDeliveryStatuses.Pending;
@@ -982,13 +1017,14 @@ public class ChatController : ControllerBase
             agentFinalText = null;
         }
 
-        var webSearchFailed = toolExecutions.Any(execution =>
-            execution.Name == "web_search" && execution.Status != "grounded");
+        var webSearchFailed = failedWebSearch is not null && retriedWebSearchText is null;
 
         var responseOverride = reminderDraft is { } receiptReminder
             ? BuildReminderReceiptReply(receiptReminder, reminderDeliveryStatus)
             : externalAction is not null
                 ? GetExternalActionFallback(externalAction.Type)
+            : retriedWebSearchText is not null
+                ? retriedWebSearchText
             : webSearchFailed
                 ? "Сейчас не удалось подтвердить свежие сведения по надежным источникам. Попробуйте повторить запрос немного позже."
             : !attemptedReminder && agentFinalText is not null
@@ -1268,6 +1304,17 @@ public class ChatController : ControllerBase
 
     public static bool LooksLikeInternalProtocolReply(string? text) =>
         !string.IsNullOrWhiteSpace(text) && InternalProtocolReplyPattern.IsMatch(text);
+
+    internal static bool TryGetWebSearchQuery(AssistantToolExecution execution, out string query)
+    {
+        query = string.Empty;
+        if (execution.Name != "web_search" || execution.Data is not { ValueKind: JsonValueKind.Object } data ||
+            !data.TryGetProperty("query", out var queryValue) || queryValue.ValueKind != JsonValueKind.String)
+            return false;
+
+        query = queryValue.GetString()?.Trim() ?? string.Empty;
+        return query.Length > 0;
+    }
 
     public static string BuildReminderReceiptReply(ReminderDraft reminder, string deliveryStatus) =>
         deliveryStatus switch

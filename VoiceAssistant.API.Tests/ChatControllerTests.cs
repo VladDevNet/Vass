@@ -258,4 +258,27 @@ public class ChatControllerTests
         Assert.DoesNotContain("reminder_create", reply, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void TryGetWebSearchQuery_FailedSearchWithQuery_ReturnsOriginalQuery()
+    {
+        using var document = JsonDocument.Parse("""{"query":"новости робототехники и ИИ","status":"unavailable"}""");
+        var execution = new AssistantToolExecution("web_search", "unavailable", "Поиск временно недоступен.", Data: document.RootElement.Clone());
+
+        var found = ChatController.TryGetWebSearchQuery(execution, out var query);
+
+        Assert.True(found);
+        Assert.Equal("новости робототехники и ИИ", query);
+    }
+
+    [Fact]
+    public void TryGetWebSearchQuery_MissingOrNonSearchData_ReturnsFalse()
+    {
+        using var document = JsonDocument.Parse("""{"query":"новости"}""");
+        var execution = new AssistantToolExecution("memory_search", "ok", "Готово.", Data: document.RootElement.Clone());
+
+        var found = ChatController.TryGetWebSearchQuery(execution, out _);
+
+        Assert.False(found);
+    }
+
 }
