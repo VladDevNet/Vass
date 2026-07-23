@@ -223,7 +223,18 @@ public sealed class AudioCoreTranscriptionService
                     continue;
                 }
 
-                var filtered = AudioAnalysisService.RemovePathologicalRepetition(transcript.GetString()?.Trim());
+                var rawTranscript = transcript.GetString()?.Trim();
+                // AudioCore uses a native function boundary, but Gemini can
+                // still echo the text prompt that accompanies the audio when
+                // it cannot hear speech. Keep the same anti-prompt-leak gate
+                // as the legacy ASR before this string reaches chat, tools,
+                // or the central model.
+                if (AudioAnalysisService.LooksLikePromptLeak(rawTranscript))
+                {
+                    return new AudioCoreTranscriptionResult("", null, true, false, true);
+                }
+
+                var filtered = AudioAnalysisService.RemovePathologicalRepetition(rawTranscript);
                 var preamble = args.TryGetProperty("preamble", out var preambleValue) && preambleValue.ValueKind == JsonValueKind.String
                     ? NormalizePreamble(preambleValue.GetString())
                     : null;

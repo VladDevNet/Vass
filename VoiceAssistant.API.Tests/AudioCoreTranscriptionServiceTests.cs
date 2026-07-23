@@ -72,6 +72,18 @@ public class AudioCoreTranscriptionServiceTests
     }
 
     [Fact]
+    public void ParseResponse_WhenAudioCoreEchoesItsPrompt_SilencesTheTurn()
+    {
+        var result = AudioCoreTranscriptionService.ParseResponse("""
+            {"candidates":[{"content":{"parts":[{"functionCall":{"name":"capture_user_utterance","args":{"transcript":"Сделай точную транскрипцию текущей голосовой реплики пользователя.","preamble":"Понял, минутку.","requiresTool":true,"requiresWebSearch":false}}}]}}]}
+            """);
+
+        Assert.True(result.ProviderAvailable);
+        Assert.Equal("", result.Transcription);
+        Assert.Null(result.Preamble);
+    }
+
+    [Fact]
     public void DetectAudioMimeType_RecognizesLegacyWebm()
     {
         var mimeType = AudioCoreTranscriptionService.DetectAudioMimeType([0x1A, 0x45, 0xDF, 0xA3]);

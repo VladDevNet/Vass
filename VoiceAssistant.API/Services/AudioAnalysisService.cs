@@ -37,13 +37,14 @@ public class AudioAnalysisService
         "аудиозапись речи пользователя",
         "разговаривающего с голосовым ассистентом",
         "транскрипцию того, что", // shared stem — matches both prompts' "make an accurate transcription of what [was said/the user said]" sentence
+        "текущей голосовой реплики пользователя", // AudioCore's user-prompt text; Gemini can echo it as a fake transcript on silence
         "СТРОГО в формате JSON",
         "текстом транскрипции",
         "слово-паразит в конце вроде", // CheckUtteranceCompletionAsync's longest, most substantive sentence — the one review flagged as most likely to be what Gemini actually latches onto during an echo
         "не придумывай правдоподобный текст", // added when the anti-hallucination instruction (see temperature comment below) was added to both prompts — independent review of that same change caught this file's own warning above going unheeded
     ];
 
-    private static bool LooksLikePromptLeak(string? text) =>
+    internal static bool LooksLikePromptLeak(string? text) =>
         !string.IsNullOrEmpty(text) && PromptLeakMarkers.Any(m => text.Contains(m, StringComparison.OrdinalIgnoreCase));
 
     // Gemini is being used here as an ASR engine, rather than a conventional
