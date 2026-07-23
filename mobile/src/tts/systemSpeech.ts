@@ -847,26 +847,31 @@ export function hasSpeechToResume(): boolean {
 // sounding "Так-так.").
 const BACKCHANNEL_PHRASES = ['Минутку.', 'Секунду.', 'Дайте подумать.', 'Сейчас.'];
 
-// Warm opening phrases for useGreeting.ts — spoken once when the app first
-// becomes ready to listen, and again on returning to the foreground after
-// being backgrounded. Deliberately generic enough to fit either moment,
-// matching frontend/js/yolo.js's own GREETING_FILLERS, which shared one
-// pool for both "YOLO start" and "focus-return" (commit 2b28a10) — unlike
-// BACKCHANNEL_PHRASES above, which are specifically about turn-taking, not
-// a fresh conversation.
-//
-// Deliberately gender-neutral (no adjective agreeing with the speaker,
-// e.g. NOT "Рада"/"Готова", which are grammatically feminine-only) — this
-// assistant supports a male voice/persona (LayeredAvatar's "male" avatar,
-// AssistantName "Максим" — see HomeScreen.tsx and the VoiceGender tagging
-// above) as well as a female one, and a mis-gendered greeting would be
-// wrong every time that voice is active. Same constraint BACKCHANNEL_PHRASES
-// already satisfies by accident; here it's deliberate.
-const GREETING_PHRASES = [
-  'Здравствуйте! Я на связи, слушаю вас.',
-  'Добрый день! Можно начинать — я слушаю.',
-  'Привет! Всё готово, говорите.',
-];
+export type GreetingKind = 'welcome' | 'returning';
+
+function greetingAddress(displayName: string | null): string {
+  const name = displayName?.trim();
+  return name ? `, ${name}` : '';
+}
+
+function welcomeGreeting(displayName: string | null): string {
+  const hour = new Date().getHours();
+  const timeOfDay = hour >= 5 && hour < 12
+    ? 'Доброе утро'
+    : hour >= 18 || hour < 5
+      ? 'Добрый вечер'
+      : 'Добрый день';
+  return `${timeOfDay}${greetingAddress(displayName)}. Я на связи, слушаю вас.`;
+}
+
+function returningGreeting(displayName: string | null): string {
+  const phrases = [
+    `С возвращением${greetingAddress(displayName)}. Я слушаю вас.`,
+    `Снова на связи${greetingAddress(displayName)}. Что обсудим?`,
+    `Вы вернулись${greetingAddress(displayName)}. Я на связи.`,
+  ];
+  return phrases[Math.floor(Math.random() * phrases.length)];
+}
 
 // Speaks one short phrase, resolving on ANY stop — done, engine-initiated,
 // or explicitly stopped — never rejecting. Deliberately separate from
@@ -966,14 +971,14 @@ export function speakBackchannel(telemetry?: VoiceTurnTelemetry): void {
 
 // Fire-and-forget, same shape as speakBackchannel above (and the same
 // reason it doesn't participate in expectedStop tracking — see
-// speakBackchannelPhrase's own comment) — called by useGreeting.ts on app
-// open and on returning from the background.
-export function speakGreeting(): void {
+// speakBackchannelPhrase's own comment). The caller decides whether this is
+// a true greeting after a long absence or a compact return acknowledgement.
+export function speakGreeting(kind: GreetingKind, displayName: string | null): void {
   void (async () => {
     try {
       const voice = await getRussianVoice();
       if (!voice) return; // no Russian voice on this device — silently skip
-      const phrase = GREETING_PHRASES[Math.floor(Math.random() * GREETING_PHRASES.length)];
+      const phrase = kind === 'welcome' ? welcomeGreeting(displayName) : returningGreeting(displayName);
       await speakBackchannelPhrase(phrase, voice);
     } catch (err) {
       log('debug', 'tts', 'greeting failed (non-critical)', {

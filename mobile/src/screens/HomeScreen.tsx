@@ -56,7 +56,7 @@ const PRESENCE_LABEL: Record<VoiceState, string> = {
 };
 
 export function HomeScreen() {
-  const { assistantName, avatarId } = useAuth();
+  const { user, displayName, assistantName, avatarId } = useAuth();
   const displayAvatarId: AvatarId = avatarId === 'male' ? 'male' : 'olga';
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -103,12 +103,11 @@ export function HomeScreen() {
   const sleeping = useSleepTimer(state === 'idle', SLEEP_AFTER_MS);
   // micArmed, not just state === 'idle' -- see useVoiceChat.ts's own
   // comment on why: state is 'idle' from the very first render, before mic
-  // permission has even been requested, which used to let the cold-start
-  // greeting's "fires once" guard latch true well before the OS permission
-  // dialog could even appear (found in review -- that dialog's own
-  // background/foreground churn then masqueraded as a real focus-return,
-  // greeting twice on a fresh install).
-  useGreeting(micArmed && state === 'idle' && !!sessionId);
+  // permission has even been requested.
+  useGreeting(
+    micArmed && state === 'idle' && !!sessionId,
+    user ? { userId: user.id, displayName } : null,
+  );
 
   useEffect(() => {
     if (!libraryNavigation) return;

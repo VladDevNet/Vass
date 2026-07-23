@@ -1,89 +1,108 @@
 import { useEffect, useRef } from 'react';
+import * as SecureStore from 'expo-secure-store';
 import { AppState, type AppStateStatus } from 'react-native';
 import { speakGreeting } from '../tts/systemSpeech';
 
-// Presentational-only, same architectural boundary as useSleepTimer.ts (see
-// its own comment) — reacts to a `ready` signal from the caller, never
-// touches useVoiceChat.ts or VoiceState directly.
-//
-// A mobile-native take on frontend/js/yolo.js's greeting (commit 2b28a10,
-// GREETING_FILLERS played on "YOLO start" and focus-return), onto on-device
-// TTS (expo-speech, via speakGreeting) instead of the web version's
-// server-synthesized Piper WAV files — that server path no longer exists on
-// mobile (PR #27).
-//
-// Two independent triggers, both calling the same speakGreeting():
-// 1. Cold start — fires exactly once, the first time `ready` becomes true
-//    (HomeScreen.tsx passes state === 'idle' && !!sessionId).
-// 2. Focus-return — fires when AppState transitions to 'active' after
-//    having genuinely left it (background/inactive) at least once SINCE
-//    the cold-start greeting already happened, and only while `ready` is
-//    still true at the moment of return.
-//
-// The guards below close real issues found in review, not hypothetical
-// ones:
-//
-// - The CALLER's `ready` must not go true from mere UI/state defaults --
-//   it must reflect the mic having genuinely been armed. The OS's own
-//   mic-permission dialog (requestRecordingPermissionsAsync, in
-//   useVoiceChat.ts's one-time setup effect) triggers an
-//   Activity.onPause/onResume on Android -- which React Native's own
-//   AppState module maps directly to a background/active transition --
-//   and iOS's 'inactive' state is documented to cover exactly "asking for
-//   permissions" too (see
-//   node_modules/react-native/Libraries/AppState/AppState.d.ts). An
-//   earlier version of this hook tried to guard against that dialog's own
-//   open/close being mistaken for a real focus-return by only tracking
-//   "genuinely left" AFTER hasGreetedRef was already true -- that doesn't
-//   work: `state === 'idle'` (useVoiceChat.ts's useState<VoiceState>
-//   initial value) is true from this hook's very FIRST render, well
-//   before the permission dialog can even appear, so hasGreetedRef was
-//   already true by the time that dialog-induced background event fired,
-//   and the guard passed through the exact case it was meant to block.
-//   The real fix lives in the caller: HomeScreen.tsx now passes
-//   `micArmed && state === 'idle' && !!sessionId` as `ready`, and
-//   micArmed only becomes true once armMic() has actually succeeded --
-//   which itself can't happen until permission is granted (see
-//   useVoiceChat.ts's own comment on micArmed). That closes the race at
-//   its root: `ready` simply can't go true until well after any
-//   permission dialog has already been resolved, so a background event
-//   from that dialog can never land while hasGreetedRef is still false.
-//
-// - The focus-return greeting itself is gated on readyRef.current (kept in
-//   sync with the `ready` prop via its own effect, since the AppState
-//   listener's closure is otherwise fixed at mount) — NOT fired
-//   unconditionally on return. The web original this takes inspiration
-//   from only ever re-greeted via enterYoloMode(), which itself only
-//   proceeds from a fully torn-down DISABLED state, never mid-conversation.
-//   Firing unconditionally here would be a materially broader trigger than
-//   that — background/foreground mic recovery isn't implemented yet (a
-//   separate, larger gap — see docs/react-native/audio-and-vad.md's own
-//   "Android — foreground service" future item), so greeting over a turn
-//   left stuck mid-flight could talk over an active reply or assert false
-//   readiness. Gating on `ready` (idle, session present) keeps this close
-//   to the original's own conservative intent without requiring that
-//   larger recovery work first.
-export function useGreeting(ready: boolean): void {
+const LONG_ABSENCE_MS = 4 * 60 * 60 * 1000;
+
+interface GreetingIdentity {
+  userId: string;
+  displayName: string | null;
+}
+
+function presenceKey(userId: string): string {
+  return `vass_greeting_presence_${userId}`;
+}
+
+function parsePresence(raw: string | null): number | null {
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+// Greeting cadence belongs on the device: opening the app is a local UI
+// event, and it should remain personal even while the device is offline.
+// The timestamp is scoped by account so a shared family tablet never treats
+// one person's recent visit as another person's return.
+export function useGreeting(ready: boolean, identity: GreetingIdentity | null): void {
   const hasGreetedRef = useRef(false);
+  const greetingInFlightRef = useRef(false);
   const hasBeenBackgroundedRef = useRef(false);
+  const lastPresenceAtRef = useRef<number | null>(null);
   const readyRef = useRef(ready);
+  const identityRef = useRef<GreetingIdentity | null>(identity);
   readyRef.current = ready;
+  identityRef.current = identity;
 
   useEffect(() => {
-    if (!ready || hasGreetedRef.current) return;
-    hasGreetedRef.current = true;
-    speakGreeting();
-  }, [ready]);
+    // HomeScreen is normally remounted on account change, but resetting here
+    // makes the hook correct even if that navigation contract changes later.
+    hasGreetedRef.current = false;
+    greetingInFlightRef.current = false;
+    hasBeenBackgroundedRef.current = false;
+    lastPresenceAtRef.current = null;
+  }, [identity?.userId]);
+
+  async function recordPresence(currentIdentity: GreetingIdentity): Promise<void> {
+    const now = Date.now();
+    lastPresenceAtRef.current = now;
+    try {
+      await SecureStore.setItemAsync(presenceKey(currentIdentity.userId), String(now));
+    } catch {
+      // SecureStore is unavailable in web preview. The in-memory timestamp
+      // still keeps foreground returns natural for the current app run.
+    }
+  }
+
+  async function greet(): Promise<void> {
+    const currentIdentity = identityRef.current;
+    if (!currentIdentity || greetingInFlightRef.current || !readyRef.current) return;
+
+    greetingInFlightRef.current = true;
+    try {
+      let previousPresence = lastPresenceAtRef.current;
+      if (previousPresence === null) {
+        try {
+          previousPresence = parsePresence(await SecureStore.getItemAsync(presenceKey(currentIdentity.userId)));
+          lastPresenceAtRef.current = previousPresence;
+        } catch {
+          // No persisted timestamp means this is a genuine new/long visit.
+        }
+      }
+
+      // A profile may have changed while SecureStore was being read. Do not
+      // speak stale account data into the newly active session.
+      if (!readyRef.current || identityRef.current?.userId !== currentIdentity.userId) return;
+
+      const gap = previousPresence === null ? Number.POSITIVE_INFINITY : Date.now() - previousPresence;
+      const returning = gap >= 0 && gap < LONG_ABSENCE_MS;
+      await recordPresence(currentIdentity);
+      hasGreetedRef.current = true;
+      speakGreeting(returning ? 'returning' : 'welcome', currentIdentity.displayName);
+    } finally {
+      greetingInFlightRef.current = false;
+    }
+  }
+
+  useEffect(() => {
+    if (!ready || !identity || hasGreetedRef.current) return;
+    void greet();
+  }, [identity, ready]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (next: AppStateStatus) => {
       if (next === 'background' || next === 'inactive') {
-        if (hasGreetedRef.current) hasBeenBackgroundedRef.current = true;
+        if (hasGreetedRef.current) {
+          hasBeenBackgroundedRef.current = true;
+          const currentIdentity = identityRef.current;
+          if (currentIdentity) void recordPresence(currentIdentity);
+        }
         return;
       }
+
       if (next === 'active' && hasBeenBackgroundedRef.current && hasGreetedRef.current && readyRef.current) {
         hasBeenBackgroundedRef.current = false;
-        speakGreeting();
+        void greet();
       }
     });
     return () => subscription.remove();
