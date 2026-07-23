@@ -94,6 +94,24 @@ public class CapabilityDiscoveryServiceTests
         Assert.Equal(1, share.UsageCount);
     }
 
+    [Fact]
+    public async Task ReleaseIntroduction_ShowsOnlyNeverUsedAndNeverIntroducedCapabilities()
+    {
+        await using var fixture = await DiscoveryFixture.CreateAsync();
+        var service = fixture.CreateService();
+
+        await service.MarkUsedAsync(fixture.UserId, "memory", CancellationToken.None);
+        var first = await service.PresentReleaseIntroductionAsync(fixture.UserId, fixture.Context, CancellationToken.None);
+        var second = await service.PresentReleaseIntroductionAsync(fixture.UserId, fixture.Context, CancellationToken.None);
+        var snapshot = await service.GetSnapshotAsync(fixture.UserId, fixture.Context, CancellationToken.None);
+
+        Assert.NotEmpty(first);
+        Assert.True(first.Count <= 3);
+        Assert.DoesNotContain(first, item => item.Id == "memory");
+        Assert.DoesNotContain(second, item => first.Any(firstItem => firstItem.Id == item.Id));
+        Assert.All(first, item => Assert.Equal(1, Assert.Single(snapshot.Items, current => current.Id == item.Id).SuggestionCount));
+    }
+
     private sealed class DiscoveryFixture : IAsyncDisposable
     {
         private readonly string _dbPath;

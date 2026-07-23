@@ -1534,6 +1534,7 @@ export function useVoiceChat(
             myGeneration === segmentGenerationRef.current &&
             myTurn === turnGenerationRef.current &&
             !bargedInRef.current) {
+          const putsAssistantToSleep = pendingExternalAction.type === 'assistant_sleep';
           const opensExternalMedia = pendingExternalAction.type === 'youtube_search' ||
             pendingExternalAction.type === 'youtube_watch';
           if (opensExternalMedia) {
@@ -1556,7 +1557,16 @@ export function useVoiceChat(
             log('info', 'external-action', 'listening suspended for external media', { stopTimedOut });
           }
           try {
-            if (pendingExternalAction.type === 'library_write' || pendingExternalAction.type === 'library_open') {
+            if (putsAssistantToSleep) {
+              // The model's final sentence has finished playing. Set the
+              // synchronous pause flag before recorder shutdown so the turn
+              // cleanup below cannot re-arm Vass and pick up room speech.
+              pausedRef.current = true;
+              await Promise.all([stopRecorderIfLive(), stopShadowRecorderIfLive()]);
+              setState('paused');
+              recordActionStatus(pendingExternalAction, 'handler_dispatched', 'listening_paused');
+              log('info', 'turn', 'assistant put to sleep by model action');
+            } else if (pendingExternalAction.type === 'library_write' || pendingExternalAction.type === 'library_open') {
               const bridge = visualBridgeRef.current;
               if (!bridge?.applyLibraryAction) {
                 throw new ExternalActionExecutionError('Библиотека недоступна в этой версии приложения.', 'library_handler_missing');

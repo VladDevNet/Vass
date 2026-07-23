@@ -48,7 +48,7 @@ public sealed class ActionReceiptService
     {
         ExternalActionTypes.OpenVass => AssistantActionTaxonomies.Navigation,
         ExternalActionTypes.YouTubeSearch or ExternalActionTypes.YouTubeWatch => AssistantActionTaxonomies.External,
-        ExternalActionTypes.LibraryWrite or ExternalActionTypes.LibraryOpen => AssistantActionTaxonomies.UserControl,
+        ExternalActionTypes.LibraryWrite or ExternalActionTypes.LibraryOpen or ExternalActionTypes.AssistantSleep => AssistantActionTaxonomies.UserControl,
         _ => null
     };
 

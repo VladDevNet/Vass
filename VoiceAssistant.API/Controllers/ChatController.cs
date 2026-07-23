@@ -163,6 +163,7 @@ public class ChatController : ControllerBase
     private static string GetExternalActionFallback(string actionType) => actionType switch
     {
         ExternalActionTypes.OpenVass => "Возвращаюсь в Vass.",
+        ExternalActionTypes.AssistantSleep => "Ставлю слушание на паузу.",
         ExternalActionTypes.YouTubeWatch => "Открываю выбранное видео в YouTube.",
         ExternalActionTypes.LibraryWrite => "Сохраняю книгу в вашу библиотеку.",
         ExternalActionTypes.LibraryOpen => "Открываю вашу библиотеку.",

@@ -15,6 +15,7 @@ import { log } from './src/logging/remoteLogger';
 import { VassOverlay } from './modules/vass-overlay';
 import { ConversationRuntimeProvider } from './src/context/ConversationRuntimeContext';
 import { AppUpdateGate } from './src/updates/AppUpdateGate';
+import { FeatureIntroductionGate } from './src/updates/FeatureIntroductionGate';
 
 function Root() {
   const { isLoading, user, displayName } = useAuth();
@@ -102,9 +103,11 @@ function Root() {
     content = <ProfileScreen mode="onboarding" onDone={handleOnboardingDone} />;
   } else {
     content = (
-      <ConversationRuntimeProvider>
-        <HomeScreen />
-      </ConversationRuntimeProvider>
+      <FeatureIntroductionGate userId={user.id}>
+        <ConversationRuntimeProvider>
+          <HomeScreen />
+        </ConversationRuntimeProvider>
+      </FeatureIntroductionGate>
     );
   }
 

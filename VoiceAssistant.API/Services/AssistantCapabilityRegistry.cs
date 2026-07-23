@@ -53,7 +53,7 @@ public sealed record AssistantRuntimeContext(
 // actually do; it never turns UI-only controls into model-callable actions.
 public sealed class AssistantCapabilityRegistry
 {
-    public const int SnapshotVersion = 5;
+    public const int SnapshotVersion = 6;
     private static readonly HashSet<string> DiscoverableHelpIds =
     [
         "memory", "reminders", "visual", "share", "screen", "youtube", "library", "overlay"
@@ -81,6 +81,7 @@ public sealed class AssistantCapabilityRegistry
             new("reminder.list", "available", "server", AssistantActionTaxonomies.ServerLocal, "Показать активные напоминания владельца"),
             new("reminder.cancel", "available", "server", AssistantActionTaxonomies.ServerLocal, "Отменить конкретное найденное напоминание"),
             new("navigation.open_vass", context.SupportsExternalActions ? "available" : "unavailable", "client", AssistantActionTaxonomies.Navigation, "Развернуть Vass; клиент подтверждает только передачу команды в handler"),
+            new("conversation.sleep", context.SupportsExternalActions ? "available" : "unavailable", "client", AssistantActionTaxonomies.UserControl, "Поставить голосовое слушание на паузу по явной просьбе пользователя"),
             new("youtube.search", context.SupportsExternalActions ? "available" : "unavailable", "client", AssistantActionTaxonomies.External, "Открыть разрешенный поиск YouTube; не подтверждает воспроизведение"),
             new("youtube.watch", context.SupportsExternalActions ? "available" : "unavailable", "client", AssistantActionTaxonomies.External, "Открыть конкретный валидный ролик YouTube; не подтверждает воспроизведение"),
             new("library.write", context.SupportsLibrary ? "available" : "unavailable", "client", AssistantActionTaxonomies.UserControl, "Создать новую или следующую версию локальной HTML-книги"),

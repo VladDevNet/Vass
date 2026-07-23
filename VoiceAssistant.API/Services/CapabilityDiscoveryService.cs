@@ -227,6 +227,40 @@ public sealed class CapabilityDiscoveryService
         return new("declined", $"Подсказки для «{help.Title}» отключены для этого пользователя.", ToCandidate(ToItem(help, progress)));
     }
 
+    // A release introduction is distinct from the conversational daily hint:
+    // it is shown once after a client update and only for features the person
+    // has neither used nor ever been told about. Persisting it here makes the
+    // rule account-wide instead of relying on a device-local modal flag.
+    public async Task<IReadOnlyList<CapabilityDiscoveryItem>> PresentReleaseIntroductionAsync(
+        string userId,
+        AssistantRuntimeContext context,
+        CancellationToken cancellationToken)
+    {
+        var snapshot = await GetSnapshotAsync(userId, context, cancellationToken);
+        var candidates = snapshot.Items
+            .Where(item => item.UsageCount == 0 && item.SuggestionCount == 0 && item.DeclinedAt is null)
+            .OrderBy(item => DiscoveryPriority(item.Id))
+            .Take(3)
+            .ToArray();
+        if (candidates.Length == 0) return [];
+
+        var now = DateTime.UtcNow;
+        await using var db = await _dbFactory.CreateDbContextAsync(cancellationToken);
+        foreach (var candidate in candidates)
+        {
+            var progress = await GetOrCreateAsync(db, userId, candidate.Id, cancellationToken);
+            progress.SuggestionCount = 1;
+            progress.FirstSuggestedAt ??= now;
+            progress.LastSuggestedAt = now;
+            // A release modal names several capabilities at once, so a later
+            // unrelated phrase cannot safely be interpreted as declining one.
+            progress.PendingResponseSeenAt = now;
+            progress.UpdatedAt = now;
+        }
+        await db.SaveChangesAsync(cancellationToken);
+        return candidates;
+    }
+
     public async Task<bool> MarkClientReportedUseAsync(string userId, string? capabilityId, CancellationToken cancellationToken)
     {
         var normalizedId = NormalizeCapabilityId(capabilityId);

@@ -231,6 +231,7 @@ public sealed class AssistantToolBroker
                 cancellationToken),
             "screen_capture_once" => RequestScreenCapture(call.Name, context),
             "open_vass" => await ProposeActionAsync(call.Name, ExternalActionTypes.OpenVass, null, null, userId, sourceMessageId, context, cancellationToken),
+            "assistant_sleep" => await ProposeActionAsync(call.Name, ExternalActionTypes.AssistantSleep, null, null, userId, sourceMessageId, context, cancellationToken),
             "youtube_search" => await ProposeActionAsync(call.Name, ExternalActionTypes.YouTubeSearch, GetString(call.Arguments, "query"), null, userId, sourceMessageId, context, cancellationToken),
             "youtube_watch" => await ProposeActionAsync(call.Name, ExternalActionTypes.YouTubeWatch, null, GetString(call.Arguments, "videoId"), userId, sourceMessageId, context, cancellationToken),
             _ => new(call.Name, "rejected", "Инструмент недоступен.",
@@ -795,6 +796,7 @@ public sealed class AssistantToolBroker
         var action = type switch
         {
             ExternalActionTypes.OpenVass => new ExternalActionCommand(type),
+            ExternalActionTypes.AssistantSleep => new ExternalActionCommand(type),
             ExternalActionTypes.YouTubeSearch when NormalizeQuery(query) is { } safeQuery => new ExternalActionCommand(type, Query: safeQuery),
             ExternalActionTypes.YouTubeWatch when IsVideoId(videoId) => new ExternalActionCommand(type, VideoId: videoId),
             _ => null
@@ -929,7 +931,7 @@ public sealed class AssistantToolBroker
         return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
     }
 
-    private static bool IsClientAction(string name) => name is "open_vass" or "youtube_search" or "youtube_watch" or "library_write" or "library_open";
+    private static bool IsClientAction(string name) => name is "open_vass" or "assistant_sleep" or "youtube_search" or "youtube_watch" or "library_write" or "library_open";
     private static bool IsReminderTool(string name) => name is "reminder_create" or "periodic_reminder_create";
 
     private static string? GetConfirmedCapabilityUse(AssistantToolExecution execution) => (execution.Name, execution.Status) switch

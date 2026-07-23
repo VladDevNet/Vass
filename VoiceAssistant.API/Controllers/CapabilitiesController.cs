@@ -79,4 +79,29 @@ public class CapabilitiesController : ControllerBase
             cancellationToken);
         return recorded ? NoContent() : BadRequest(new { error = "Неизвестная пользовательская возможность." });
     }
+
+    // The client calls this only on the first authenticated launch of a new
+    // build. The service atomically selects and records features that have
+    // never been used or introduced to this person before.
+    [HttpPost("discovery/release-introduction")]
+    public async Task<ActionResult<IReadOnlyList<CapabilityDiscoveryItem>>> PresentReleaseIntroduction(
+        [FromQuery] bool supportsReminders,
+        [FromQuery] bool supportsPeriodicReminders,
+        [FromQuery] bool supportsExternalActions,
+        [FromQuery] bool supportsScreenAnalysis,
+        [FromQuery] bool supportsLibrary,
+        CancellationToken cancellationToken)
+    {
+        var context = new AssistantRuntimeContext(
+            HasVisualAttachment: false,
+            SupportsScreenAnalysis: supportsScreenAnalysis,
+            SupportsExternalActions: supportsExternalActions,
+            SupportsReminders: supportsReminders,
+            SupportsPeriodicReminders: supportsPeriodicReminders,
+            SupportsLibrary: supportsLibrary);
+        return Ok(await _discovery.PresentReleaseIntroductionAsync(
+            User.FindFirstValue(ClaimTypes.NameIdentifier)!,
+            context,
+            cancellationToken));
+    }
 }

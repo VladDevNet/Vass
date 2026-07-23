@@ -489,6 +489,20 @@ export const api = {
     return request<CapabilityDiscoverySnapshot>(`/capabilities/discovery?${query.toString()}`);
   },
 
+  presentReleaseCapabilities: (params: CapabilityRuntimeParams): Promise<CapabilityDiscoveryItem[]> => {
+    const query = new URLSearchParams({
+      supportsReminders: String(params.supportsReminders),
+      supportsPeriodicReminders: String(params.supportsPeriodicReminders),
+      supportsExternalActions: String(params.supportsExternalActions),
+      supportsScreenAnalysis: String(params.supportsScreenAnalysis),
+      supportsLibrary: String(params.supportsLibrary),
+    });
+    return request<CapabilityDiscoveryItem[]>(`/capabilities/discovery/release-introduction?${query.toString()}`, {
+      method: 'POST',
+      body: '{}',
+    });
+  },
+
   recordCapabilityUsage: (capabilityId: 'share' | 'screen' | 'overlay'): Promise<void> =>
     request<void>('/capabilities/usage', {
       method: 'POST',
@@ -715,6 +729,7 @@ type ExternalActionBase = {
 
 export type ExternalActionEvent =
   | (ExternalActionBase & { type: 'open_vass'; taxonomy: 'navigation'; query?: null; videoId?: null })
+  | (ExternalActionBase & { type: 'assistant_sleep'; taxonomy: 'user_control'; query?: null; videoId?: null })
   | (ExternalActionBase & { type: 'youtube_search'; taxonomy: 'external'; query: string; videoId?: null })
   | (ExternalActionBase & { type: 'youtube_watch'; taxonomy: 'external'; query?: null; videoId: string })
   | (ExternalActionBase & { type: 'library_write'; taxonomy: 'user_control'; libraryArtifact: LibraryArtifactDraft })
@@ -868,6 +883,9 @@ function parseExternalAction(value: unknown): ExternalActionEvent | null {
   if (typeof candidate.actionId !== 'string') return null;
   if (candidate.type === 'open_vass' && candidate.taxonomy === 'navigation') {
     return { actionId: candidate.actionId, type: 'open_vass', taxonomy: 'navigation' };
+  }
+  if (candidate.type === 'assistant_sleep' && candidate.taxonomy === 'user_control') {
+    return { actionId: candidate.actionId, type: 'assistant_sleep', taxonomy: 'user_control' };
   }
   if (candidate.type === 'youtube_search' && candidate.taxonomy === 'external' && typeof candidate.query === 'string') {
     return { actionId: candidate.actionId, type: 'youtube_search', taxonomy: 'external', query: candidate.query };

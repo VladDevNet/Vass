@@ -12,6 +12,7 @@ public static class ExternalActionTypes
     public const string YouTubeWatch = "youtube_watch";
     public const string LibraryWrite = "library_write";
     public const string LibraryOpen = "library_open";
+    public const string AssistantSleep = "assistant_sleep";
 }
 
 // The HTML itself is deliberately carried only in the client action envelope.
@@ -179,6 +180,7 @@ public class ExternalActionService
             return type switch
             {
                 ExternalActionTypes.OpenVass => new ExternalActionCommand(ExternalActionTypes.OpenVass),
+                ExternalActionTypes.AssistantSleep => new ExternalActionCommand(ExternalActionTypes.AssistantSleep),
                 ExternalActionTypes.YouTubeSearch => NormalizeSearch(query),
                 ExternalActionTypes.YouTubeWatch or "youtube_play" => NormalizeWatch(videoId, query),
                 _ => null
