@@ -106,23 +106,39 @@ cd ~/vass/mobile
 [ "$(ls node_modules 2>/dev/null | wc -l)" -lt 100 ] && npm install --no-audit --no-fund
 ```
 
-### Обязательная генерация native-проекта перед release
+### Генерация native-проекта перед release
 
 `mobile/android` намеренно не хранится в git: Expo генерирует его из
-`app.json` и config plugins. Поэтому перед **каждым** release нужно обновить
-его из текущего commit, иначе APK может получить старые `versionCode` и
-`versionName`, даже если `app.json` уже обновлён.
+`app.json` и config plugins. Перед каждым release его нужно синхронизировать
+с текущим commit, иначе APK может получить старые `versionCode` и
+`versionName`, даже если `app.json` уже обновлён. Для обычного релиза это
+делается **без** удаления `android/`: так сохраняются Gradle/NDK outputs и
+local build cache.
 
 ```bash
-cd ~/vass/mobile
-npx expo prebuild --platform android --clean --no-install
-echo "sdk.dir=$HOME/Android/sdk" > android/local.properties
+cd ~/vass
+./scripts/build-android-release-wsl.sh
 ```
 
-Не редактируй `android/app/build.gradle` вручную как источник версии: чистый
-`prebuild` его перезапишет. Единственный источник версии для Android beta —
-`mobile/app.json`, а перед публикацией нужно проверить итоговый APK через
-`aapt dump badging`.
+Скрипт проверяет Node 22, запрещает `/mnt/*`, запускает `npm ci` только при
+смене lockfile, выполняет обычный `expo prebuild`, использует Gradle build
+cache и печатает итоговую версию/хэш APK. Не редактируй
+`android/app/build.gradle` вручную как источник версии: `prebuild` его
+перезапишет. Единственный источник версии для Android beta —
+`mobile/app.json`.
+
+Полный clean нужен только после добавления/обновления native-зависимости,
+изменения config plugin либо при восстановлении повреждённого native-проекта:
+
+```bash
+cd ~/vass
+VASS_ANDROID_CLEAN_PREBUILD=1 ./scripts/build-android-release-wsl.sh
+```
+
+Это намеренно более медленный путь: он пересоздаёт `android/` и лишает Gradle
+инкрементальных outputs. Metro cache не сбрасывается в каждом release; его
+очищают только как отдельный шаг диагностики, если действительно виден
+устаревший bundle.
 
 ## 4. Debug vs release — какой APK ставить руками
 
