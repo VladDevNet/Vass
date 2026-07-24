@@ -39,10 +39,37 @@ if [[ ! -d node_modules ]] || [[ ! -f "$lock_stamp" ]] || [[ "$(<"$lock_stamp")"
 fi
 npm exec patch-package --error-on-fail
 
-if [[ "${VASS_ANDROID_CLEAN_PREBUILD:-0}" == "1" ]]; then
+native_stamp=".vass-build-native-input.sha256"
+native_hash="$(
+  {
+    node - <<'NODE'
+const fs = require('fs');
+const config = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+delete config.expo.version;
+delete config.expo.android?.versionCode;
+process.stdout.write(JSON.stringify(config));
+NODE
+    find package-lock.json modules assets/avatar assets/icon.png assets/android-icon-foreground.png assets/android-icon-background.png assets/android-icon-monochrome.png -type f -print0 |
+      sort -z |
+      xargs -0 sha256sum
+  } | sha256sum | awk '{print $1}'
+)"
+
+if [[ "${VASS_ANDROID_CLEAN_PREBUILD:-0}" == "1" ]] || [[ ! -d android ]] || [[ ! -f "$native_stamp" ]] || [[ "$(<"$native_stamp")" != "$native_hash" ]]; then
   npx expo prebuild --platform android --clean --no-install
+  printf '%s' "$native_hash" > "$native_stamp"
 else
-  npx expo prebuild --platform android --no-install
+  node - <<'NODE'
+const fs = require('fs');
+const config = JSON.parse(fs.readFileSync('app.json', 'utf8')).expo;
+const gradlePath = 'android/app/build.gradle';
+let gradle = fs.readFileSync(gradlePath, 'utf8');
+const next = gradle
+  .replace(/versionCode \d+/, `versionCode ${config.android.versionCode}`)
+  .replace(/versionName "[^"]+"/, `versionName "${config.version}"`);
+if (next === gradle) throw new Error(`Unable to synchronize Android version in ${gradlePath}.`);
+fs.writeFileSync(gradlePath, next);
+NODE
 fi
 
 if ! grep -q '^org.gradle.caching=true$' android/gradle.properties; then

@@ -21,6 +21,9 @@ expo-env.d.ts
 # Metro
 .metro-health-check*
 
+# WSL release-build state
+/.vass-build-*.sha256
+
 # debug
 npm-debug.*
 yarn-debug.*
