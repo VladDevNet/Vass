@@ -1,6 +1,44 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+publish_release="${VASS_ANDROID_PUBLISH:-0}"
+release_notes="${VASS_ANDROID_RELEASE_NOTES:-}"
+
+usage() {
+  cat <<'USAGE'
+Usage: ./scripts/build-android-release-wsl.sh [--publish] [--notes "Release notes"]
+
+Builds an ARM64 Android release from the Linux filesystem only.
+--publish uploads the verified APK to the VPS and updates the in-app update manifest.
+USAGE
+}
+
+while (($# > 0)); do
+  case "$1" in
+    --publish)
+      publish_release=1
+      ;;
+    --notes)
+      shift
+      if (($# == 0)); then
+        echo "--notes requires a value." >&2
+        exit 64
+      fi
+      release_notes="$1"
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 64
+      ;;
+  esac
+  shift
+done
+
 # This script must run from a clone stored in the Linux filesystem, for example
 # /home/vlad/vass. Building from /mnt/<drive> makes Metro, Gradle and CMake
 # cross the Windows/WSL filesystem boundary for thousands of small operations.
@@ -30,6 +68,21 @@ export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-t
 
 mobile_dir="$project_root/mobile"
 cd "$mobile_dir"
+
+read_release_metadata() {
+  node - <<'NODE'
+const config = JSON.parse(require('fs').readFileSync('app.json', 'utf8')).expo;
+if (!/^[0-9A-Za-z._-]+$/.test(config.version ?? '')) throw new Error('Invalid Expo version.');
+if (!Number.isSafeInteger(config.android?.versionCode) || config.android.versionCode < 1) {
+  throw new Error('Android versionCode must be a positive integer.');
+}
+process.stdout.write(`${config.version}\n${config.android.versionCode}\n`);
+NODE
+}
+
+mapfile -t release_metadata < <(read_release_metadata)
+release_version="${release_metadata[0]}"
+release_version_code="${release_metadata[1]}"
 
 lock_stamp=".vass-build-package-lock.sha256"
 lock_hash="$(sha256sum package-lock.json | awk '{print $1}')"
@@ -86,4 +139,101 @@ printf 'sdk.dir=%s\n' "$ANDROID_HOME" > android/local.properties
 apk="android/app/build/outputs/apk/release/app-release.apk"
 test -f "$apk"
 "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | sed -n '1p'
-sha256sum "$apk"
+apk_sha256="$(sha256sum "$apk" | awk '{print $1}')"
+printf '%s  %s\n' "$apk_sha256" "$apk"
+
+if [[ "$publish_release" != "1" ]]; then
+  exit 0
+fi
+
+case "${VASS_DEPLOY_DIR:-}" in
+  '') publish_dir='/root/vass' ;;
+  /*) publish_dir="$VASS_DEPLOY_DIR" ;;
+  *)
+    echo "VASS_DEPLOY_DIR must be an absolute path." >&2
+    exit 65
+    ;;
+esac
+case "$publish_dir" in
+  *[\'\"\$\`]* )
+    echo "VASS_DEPLOY_DIR must not contain shell metacharacters." >&2
+    exit 65
+    ;;
+esac
+
+publish_host="${VASS_DEPLOY_HOST:-root@vass.it-consult.services}"
+release_date="$(date -u +%Y%m%d)"
+release_filename="vass-${release_version}-arm64-${release_date}.apk"
+download_url="https://vass.it-consult.services/downloads/${release_filename}"
+release_notes="${release_notes//$'\n'/ }"
+release_notes="${release_notes//$'\r'/ }"
+release_notes="${release_notes:-Vass ${release_version} beta update.}"
+release_notes_b64="$(printf '%s' "$release_notes" | base64 -w 0)"
+
+echo "==> Publishing ${release_filename} to ${publish_host}:${publish_dir}/releases/..."
+scp -- "$apk" "${publish_host}:${publish_dir}/releases/${release_filename}"
+
+ssh "$publish_host" bash -s -- "$publish_dir" "$release_filename" "$release_version" "$release_version_code" "$download_url" "$apk_sha256" "$release_notes_b64" <<'REMOTE'
+set -euo pipefail
+
+publish_dir="$1"
+release_filename="$2"
+release_version="$3"
+release_version_code="$4"
+download_url="$5"
+expected_sha256="$6"
+release_notes_b64="$7"
+
+cd "$publish_dir"
+actual_sha256="$(sha256sum "releases/${release_filename}" | awk '{print $1}')"
+if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+  echo "Uploaded APK checksum mismatch." >&2
+  exit 1
+fi
+
+published_code="$(sed -n 's/^MOBILE_UPDATE_ANDROID_LATEST_VERSION_CODE=//p' .env | tail -n 1)"
+published_code="${published_code:-0}"
+if ! [[ "$published_code" =~ ^[0-9]+$ ]] || (( release_version_code <= published_code )); then
+  echo "Android versionCode ${release_version_code} must be higher than published ${published_code}." >&2
+  exit 1
+fi
+
+release_notes="$(printf '%s' "$release_notes_b64" | base64 -d)"
+tmp_env="$(mktemp .env.vass-release.XXXXXX)"
+awk -v version="$release_version" -v version_code="$release_version_code" -v url="$download_url" -v sha256="$expected_sha256" -v notes="$release_notes" '
+  BEGIN {
+    values["MOBILE_UPDATE_ANDROID_LATEST_VERSION"] = version
+    values["MOBILE_UPDATE_ANDROID_LATEST_VERSION_CODE"] = version_code
+    values["MOBILE_UPDATE_ANDROID_DOWNLOAD_URL"] = url
+    values["MOBILE_UPDATE_ANDROID_SHA256"] = sha256
+    values["MOBILE_UPDATE_ANDROID_RELEASE_NOTES"] = notes
+  }
+  {
+    matched = 0
+    for (key in values) {
+      if (index($0, key "=") == 1) {
+        print key "=" values[key]
+        seen[key] = 1
+        matched = 1
+        break
+      }
+    }
+    if (!matched) print
+  }
+  END {
+    for (key in values) if (!(key in seen)) print key "=" values[key]
+  }' .env > "$tmp_env"
+mv "$tmp_env" .env
+
+docker compose up -d --force-recreate api
+for _ in $(seq 1 30); do
+  if docker compose exec -T api curl -fsS http://localhost:5000/api/health/ready >/dev/null; then
+    break
+  fi
+  sleep 2
+done
+docker compose exec -T api curl -fsS "http://localhost:5000/api/v1/app-updates/android?currentVersionCode=$((release_version_code - 1))" | grep -F '"updateAvailable":true' >/dev/null
+docker compose exec -T api curl -fsS "http://localhost:5000/api/v1/app-updates/android?currentVersionCode=${release_version_code}" | grep -F '"updateAvailable":false' >/dev/null
+REMOTE
+
+echo "==> Published: ${download_url}"

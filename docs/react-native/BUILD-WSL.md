@@ -121,6 +121,17 @@ cd ~/vass
 ./scripts/build-android-release-wsl.sh
 ```
 
+Чтобы после успешной сборки сразу опубликовать APK для встроенного обновления:
+
+```bash
+cd ~/vass
+./scripts/build-android-release-wsl.sh --publish --notes "Short description for testers."
+```
+
+Этот вариант использует SSH из WSL, загружает один готовый APK на VPS и
+обновляет manifest обновления. Исходники, Gradle, Metro и `node_modules`
+остаются только в Linux filesystem; `/mnt/d` не используется для сборки.
+
 Скрипт проверяет Node 22, запрещает `/mnt/*`, запускает `npm ci` только при
 смене lockfile, использует Gradle build cache и печатает итоговую
 версию/хэш APK. Fingerprint native inputs включает `app.json` без номера

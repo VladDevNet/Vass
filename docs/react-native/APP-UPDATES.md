@@ -17,10 +17,20 @@ APK files live on the VPS in `releases/` and nginx exposes them read-only at `/d
 
 ## Publishing a beta
 
-1. Build a signed APK with a higher Android `versionCode`.
-2. Upload it as `/root/vass/releases/<filename>.apk`.
-3. Calculate its SHA-256 and set the `MOBILE_UPDATE_ANDROID_*` variables in `/root/vass/.env`.
-4. Recreate the API container so it reads the new manifest values.
-5. Check the endpoint for both a current and an older `currentVersionCode` before notifying testers.
+Build and publish in one command from the WSL-native clone:
+
+```bash
+cd ~/vass
+./scripts/build-android-release-wsl.sh --publish --notes "Short description for testers."
+```
+
+The script builds an ARM64 APK, uploads it to `/root/vass/releases/`, verifies
+its SHA-256 on the VPS, updates the five `MOBILE_UPDATE_ANDROID_*` manifest
+fields atomically, recreates only `api`, and verifies the endpoint for both
+the preceding and new `versionCode`. It refuses to overwrite a published
+release with an equal or lower `versionCode`.
+
+Use `VASS_ANDROID_PUBLISH=1` instead of `--publish` for automation. A build
+without either option remains local and never changes the production manifest.
 
 Do not raise `MOBILE_UPDATE_ANDROID_MIN_SUPPORTED_VERSION_CODE` until the release is known to be installable from the production download URL.
