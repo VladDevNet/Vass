@@ -56,5 +56,5 @@ printf 'sdk.dir=%s\n' "$ANDROID_HOME" > android/local.properties
 
 apk="android/app/build/outputs/apk/release/app-release.apk"
 test -f "$apk"
-"$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | head -n 1
+"$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" | sed -n '1p'
 sha256sum "$apk"
