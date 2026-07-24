@@ -15,6 +15,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
 import android.util.DisplayMetrics
 import android.view.WindowManager
 import java.io.File
@@ -30,6 +32,7 @@ class VassMediaProjectionService : Service() {
   private var imageReader: ImageReader? = null
   private var delivered = false
   private var frameCount = 0
+  private var captureNotBeforeMs = 0L
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -51,6 +54,20 @@ class VassMediaProjectionService : Service() {
     }
 
     try {
+      // PermissionActivity moves Vass behind the selected app immediately
+      // after it starts this service. Give Android one short transition to
+      // settle before creating the virtual display, otherwise the first
+      // frame can be the consent sheet or Vass itself.
+      handler.postDelayed({ startProjection(id, resultCode, resultData) }, CAPTURE_START_DELAY_MS)
+    } catch (exception: Exception) {
+      failCapture(id, "capture_start_failed", exception)
+    }
+    return START_NOT_STICKY
+  }
+
+  private fun startProjection(id: String, resultCode: Int, resultData: Intent) {
+    if (delivered) return
+    try {
       val manager = getSystemService(MediaProjectionManager::class.java)
       projection = manager.getMediaProjection(resultCode, resultData)
         ?: throw IllegalStateException("MediaProjection token was rejected")
@@ -71,11 +88,11 @@ class VassMediaProjectionService : Service() {
         "VassOneShotScreenCapture", metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
         DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader!!.surface, null, handler,
       )
+      captureNotBeforeMs = SystemClock.elapsedRealtime() + INITIAL_FRAME_SETTLE_MS
       handler.postDelayed({ finishCapture(requestId, "error", error = "capture_timeout") }, CAPTURE_TIMEOUT_MS)
     } catch (exception: Exception) {
-      finishCapture(id, "error", error = "capture_unavailable")
+      failCapture(id, "capture_unavailable", exception)
     }
-    return START_NOT_STICKY
   }
 
   private fun onImage(reader: ImageReader) {
@@ -83,11 +100,11 @@ class VassMediaProjectionService : Service() {
     val image = reader.acquireLatestImage() ?: return
     try {
       frameCount += 1
-      if (frameCount < 2) return
+      if (frameCount < MINIMUM_STABLE_FRAMES || SystemClock.elapsedRealtime() < captureNotBeforeMs) return
       val uri = writeJpeg(image)
       finishCapture(requestId, "ready", uri)
-    } catch (_: Exception) {
-      finishCapture(requestId, "error", error = "capture_encode_failed")
+    } catch (exception: Exception) {
+      failCapture(requestId, "capture_encode_failed", exception)
     } finally {
       image.close()
     }
@@ -139,13 +156,22 @@ class VassMediaProjectionService : Service() {
     stopSelf()
   }
 
+  private fun failCapture(id: String?, code: String, exception: Exception) {
+    Log.w(LOG_TAG, "Screen capture failed: $code (${exception.javaClass.simpleName})", exception)
+    finishCapture(id, "error", error = "$code:${exception.javaClass.simpleName}")
+  }
+
   override fun onDestroy() {
     finishCapture(requestId, "error", error = "service_destroyed")
     super.onDestroy()
   }
 
   companion object {
-    private const val CAPTURE_TIMEOUT_MS = 4_000L
+    private const val LOG_TAG = "VassScreenCapture"
+    private const val CAPTURE_START_DELAY_MS = 650L
+    private const val INITIAL_FRAME_SETTLE_MS = 500L
+    private const val MINIMUM_STABLE_FRAMES = 3
+    private const val CAPTURE_TIMEOUT_MS = 12_000L
     private const val MAX_LONG_SIDE = 2048
     private const val JPEG_QUALITY = 85
     private const val MAX_OUTPUT_BYTES = 10L * 1024L * 1024L

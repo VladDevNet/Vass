@@ -154,7 +154,10 @@ async function captureOneShotScreenImage(requestId: string, abortSignal?: AbortS
         throw new ScreenCaptureCancelledError();
       }
       if (result.status === 'error') {
-        log('warn', 'screen-capture', 'screen capture service returned an error', { requestId });
+        log('warn', 'screen-capture', 'screen capture service returned an error', {
+          requestId,
+          nativeError: result.error ?? null,
+        });
         throw new Error('Не удалось получить снимок экрана. Повторите запрос.');
       }
     }
@@ -1441,9 +1444,10 @@ export function useVoiceChat(
           }
           if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) return;
 
-          // The native consent activity already returns to Vass. Keep this
-          // best-effort call as a JS-level recovery path for devices that
-          // resume a different task after the system picker.
+          // Native deliberately keeps Vass behind the selected app while the
+          // frame settles. Bring it back only after a real frame is ready.
+          // Keep this best-effort recovery for devices that resume another
+          // task after Android's consent picker.
           try {
             await VassOverlay.openApp();
             log('info', 'screen-capture', 'returned Vass to foreground after capture');

@@ -40,11 +40,12 @@ class ScreenCapturePermissionActivity : Activity() {
         .putExtra(OverlayContract.EXTRA_CAPTURE_RESULT_CODE, resultCode)
         .putExtra(OverlayContract.EXTRA_CAPTURE_RESULT_DATA, data),
     )
-    // This activity can be launched from an overlay or another app. Return to
-    // Vass while the foreground capture service prepares the frame, so the
-    // user sees the pending attachment and the eventual analysis instead of
-    // being left on the app that happened to be visible before consent.
-    returnToVass()
+    // Do not bring Vass back over the content the person selected. On Android
+    // 14+ the consent sheet can share one app window; reopening Vass here can
+    // replace that window or capture the transition/system UI instead. The
+    // foreground service keeps the one-shot capture alive, and JS reopens
+    // Vass only after it has received a real frame.
+    moveTaskToBack(true)
     finish()
   }
 
