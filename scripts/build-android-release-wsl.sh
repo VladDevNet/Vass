@@ -64,11 +64,13 @@ const fs = require('fs');
 const config = JSON.parse(fs.readFileSync('app.json', 'utf8')).expo;
 const gradlePath = 'android/app/build.gradle';
 let gradle = fs.readFileSync(gradlePath, 'utf8');
+if (!/versionCode \d+/.test(gradle) || !/versionName "[^"]+"/.test(gradle)) {
+  throw new Error(`Unable to find Android version fields in ${gradlePath}.`);
+}
 const next = gradle
   .replace(/versionCode \d+/, `versionCode ${config.android.versionCode}`)
   .replace(/versionName "[^"]+"/, `versionName "${config.version}"`);
-if (next === gradle) throw new Error(`Unable to synchronize Android version in ${gradlePath}.`);
-fs.writeFileSync(gradlePath, next);
+if (next !== gradle) fs.writeFileSync(gradlePath, next);
 NODE
 fi
 
