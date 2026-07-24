@@ -1263,13 +1263,43 @@ export function useVoiceChat(
             }));
         };
         const handleExternalAction = async (action: ExternalActionEvent) => {
-          if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) {
-            recordActionStatus(action, 'cancelled', 'turn_cancelled');
-            return;
-          }
           const actionKey = action.actionId;
           if (executedExternalActionsRef.current.has(actionKey)) {
             log('debug', 'external-action', 'duplicate action ignored', { type: action.type, taxonomy: action.taxonomy });
+            return;
+          }
+
+          // A generated book is a durable local write, not a transient UI
+          // command. The planner can need a little time to create its HTML;
+          // by then a person may naturally start speaking again. Do not lose
+          // their explicit save request merely because that turn was barged
+          // in before its final spoken confirmation completed.
+          if (action.type === 'library_write') {
+            executedExternalActionsRef.current.add(actionKey);
+            const bridge = visualBridgeRef.current;
+            if (!bridge?.applyLibraryAction) {
+              recordActionStatus(action, 'failed', 'library_handler_missing');
+              throw new ExternalActionExecutionError('Библиотека недоступна в этой версии приложения.', 'library_handler_missing');
+            }
+            try {
+              const receipt = await bridge.applyLibraryAction(action);
+              recordActionStatus(action, 'handler_dispatched', receipt.resultCode);
+              log('info', 'library', 'durable library write applied immediately', {
+                resultCode: receipt.resultCode,
+                arrivedAfterTurnChanged: myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current,
+              });
+            } catch (error) {
+              log('error', 'library', 'could not apply durable library write on device', {
+                error: error instanceof Error ? error.message : String(error),
+              });
+              recordActionStatus(action, 'failed', 'library_handler_failed');
+              throw new ExternalActionExecutionError('Не удалось сохранить книгу в библиотеку.', 'library_handler_failed', { cause: error });
+            }
+            return;
+          }
+
+          if (myGeneration !== segmentGenerationRef.current || myTurn !== turnGenerationRef.current) {
+            recordActionStatus(action, 'cancelled', 'turn_cancelled');
             return;
           }
           executedExternalActionsRef.current.add(actionKey);

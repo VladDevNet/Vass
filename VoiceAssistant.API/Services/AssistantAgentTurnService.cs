@@ -145,6 +145,14 @@ public sealed class AssistantAgentTurnService
                 if (stepExecutions.Any(execution => execution.RequestsScreenCapture))
                     return new(true, executions, null, true, false, false);
 
+                // Client actions already have a deterministic, receipt-aware
+                // response in ChatController. A second planner pass cannot
+                // make a local action more complete, but can add several
+                // seconds after a book document has been generated. Return
+                // the action to the phone immediately instead.
+                if (stepExecutions.Any(execution => execution.ExternalAction is not null))
+                    return new(true, executions, null, false, false, false);
+
                 contents.Add(CreateFunctionResponseContent(stepExecutions));
             }
 
