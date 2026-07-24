@@ -88,11 +88,18 @@ const SCREEN_CAPTURE_RESULT_TIMEOUT_MS = 120_000;
 const SCREEN_CAPTURE_RESULT_POLL_MS = 150;
 const SCREEN_CAPTURE_NATIVE_REQUEST_TIMEOUT_MS = 2_000;
 
-// A single long-wait cue is enough. The model's early preamble is already a
-// natural acknowledgement, so stacking several generic cues makes the turn
-// sound like a recording rather than a conversation.
-const THINKING_FALLBACK_DELAY_MS = 6_000;
+// A short local acknowledgement removes the awkward gap between recording
+// and the model's first phrase. A second cue is reserved for genuinely long
+// waits; more than two starts to sound like an answering machine.
+const THINKING_ACKNOWLEDGEMENT_DELAY_MS = 750;
+const THINKING_FOLLOW_UP_DELAY_MS = 4_500;
 const THINKING_AFTER_PREAMBLE_DELAY_MS = 4_000;
+const MAX_THINKING_CUES_PER_TURN = 2;
+const THINKING_ACKNOWLEDGEMENTS = ['Секунду.', 'Минутку.', 'Сейчас.', 'Дайте подумать.'] as const;
+
+function selectThinkingAcknowledgement(): string {
+  return THINKING_ACKNOWLEDGEMENTS[Math.floor(Math.random() * THINKING_ACKNOWLEDGEMENTS.length)];
+}
 
 function waitFor(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -1012,7 +1019,7 @@ export function useVoiceChat(
       let speechTextReceived = false;
       let firstSpeechTextChunkAt: number | null = null;
       let replyStarted = false;
-      let thinkingPlaceholderQueued = false;
+      let thinkingCueCount = 0;
       let cancelThinkingPlaceholders = () => {};
       let scheduleThinkingPlaceholder = (_delayMs: number, _text: string, _reason: string) => {};
       const pendingExternalActionHolder: { current: ExternalActionEvent | null } = { current: null };
@@ -1058,6 +1065,10 @@ export function useVoiceChat(
           elapsedMs: Date.now() - turnStartedAt,
           length: speech.length,
         });
+        // A meaningful early phrase from the model is the best possible
+        // acknowledgement, so do not follow it immediately with a generic
+        // local cue that was waiting in the timer.
+        cancelThinkingPlaceholders();
         ensureStreamingSpeech().push(speech, 'preamble');
         scheduleThinkingPlaceholder(THINKING_AFTER_PREAMBLE_DELAY_MS, 'Ещё момент.', 'after_preamble');
       };
@@ -1166,32 +1177,39 @@ export function useVoiceChat(
         }
       };
       scheduleThinkingPlaceholder = (delayMs, text, reason) => {
-        if (fromShadow || replyStarted || thinkingPlaceholderQueued) return;
+        if (fromShadow || replyStarted || thinkingCueCount >= MAX_THINKING_CUES_PER_TURN) return;
 
         cancelThinkingPlaceholders();
         placeholderTimer = setTimeout(() => {
           placeholderTimer = null;
           if (
             replyStarted ||
-            thinkingPlaceholderQueued ||
+            thinkingCueCount >= MAX_THINKING_CUES_PER_TURN ||
             myGeneration !== segmentGenerationRef.current ||
             bargedInRef.current ||
             pausedRef.current ||
             conversationEndedRef.current
           ) return;
 
-          thinkingPlaceholderQueued = true;
+          thinkingCueCount += 1;
           ensureStreamingSpeech().push(text, 'progress');
-          log('info', 'voice-timeline', 'long thinking placeholder queued', {
+          log('info', 'voice-timeline', 'thinking cue queued', {
             clientTurnId,
             elapsedMs: Date.now() - turnStartedAt,
             text,
             reason,
           });
+          if (reason === 'early_acknowledgement') {
+            scheduleThinkingPlaceholder(THINKING_FOLLOW_UP_DELAY_MS, 'Ещё момент.', 'after_early_acknowledgement');
+          }
         }, delayMs);
       };
       if (!fromShadow) {
-        scheduleThinkingPlaceholder(THINKING_FALLBACK_DELAY_MS, 'Думаю, секунду.', 'no_preamble');
+        scheduleThinkingPlaceholder(
+          THINKING_ACKNOWLEDGEMENT_DELAY_MS,
+          selectThinkingAcknowledgement(),
+          'early_acknowledgement',
+        );
       }
 
       try {
