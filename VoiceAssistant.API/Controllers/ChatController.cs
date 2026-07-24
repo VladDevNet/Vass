@@ -282,15 +282,8 @@ public class ChatController : ControllerBase
     // real enforced ceiling on file content.
     private const long MaxAudioRequestBodySize = MaxAudioSize + 64 * 1024;
 
-    // GetPreambleIfNeededAsync/MaybeUpdateCustomInstructionsAsync below only ever
-    // need a short yes/no/short-phrase answer, not a full reply -- kept public
-    // (not just small) because VoiceAssistant.API.IntegrationTests' FakeGeminiHandler
-    // keys off these exact values to tell these background checks apart from a real
-    // chat reply (which uses StreamResponseAsync's own maxTokens default instead);
-    // a compile-time reference here means a future change to either number can't
-    // silently desync from what the fake HTTP transport expects
-    // (PROJECT-AUDIT-2026-07-10 QA-01).
-    public const int PreambleCheckMaxTokens = 30;
+    // This background classification needs a short answer rather than a full
+    // chat reply. The public constant keeps the integration fake in sync.
     public const int CustomInstructionCheckMaxTokens = 200;
 
     // Pure read -- PROJECT-AUDIT-2026-07-10 section 6 flagged this endpoint
@@ -615,24 +608,15 @@ public class ChatController : ControllerBase
         if (sharedContent is not null)
             await _capabilityDiscovery.MarkUsedAsync(userId, "share", HttpContext.RequestAborted);
 
-        // For an AudioCore voice turn the primary model has already supplied
-        // a short, safe phrase in the native function call. Emit it before
-        // memory recall and tool planning so the user hears a real response
-        // while the detailed agent path is still working.
+        // Voice wait status is intentionally owned by the mobile client.
+        // Never emit a separate model-generated preamble here: it has no
+        // knowledge of the subsequent tool result and can sound like a
+        // contradictory first answer.
         Response.ContentType = "text/event-stream";
         Response.Headers.CacheControl = "no-cache";
         Response.Headers.Connection = "keep-alive";
         var preambleSent = false;
         var transcriptionSent = false;
-        if (audioCoreUsed && !string.IsNullOrWhiteSpace(audioCoreResult?.Preamble))
-        {
-            var earlyPreambleData = JsonSerializer.Serialize(new { preamble = audioCoreResult.Preamble });
-            await Response.WriteAsync($"data: {earlyPreambleData}\n\n");
-            await Response.Body.FlushAsync();
-            preambleSent = true;
-            preambleSentAtMs = turnTimeline.ElapsedMilliseconds;
-            _logger.LogInformation("Voice turn timeline preamble sent: Turn {ClientTurnId}, At {ElapsedMs}ms", req.ClientTurnId, preambleSentAtMs);
-        }
         if (transcription is not null)
         {
             var earlyTranscriptionData = JsonSerializer.Serialize(new { transcription });
@@ -1041,15 +1025,6 @@ public class ChatController : ControllerBase
         // is sent, which keeps pronunciation under the device TTS engine.
         var responseSystemPrompt = systemPrompt;
 
-        // Kick off a fast, non-grounded "will this need search/deep thought?" check
-        // in parallel with the real (possibly slow, search-grounded) response, so we
-        // can speak a natural "hold on" phrase while the real answer is still cooking
-        // instead of leaving the user in silence for several seconds. A reminder has
-        // already waited for the device receipt, so a preamble would arrive too late.
-        var preambleTask = !preambleSent && !useAgentFinalText && actionProposal is null && reminderDraft is null
-            ? GetPreambleIfNeededAsync(messageText, geminiKey, HttpContext.RequestAborted)
-            : Task.FromResult<string?>(null);
-
         // Ordinary conversation retains the existing grounded streaming path.
         // A tool turn already has an evidence-aware final answer from the
         // native function-response loop, so emit it as one durable SSE chunk.
@@ -1083,20 +1058,7 @@ public class ChatController : ControllerBase
 
         try
         {
-            var moveNextTask = enumerator.MoveNextAsync().AsTask();
-            var winner = await Task.WhenAny(preambleTask, moveNextTask);
-
-            if (winner == preambleTask && preambleTask.Result != null)
-            {
-                var preData = JsonSerializer.Serialize(new { preamble = preambleTask.Result });
-                await Response.WriteAsync($"data: {preData}\n\n");
-                await Response.Body.FlushAsync();
-                preambleSent = true;
-                preambleSentAtMs = turnTimeline.ElapsedMilliseconds;
-                _logger.LogInformation("Voice turn timeline preamble sent: Turn {ClientTurnId}, At {ElapsedMs}ms", req.ClientTurnId, preambleSentAtMs);
-            }
-
-            var hasMore = await moveNextTask;
+            var hasMore = await enumerator.MoveNextAsync();
             while (hasMore)
             {
                 var chunk = enumerator.Current;
@@ -1531,48 +1493,6 @@ public class ChatController : ControllerBase
             _logger.LogWarning(ex, "Gemini OCR failed");
             return StatusCode(502, new { error = "OCR service error" });
         }
-    }
-
-    // Fast, non-grounded check: will answering this well require web search or
-    // careful multi-step reasoning? If so, returns a short natural "hold on" phrase
-    // to speak while the real (possibly slow) response is still generating.
-    // Returns null for ordinary conversational messages that don't need a heads-up.
-    private async Task<string?> GetPreambleIfNeededAsync(string userMessage, string? geminiKey, CancellationToken ct)
-    {
-        var prompt = $$"""
-            Сообщение пользователя: "{{userMessage}}"
-            Чтобы дать на него хороший ответ, ассистенту понадобится (а) искать актуальную информацию в интернете или (б) тщательно обдумывать сложную, многогранную задачу?
-            Если да — выведи одну нейтральную реплику ожидания на 2-7 слов, без кавычек. Это не начало ответа и не план: она может лишь мягко отразить тему сообщения (например "Про это — секунду." или "Понял, минутку."), но не должна отвечать по существу, обещать действие или результат. Не используй "сделаю", "найду", "открою", "запишу", "проверю" и другие формулировки, предвосхищающие дальнейший ответ.
-            Если это обычный разговорный вопрос, не требующий поиска или долгих раздумий — выведи ровно NONE.
-            Ничего кроме фразы или NONE не пиши.
-            """;
-
-        var messages = new List<GeminiMessage> { new("user", prompt) };
-        var sb = new System.Text.StringBuilder();
-        try
-        {
-            await foreach (var chunk in _gemini.StreamResponseAsync("", messages, model: "gemini-3.5-flash",
-                maxTokens: PreambleCheckMaxTokens, apiKey: geminiKey, enableGrounding: false, cancellationToken: ct))
-            {
-                sb.Append(chunk);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            return null;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Preamble check failed");
-            return null;
-        }
-
-        var result = sb.ToString().Trim().Trim('"');
-        if (string.IsNullOrEmpty(result) || result.Equals("NONE", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-        return AudioCoreTranscriptionService.NormalizePreamble(result);
     }
 
     private async Task AwaitTurnSideEffectsAsync(params Task[] tasks)

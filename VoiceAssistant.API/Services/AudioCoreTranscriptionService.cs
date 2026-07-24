@@ -9,12 +9,11 @@ namespace VoiceAssistant.API.Services;
 // before it enters the existing agent/tool pipeline.
 public sealed record AudioCoreTranscriptionResult(
     string Transcription,
-    string? Preamble,
     bool RequiresTool,
     bool RequiresWebSearch,
     bool ProviderAvailable)
 {
-    public static AudioCoreTranscriptionResult Unavailable() => new("", null, true, false, false);
+    public static AudioCoreTranscriptionResult Unavailable() => new("", true, false, false);
 }
 
 public sealed class AudioCoreTranscriptionService
@@ -50,7 +49,7 @@ public sealed class AudioCoreTranscriptionService
         try
         {
             var audioBytes = await File.ReadAllBytesAsync(audioPath, cancellationToken);
-            if (audioBytes.Length == 0) return new AudioCoreTranscriptionResult("", null, true, false, true);
+            if (audioBytes.Length == 0) return new AudioCoreTranscriptionResult("", true, false, true);
 
             var payload = new
             {
@@ -87,14 +86,6 @@ public sealed class AudioCoreTranscriptionService
                                 Ровно один раз вызови capture_user_utterance и передай в transcript точную
                                 транскрипцию сказанного. Убери только шумы, вздохи и щелчки. Не дополняй
                                 неразборчивую речь догадками. Если речи нет, передай пустую строку.
-                                В preamble передай ровно одну короткую нейтральную реплику ожидания: 2-7
-                                слов, на языке пользователя и с завершающей пунктуацией. Это не начало
-                                ответа и не план действий. Она может лишь мягко отразить тему реплики,
-                                например «Про рецепт — секунду.» или «Понял, минутку.», но не должна
-                                делать выводов, отвечать по существу, обещать действие или результат.
-                                Нельзя использовать «сделаю», «найду», «открою», «запишу», «проверю» и
-                                другие формулировки, предвосхищающие дальнейший ответ. Для пустой записи
-                                передай пустую строку.
                                 В requiresTool передай true, если пользователь явно просит Vass выполнить
                                 действие через память, напоминание, снимок экрана, overlay, YouTube,
                                 локальную библиотеку, книгу или отчет, возможности приложения, поиск
@@ -133,11 +124,6 @@ public sealed class AudioCoreTranscriptionService
                                             type = "string",
                                             description = "Точная транскрипция без пояснений; пустая строка для тишины."
                                         },
-                                        preamble = new
-                                        {
-                                            type = "string",
-                                            description = "Короткая безопасная фраза для немедленного голосового ответа; пустая строка для тишины."
-                                        },
                                         requiresTool = new
                                         {
                                             type = "boolean",
@@ -149,7 +135,7 @@ public sealed class AudioCoreTranscriptionService
                                             description = "true только когда нужны свежие публичные сведения через поиск в интернете."
                                         }
                                     },
-                                    required = new[] { "transcript", "preamble", "requiresTool", "requiresWebSearch" }
+                                    required = new[] { "transcript", "requiresTool", "requiresWebSearch" }
                                 }
                             }
                         }
@@ -231,13 +217,10 @@ public sealed class AudioCoreTranscriptionService
                 // or the central model.
                 if (AudioAnalysisService.LooksLikePromptLeak(rawTranscript))
                 {
-                    return new AudioCoreTranscriptionResult("", null, true, false, true);
+                    return new AudioCoreTranscriptionResult("", true, false, true);
                 }
 
                 var filtered = AudioAnalysisService.RemovePathologicalRepetition(rawTranscript);
-                var preamble = args.TryGetProperty("preamble", out var preambleValue) && preambleValue.ValueKind == JsonValueKind.String
-                    ? NormalizePreamble(preambleValue.GetString())
-                    : null;
                 // A missing/invalid decision must remain conservative: the
                 // regular planner still runs rather than skipping an action.
                 var requiresTool = !args.TryGetProperty("requiresTool", out var requiresToolValue) ||
@@ -246,7 +229,6 @@ public sealed class AudioCoreTranscriptionService
                                         requiresWebSearchValue.ValueKind == JsonValueKind.True;
                 return new AudioCoreTranscriptionResult(
                     filtered ?? "",
-                    preamble,
                     requiresTool || requiresWebSearch,
                     requiresWebSearch,
                     true);
@@ -259,18 +241,6 @@ public sealed class AudioCoreTranscriptionService
         }
 
         return AudioCoreTranscriptionResult.Unavailable();
-    }
-
-    // This is a transport guard, not an attempt to infer user intent. It
-    // keeps a malformed provider value from becoming a long or empty spoken
-    // interruption before the full answer arrives.
-    internal static string? NormalizePreamble(string? value)
-    {
-        var compact = value?.Trim().Trim('"');
-        if (string.IsNullOrWhiteSpace(compact) || compact.Length > 120) return null;
-
-        var words = compact.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        return words.Length is >= 2 and <= 7 ? string.Join(' ', words) : null;
     }
 
     // Android's Expo recorder writes AAC in an MPEG-4/M4A container although

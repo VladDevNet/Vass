@@ -88,17 +88,23 @@ const SCREEN_CAPTURE_RESULT_TIMEOUT_MS = 120_000;
 const SCREEN_CAPTURE_RESULT_POLL_MS = 150;
 const SCREEN_CAPTURE_NATIVE_REQUEST_TIMEOUT_MS = 2_000;
 
-// A short local acknowledgement removes the awkward gap between recording
-// and the model's first phrase. A second cue is reserved for genuinely long
-// waits; more than two starts to sound like an answering machine.
+// Status cues are deliberately client-owned and non-semantic. A separate
+// model-generated "quick answer" can promise an action before the tool loop
+// has completed, then make the final reply sound like a second conversation.
+// The first cue removes the awkward gap; later ones prove the turn is alive
+// without narrating every second of waiting.
 const THINKING_ACKNOWLEDGEMENT_DELAY_MS = 750;
-const THINKING_FOLLOW_UP_DELAY_MS = 4_500;
-const THINKING_AFTER_PREAMBLE_DELAY_MS = 4_000;
-const MAX_THINKING_CUES_PER_TURN = 2;
+const THINKING_STATUS_UPDATE_DELAY_MS = 4_000;
+const MAX_THINKING_CUES_PER_TURN = 4;
 const THINKING_ACKNOWLEDGEMENTS = ['Секунду.', 'Минутку.', 'Сейчас.', 'Дайте подумать.'] as const;
+const THINKING_STATUS_UPDATES = ['Ещё думаю.', 'Ещё момент.', 'Продолжаю думать.'] as const;
 
 function selectThinkingAcknowledgement(): string {
   return THINKING_ACKNOWLEDGEMENTS[Math.floor(Math.random() * THINKING_ACKNOWLEDGEMENTS.length)];
+}
+
+function selectThinkingStatusUpdate(cueCount: number): string {
+  return THINKING_STATUS_UPDATES[(cueCount - 1) % THINKING_STATUS_UPDATES.length];
 }
 
 function waitFor(milliseconds: number): Promise<void> {
@@ -1060,17 +1066,15 @@ export function useVoiceChat(
         if (myGeneration !== segmentGenerationRef.current || bargedInRef.current) return;
         const speech = stripMarkdownForSpeechChunk(preamble).trim();
         if (!speech) return;
-        log('info', 'voice-timeline', 'voice preamble received', {
+        // New servers no longer emit model-generated preambles. Ignore one
+        // from an older server too: local status phrases are intentionally
+        // non-semantic, whereas this independent model output can duplicate
+        // or contradict the final tool-aware reply.
+        log('info', 'voice-timeline', 'legacy model preamble ignored', {
           clientTurnId,
           elapsedMs: Date.now() - turnStartedAt,
           length: speech.length,
         });
-        // A meaningful early phrase from the model is the best possible
-        // acknowledgement, so do not follow it immediately with a generic
-        // local cue that was waiting in the timer.
-        cancelThinkingPlaceholders();
-        ensureStreamingSpeech().push(speech, 'preamble');
-        scheduleThinkingPlaceholder(THINKING_AFTER_PREAMBLE_DELAY_MS, 'Ещё момент.', 'after_preamble');
       };
 
       const handleProgressText = (progressText: string) => {
@@ -1084,6 +1088,11 @@ export function useVoiceChat(
           length: speech.length,
         });
         ensureStreamingSpeech().push(speech, 'progress');
+        scheduleThinkingPlaceholder(
+          THINKING_STATUS_UPDATE_DELAY_MS,
+          selectThinkingStatusUpdate(thinkingCueCount + 1),
+          'after_server_progress',
+        );
       };
 
       // Normal replies now have two hidden representations: a Russian
@@ -1199,9 +1208,11 @@ export function useVoiceChat(
             text,
             reason,
           });
-          if (reason === 'early_acknowledgement') {
-            scheduleThinkingPlaceholder(THINKING_FOLLOW_UP_DELAY_MS, 'Ещё момент.', 'after_early_acknowledgement');
-          }
+          scheduleThinkingPlaceholder(
+            THINKING_STATUS_UPDATE_DELAY_MS,
+            selectThinkingStatusUpdate(thinkingCueCount),
+            'periodic_status',
+          );
         }, delayMs);
       };
       if (!fromShadow) {

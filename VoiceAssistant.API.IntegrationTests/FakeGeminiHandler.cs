@@ -14,22 +14,19 @@ namespace VoiceAssistant.API.IntegrationTests;
 // body in Gemini's own streamGenerateContent?alt=sse shape, so GeminiService's
 // real parsing code runs unmodified against it.
 //
-// ChatController.Send() fires up to three concurrent StreamResponseAsync
-// calls per turn: the main reply (maxOutputTokens: 8192), a
-// "does this need a preamble" check (maxOutputTokens: ChatController.PreambleCheckMaxTokens),
-// and a background "did the user ask to remember something" check
+// ChatController.Send() fires the main reply (maxOutputTokens: 8192) and a
+// background "did the user ask to remember something" check
 // (maxOutputTokens: ChatController.CustomInstructionCheckMaxTokens).
-// Distinguishing by that field keeps the two background checks harmless
+// Distinguishing by that field keeps the background check harmless
 // no-ops (they short-circuit on the literal string "NONE") while still
 // exercising the real main-reply path. Referencing ChatController's own
-// public consts (PROJECT-AUDIT-2026-07-10 QA-01) instead of repeating the
-// literals here means a future change to either number fails to compile
+// public constant (PROJECT-AUDIT-2026-07-10 QA-01) instead of repeating the
+// literal here means a future change fails to compile
 // instead of silently reducing test fidelity.
 public class FakeGeminiHandler : HttpMessageHandler
 {
     public const string DefaultReplyText = "Привет! Это тестовый ответ ассистента.";
 
-    private static readonly string PreambleCheckMarker = $"\"maxOutputTokens\":{ChatController.PreambleCheckMaxTokens}";
     private static readonly string CustomInstructionCheckMarker = $"\"maxOutputTokens\":{ChatController.CustomInstructionCheckMaxTokens}";
     private static readonly string ReminderParseMarker = $"\"maxOutputTokens\":{ReminderService.ParseMaxTokens}";
     private static readonly string ExternalActionParseMarker = $"\"maxOutputTokens\":{ExternalActionService.ParseMaxTokens}";
@@ -72,8 +69,7 @@ public class FakeGeminiHandler : HttpMessageHandler
         {
             replyText = "{\"isReminder\":true,\"needsClarification\":false,\"text\":\"позвонить врачу\",\"dueAtLocal\":\"2030-01-01T09:00:00\"}";
         }
-        else if (body.Contains(PreambleCheckMarker, StringComparison.Ordinal) ||
-            body.Contains(CustomInstructionCheckMarker, StringComparison.Ordinal))
+        else if (body.Contains(CustomInstructionCheckMarker, StringComparison.Ordinal))
         {
             replyText = "NONE";
         }

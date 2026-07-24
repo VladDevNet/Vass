@@ -34,7 +34,7 @@ public class AudioCoreTranscriptionServiceTests
 
             Assert.True(result.ProviderAvailable);
             Assert.Equal("Поставь напоминание на завтра", result.Transcription);
-            Assert.Equal("Про напоминание, секунду.", result.Preamble);
+            Assert.False(requestBody!.Contains("preamble", StringComparison.OrdinalIgnoreCase));
             Assert.True(result.RequiresTool);
             Assert.False(result.RequiresWebSearch);
 
@@ -47,7 +47,6 @@ public class AudioCoreTranscriptionServiceTests
             var instruction = document.RootElement.GetProperty("systemInstruction").GetProperty("parts")[0]
                 .GetProperty("text").GetString();
             Assert.Contains("локальную библиотеку", instruction);
-            Assert.Contains("не план действий", instruction);
             Assert.Contains("requiresWebSearch", instruction);
             Assert.True(document.RootElement.GetProperty("tools")[0]
                 .GetProperty("functionDeclarations")[0]
@@ -80,7 +79,6 @@ public class AudioCoreTranscriptionServiceTests
 
         Assert.True(result.ProviderAvailable);
         Assert.Equal("", result.Transcription);
-        Assert.Null(result.Preamble);
     }
 
     [Fact]
@@ -101,7 +99,6 @@ public class AudioCoreTranscriptionServiceTests
         Assert.True(result.ProviderAvailable);
         Assert.False(result.RequiresTool);
         Assert.False(result.RequiresWebSearch);
-        Assert.Equal("Понял, минутку.", result.Preamble);
     }
 
     [Fact]
@@ -114,15 +111,6 @@ public class AudioCoreTranscriptionServiceTests
         Assert.True(result.ProviderAvailable);
         Assert.True(result.RequiresTool);
         Assert.True(result.RequiresWebSearch);
-    }
-
-    [Theory]
-    [InlineData("Понял, минутку.", "Понял, минутку.")]
-    [InlineData("Одно", null)]
-    [InlineData("Раз два три четыре пять шесть семь восемь.", null)]
-    public void NormalizePreamble_OnlyAllowsBriefNeutralBridgeLength(string value, string? expected)
-    {
-        Assert.Equal(expected, AudioCoreTranscriptionService.NormalizePreamble(value));
     }
 
     private static AudioCoreTranscriptionService CreateService(HttpMessageHandler handler)
